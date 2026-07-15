@@ -1,8 +1,6 @@
-use std::{
-    collections::{VecDeque, vec_deque::Iter},
-    fmt::Write,
-};
+use std::collections::VecDeque;
 
+#[derive(Clone)]
 pub struct RingStr {
     capacity: usize,
     buf: VecDeque<String>,
@@ -25,8 +23,13 @@ impl RingStr {
         self.capacity
     }
 
-    /// Pushes
-    pub fn write_line(&mut self, writer: impl FnOnce(&mut String)) {
+    /// Write a new line
+    pub fn write_line(&mut self, line: impl AsRef<str>) {
+        self.use_new_line(|str| str.push_str(line.as_ref()));
+    }
+
+    /// Uses a new line
+    pub fn use_new_line(&mut self, writer: impl FnOnce(&mut String)) {
         if self.buf.len() >= self.buf.capacity() {
             if let Some(mut line) = self.buf.pop_front() {
                 line.clear();
@@ -49,9 +52,7 @@ impl RingStr {
     {
         let mut count = 0;
         for line in iter {
-            self.write_line(|str| {
-                str.write_str(line.as_ref());
-            });
+            self.use_new_line(|str| str.push_str(line.as_ref()));
             count += 1;
         }
         count
