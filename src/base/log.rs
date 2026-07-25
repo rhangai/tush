@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, sync::Arc};
+use std::{cell::UnsafeCell, num::NonZeroUsize, sync::Arc};
 
 use parking_lot::RwLock;
 
@@ -11,7 +11,7 @@ struct LogData {
 }
 
 impl LogData {
-    fn with_capacity(capacity: usize) -> Self {
+    fn with_capacity(capacity: NonZeroUsize) -> Self {
         Self {
             offset: 0,
             buf: RingStr::with_capacity(capacity),
@@ -45,25 +45,15 @@ impl LogData {
 ///
 /// Source of the data being written
 pub struct LogWriter {
+    capacity: NonZeroUsize,
     inner: Arc<RwLock<LogData>>,
 }
 
 impl LogWriter {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: NonZeroUsize) -> Self {
         let data = LogData::with_capacity(capacity);
-        let inner = Arc::new(RwLock::new(data.clone()));
-        LogWriter { inner }
-    }
-
-    pub fn pair(capacity: usize) -> (Self, Log) {
-        let data = LogData::with_capacity(capacity);
-        let inner = Arc::new(RwLock::new(data.clone()));
-        let log = Log {
-            src: inner.clone(),
-            data: UnsafeCell::new(data),
-        };
-        let log_writer = LogWriter { inner };
-        (log_writer, log)
+        let inner = Arc::new(RwLock::new(data));
+        LogWriter { capacity, inner }
     }
 
     pub fn write_line(&mut self, line: impl AsRef<str>) {
@@ -77,6 +67,15 @@ impl LogWriter {
             let lock = src.read();
             lock.clone()
         };
+        Log {
+            src,
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    pub fn log_unsynced(&self) -> Log {
+        let src = self.inner.clone();
+        let data = LogData::with_capacity(self.capacity);
         Log {
             src,
             data: UnsafeCell::new(data),
@@ -117,19 +116,32 @@ mod test {
 
     #[test]
     fn log() {
-        let (mut writer, log) = LogWriter::pair(10);
+        let mut writer = LogWriter::new(NonZeroUsize::new(3).unwrap());
+        let log_a = writer.log();
         writer.write_line("oi");
         writer.write_line("tudo");
         writer.write_line("bem");
+        let log_b = writer.log();
+        let log_c = log_a.clone();
+        let log_d = log_b.clone();
+
+        let expected_a = vec!["oi", "tudo", "bem"];
+        assert_log(&log_a, &expected_a);
+        assert_log(&log_b, &expected_a);
+        assert_log(&log_c, &expected_a);
+        assert_log(&log_d, &expected_a);
         writer.write_line("com");
+        writer.write_line("você");
 
-        let log2 = log.clone();
-        for line in log.iter() {
-            println!("{}", line);
-        }
+        let expected_b = vec!["bem", "com", "você"];
+        assert_log(&log_a, &expected_b);
+        assert_log(&log_b, &expected_b);
+        assert_log(&log_c, &expected_b);
+        assert_log(&log_d, &expected_b);
+    }
 
-        for line in log2.iter() {
-            println!("{}", line);
-        }
+    fn assert_log(log: &Log, expected: &Vec<&str>) {
+        let values: Vec<String> = log.iter().map(|s| s.clone()).collect();
+        assert_eq!(&values, expected);
     }
 }

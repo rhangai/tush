@@ -1,8 +1,7 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, num::NonZeroUsize};
 
-#[derive(Clone)]
 pub struct RingStr {
-    capacity: usize,
+    capacity: NonZeroUsize,
     buf: VecDeque<String>,
 }
 
@@ -12,15 +11,13 @@ pub struct RingStrIter<'a> {
 }
 
 impl RingStr {
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            capacity,
-            buf: VecDeque::with_capacity(capacity),
-        }
+    pub fn with_capacity(capacity: NonZeroUsize) -> Self {
+        let buf: VecDeque<String> = VecDeque::with_capacity(capacity.get());
+        Self { capacity, buf }
     }
 
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.capacity.get()
     }
 
     /// Write a new line
@@ -31,12 +28,17 @@ impl RingStr {
     /// Uses a new line
     pub fn use_new_line(&mut self, writer: impl FnOnce(&mut String)) {
         if self.buf.len() >= self.buf.capacity() {
-            if let Some(mut line) = self.buf.pop_front() {
-                line.clear();
-                writer(&mut line);
-                self.buf.push_back(line);
-                return;
-            }
+            let mut line = self.buf.pop_front().unwrap_or_else(|| {
+                panic!(
+                    "Should not be empty. Len: {}. Capacity: {}",
+                    self.buf.len(),
+                    self.buf.capacity()
+                )
+            });
+            line.clear();
+            writer(&mut line);
+            self.buf.push_back(line);
+            return;
         }
 
         let mut s = String::new();
@@ -86,21 +88,33 @@ impl RingStr {
 
         let a_len = slice_a.len();
         let b_len = slice_b.len();
-        if n < a_len {
+        if n <= b_len {
             return RingStrIter {
-                slice_iter: slice_a[a_len - n..].iter(),
-                slice_iter_next: if b_len > 0 {
-                    Some(slice_b.iter())
-                } else {
-                    None
-                },
+                slice_iter: slice_b[b_len - n..].iter(),
+                slice_iter_next: None,
             };
         }
-        let n = n - a_len;
+
+        let n = n - b_len;
         return RingStrIter {
-            slice_iter: slice_b[b_len - n..].iter(),
-            slice_iter_next: None,
+            slice_iter: slice_a[a_len - n..].iter(),
+            slice_iter_next: if b_len > 0 {
+                Some(slice_b.iter())
+            } else {
+                None
+            },
         };
+    }
+}
+
+impl Clone for RingStr {
+    fn clone(&self) -> Self {
+        let mut buf: VecDeque<String> = VecDeque::with_capacity(self.capacity.get());
+        buf.extend(self.buf.iter().cloned());
+        Self {
+            capacity: self.capacity,
+            buf,
+        }
     }
 }
 
