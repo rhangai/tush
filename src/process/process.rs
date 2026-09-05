@@ -6,7 +6,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::base::log::{Log, LogWriter};
+use crate::base::log::{Log, LogWeak, LogWriter};
 
 /// A running process whose stdout is captured into a [`Log`].
 ///
@@ -15,7 +15,7 @@ use crate::base::log::{Log, LogWriter};
 /// most recent output.
 pub struct Process {
     child: Child,
-    log: Log,
+    log_weak: LogWeak,
     reader: JoinHandle<()>,
 }
 
@@ -30,8 +30,7 @@ impl Process {
             .take()
             .expect("stdout should be piped after Stdio::piped()");
 
-        let mut writer = LogWriter::new(capacity);
-        let log = writer.log();
+        let (mut writer, log_weak) = LogWriter::pair_weak(capacity);
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -39,12 +38,16 @@ impl Process {
             }
         });
 
-        Ok(Self { child, log, reader })
+        Ok(Self {
+            child,
+            log_weak,
+            reader,
+        })
     }
 
     /// A reader over the stdout captured so far.
-    pub fn log(&self) -> Log {
-        self.log.clone()
+    pub fn log(&self) -> Option<Log> {
+        self.log_weak.upgrade()
     }
 
     /// Waits for the process to exit, draining the remaining stdout.
@@ -67,13 +70,13 @@ mod test {
     #[tokio::test]
     async fn captures_stdout() {
         let mut command = Command::new("printf");
-        command.arg("oi\ntudo\nbem\n");
+        command.arg("starting server\ntudo\nbem\n");
 
         let mut process = Process::spawn(command, NonZeroUsize::new(8).unwrap()).unwrap();
+        let log = process.log().unwrap();
         process.wait().await.unwrap();
 
-        let log = process.log();
-        let lines: Vec<String> = log.iter().map(|s| s.clone()).collect();
-        assert_eq!(lines, vec!["oi", "tudo", "bem"]);
+        let lines: Vec<String> = log.iter().cloned().collect();
+        assert_eq!(lines, vec!["starting server", "tudo", "bem"]);
     }
 }
