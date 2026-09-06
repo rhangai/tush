@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, process::Stdio};
+use std::process::Stdio;
 
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -6,22 +6,21 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::base::log::{Log, LogWeak, LogWriter};
+use super::LogWriter;
 
 /// A running process whose stdout is captured into a [`Log`].
 ///
 /// The stdout of the child is read line by line on a background task and
 /// pushed into a ring buffer. Call [`Process::log`] to get a reader over the
 /// most recent output.
-pub struct Process {
+pub struct ProcessChild {
     child: Child,
-    log_weak: LogWeak,
     reader: JoinHandle<()>,
 }
 
-impl Process {
+impl ProcessChild {
     /// Spawns `command`, piping its stdout into a log with `capacity` lines.
-    pub fn spawn(mut command: Command, capacity: NonZeroUsize) -> std::io::Result<Self> {
+    pub fn spawn(mut command: Command, mut writer: LogWriter) -> std::io::Result<Self> {
         command.stdout(Stdio::piped());
         let mut child = command.spawn()?;
 
@@ -30,7 +29,6 @@ impl Process {
             .take()
             .expect("stdout should be piped after Stdio::piped()");
 
-        let (mut writer, log_weak) = LogWriter::pair_weak(capacity);
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -38,16 +36,7 @@ impl Process {
             }
         });
 
-        Ok(Self {
-            child,
-            log_weak,
-            reader,
-        })
-    }
-
-    /// A reader over the stdout captured so far.
-    pub fn log(&self) -> Option<Log> {
-        self.log_weak.upgrade()
+        Ok(Self { child, reader })
     }
 
     /// Waits for the process to exit, draining the remaining stdout.
@@ -65,6 +54,8 @@ impl Process {
 
 #[cfg(test)]
 mod test {
+    use std::num::NonZeroUsize;
+
     use super::*;
 
     #[tokio::test]
@@ -72,8 +63,8 @@ mod test {
         let mut command = Command::new("printf");
         command.arg("starting server\ntudo\nbem\n");
 
-        let mut process = Process::spawn(command, NonZeroUsize::new(8).unwrap()).unwrap();
-        let log = process.log().unwrap();
+        let (writer, log) = LogWriter::pair(NonZeroUsize::new(1024).unwrap());
+        let mut process = ProcessChild::spawn(command, writer).unwrap();
         process.wait().await.unwrap();
 
         let lines: Vec<String> = log.iter().cloned().collect();

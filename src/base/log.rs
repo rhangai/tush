@@ -60,14 +60,22 @@ impl LogWriter {
         LogWriter { capacity, inner }
     }
 
-    /// Create a log pair
-    ///
-    /// A writer and a LogWeak, so it can be created witout keeping a reference to the writer itself
-    pub fn pair_weak(capacity: NonZeroUsize) -> (Self, LogWeak) {
-        let writer = Self::new(capacity);
-        let log = LogWeak {
-            src: Arc::downgrade(&writer.inner),
+    pub fn share(&self) -> LogWriter {
+        let inner = self.inner.clone();
+        LogWriter {
+            capacity: self.capacity.clone(),
+            inner,
+        }
+    }
+
+    pub fn pair(capacity: NonZeroUsize) -> (Self, Log) {
+        let data = LogData::with_capacity(capacity);
+        let inner = Arc::new(RwLock::new(data));
+        let log = Log {
+            src: inner.clone(),
+            data: UnsafeCell::new(LogData::with_capacity(capacity)),
         };
+        let writer = LogWriter { capacity, inner };
         (writer, log)
     }
 
@@ -85,6 +93,12 @@ impl LogWriter {
         Log {
             src,
             data: UnsafeCell::new(data),
+        }
+    }
+
+    pub fn log_weak(&self) -> LogWeak {
+        LogWeak {
+            src: Arc::downgrade(&self.inner),
         }
     }
 }
