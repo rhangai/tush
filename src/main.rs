@@ -9,7 +9,7 @@ use std::num::NonZeroUsize;
 use tokio::task::JoinSet;
 
 use crate::{
-    base::LogWriter,
+    base::{Log, LogWriterRef},
     unit::{Unit, UnitDefiniton, UnitGroup, UnitProcess},
 };
 
@@ -21,12 +21,14 @@ async fn main() {
     unit.add(UnitProcess::new());
 
     let mut set = JoinSet::new();
-    let writer = LogWriter::new(NonZeroUsize::new(1024).unwrap());
-    let log = writer.log();
+    let log = Log::new(1024);
+    let writer = log.writer();
     unit.exec_in_set(&mut set, writer);
 
     _ = set.join_all().await;
-    for line in log.iter() {
+
+    let buffer = log.new_buffer();
+    for line in buffer.lines() {
         println!("{}", &line);
     }
 }

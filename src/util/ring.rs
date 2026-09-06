@@ -1,139 +1,181 @@
 use std::{collections::VecDeque, num::NonZeroUsize};
 
-pub struct RingStr {
-    capacity: NonZeroUsize,
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use thingbuf::ThingBuf;
+
+const EXTRA_CAPACITY_CONSUME: usize = 4;
+const EXTRA_CAPACITY_THRESHOLD: usize = 64;
+const EXTRA_CAPACITY_THRESHOLD_LIMIT: usize = 256;
+
+pub struct RingStrStorage {
     buf: VecDeque<String>,
+    offset: u128,
 }
 
-pub struct RingStrIter<'a> {
-    slice_iter: std::slice::Iter<'a, String>,
-    slice_iter_next: Option<std::slice::Iter<'a, String>>,
-}
-
-impl RingStr {
-    pub fn with_capacity(capacity: NonZeroUsize) -> Self {
-        let buf: VecDeque<String> = VecDeque::with_capacity(capacity.get());
-        Self { capacity, buf }
+impl RingStrStorage {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buf: VecDeque::with_capacity(capacity),
+            offset: 0,
+        }
     }
 
-    pub fn capacity(&self) -> usize {
-        self.capacity.get()
+    fn push(&mut self, v: &String) {
+        self.raw_push(v);
+        self.offset = self.offset.wrapping_add(1);
     }
 
-    /// Write a new line
-    pub fn write_line(&mut self, line: impl AsRef<str>) {
-        self.use_new_line(|str| str.push_str(line.as_ref()));
-    }
-
-    /// Uses a new line
-    pub fn use_new_line(&mut self, writer: impl FnOnce(&mut String)) {
+    fn raw_push(&mut self, v: impl AsRef<str>) {
+        if self.buf.capacity() == 0 {
+            return;
+        }
         if self.buf.len() >= self.buf.capacity() {
-            let mut line = self.buf.pop_front().unwrap_or_else(|| {
-                panic!(
-                    "Should not be empty. Len: {}. Capacity: {}",
-                    self.buf.len(),
-                    self.buf.capacity()
-                )
-            });
-            line.clear();
-            writer(&mut line);
-            self.buf.push_back(line);
+            let mut item = self
+                .buf
+                .pop_front()
+                .expect("Could not pop from VecDeque even though the check above allows it");
+            item.clear();
+            item.push_str(v.as_ref());
+            self.buf.push_back(item);
+        } else {
+            self.buf.push_back(v.as_ref().into());
+        }
+    }
+
+    fn raw_extend<I>(&mut self, other: I)
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        for i in other {
+            self.raw_push(i);
+        }
+    }
+
+    fn sync_data(&mut self, other: &RingStrStorage) {
+        if self.offset >= other.offset {
             return;
         }
 
-        let mut s = String::new();
-        writer(&mut s);
-        self.buf.push_back(s);
+        let other_len = other.buf.len() as u128;
+        let n = other.offset - self.offset;
+        let cap = self.buf.capacity() as u128;
+        if n >= cap || n > other_len {
+            self.raw_extend(other.buf.iter());
+            self.offset = other.offset;
+            return;
+        }
+
+        let skip = other.buf.len() as u128 - n;
+        self.raw_extend(other.buf.iter().skip(skip as usize));
+        self.offset = other.offset;
     }
 
-    /// Pushes
-    pub fn extend_lines<'a, I>(&mut self, iter: I) -> usize
-    where
-        I: Iterator,
-        I::Item: AsRef<str>,
-    {
-        let mut count = 0;
-        for line in iter {
-            self.use_new_line(|str| str.push_str(line.as_ref()));
-            count += 1;
-        }
-        count
-    }
-
-    /// Iterator for whole buf
-    pub fn iter<'a>(&'a self) -> RingStrIter<'a> {
-        let (slice_a, slice_b) = self.buf.as_slices();
-        RingStrIter {
-            slice_iter: slice_a.iter(),
-            slice_iter_next: if slice_b.len() > 0 {
-                Some(slice_b.iter())
-            } else {
-                None
-            },
-        }
-    }
-
-    /// Iterator for the latest `n` items in the buf
-    pub fn iter_latest<'a>(&'a self, n: usize) -> RingStrIter<'a> {
-        if n >= self.buf.len() {
-            return self.iter();
-        } else if n <= 0 {
-            return RingStrIter {
-                slice_iter: [].iter(),
-                slice_iter_next: None,
-            };
-        }
-
-        let (slice_a, slice_b) = self.buf.as_slices();
-
-        let a_len = slice_a.len();
-        let b_len = slice_b.len();
-        if n <= b_len {
-            return RingStrIter {
-                slice_iter: slice_b[b_len - n..].iter(),
-                slice_iter_next: None,
-            };
-        }
-
-        let n = n - b_len;
-        return RingStrIter {
-            slice_iter: slice_a[a_len - n..].iter(),
-            slice_iter_next: if b_len > 0 {
-                Some(slice_b.iter())
-            } else {
-                None
-            },
-        };
+    pub fn lines(&self) -> impl Iterator<Item = &String> {
+        self.buf.iter()
     }
 }
 
-impl Clone for RingStr {
+impl Clone for RingStrStorage {
     fn clone(&self) -> Self {
-        let mut buf: VecDeque<String> = VecDeque::with_capacity(self.capacity.get());
-        buf.extend(self.buf.iter().cloned());
+        let mut buf: VecDeque<String> = VecDeque::with_capacity(self.buf.capacity());
+        for i in self.buf.iter() {
+            buf.push_back(i.clone());
+        }
         Self {
-            capacity: self.capacity,
             buf,
+            offset: self.offset.clone(),
         }
     }
 }
 
-impl<'a> Iterator for RingStrIter<'a> {
-    type Item = &'a String;
+pub struct RingStr {
+    capacity: NonZeroUsize,
+    buf: RwLock<RingStrStorage>,
+    queue: ThingBuf<String>,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let value = self.slice_iter.next();
-        if value.is_some() {
-            return value;
+impl RingStr {
+    pub fn new(capacity: usize) -> Self {
+        let buf = RingStrStorage::new(capacity);
+        Self {
+            capacity: NonZeroUsize::new(capacity).unwrap(),
+            buf: RwLock::new(buf),
+            queue: ThingBuf::new(capacity + EXTRA_CAPACITY_THRESHOLD_LIMIT),
         }
+    }
 
-        let next = self.slice_iter_next.take();
-        match next {
-            Some(iter) => {
-                self.slice_iter = iter;
-                self.slice_iter.next()
+    /// Get the iter and syncs it if needed
+    pub fn create_storage(&self) -> RingStrStorage {
+        let buf = self.sync_lock();
+        buf.clone()
+    }
+
+    /// Get the iter and syncs it if needed
+    pub fn update_storage(&self, storage: &mut RingStrStorage) {
+        let buf = self.sync_lock();
+        storage.sync_data(&buf);
+    }
+
+    /// Sync the data and get the internal read lock guard
+    fn sync_lock(&self) -> RwLockReadGuard<'_, RingStrStorage> {
+        let mut buf = self.buf.write();
+
+        let mut limit = self.capacity.get() + EXTRA_CAPACITY_THRESHOLD_LIMIT;
+        while let Some(line) = self.queue.pop_ref() {
+            buf.push(&line);
+            limit -= 1;
+            if limit == 0 {
+                break;
             }
-            None => None,
         }
+        RwLockWriteGuard::downgrade(buf)
+    }
+
+    /// Write a new line
+    pub fn write_line(&self, line: impl AsRef<str>) {
+        self.use_line(|s| s.push_str(line.as_ref()));
+    }
+
+    /// Write a new line
+    fn use_line(&self, writer: impl FnOnce(&mut String)) {
+        let len = self.queue.len();
+        let capacity = self.capacity.get();
+        if len >= capacity + EXTRA_CAPACITY_THRESHOLD {
+            for _ in 0..EXTRA_CAPACITY_CONSUME {
+                if self.queue.len() > capacity {
+                    self.queue.pop_ref();
+                }
+            }
+        }
+        if let Ok(mut line) = self.queue.push_ref() {
+            line.clear();
+            writer(&mut line);
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn log() {
+        let ring = RingStr::new(3);
+        let mut storage = ring.create_storage();
+        ring.write_line("oi");
+        ring.write_line("tudo");
+        ring.write_line("bem");
+        ring.write_line("oi");
+        ring.write_line("tudo");
+        ring.write_line("bem");
+        assert_ring(&storage, &[]);
+        ring.update_storage(&mut storage);
+        assert_ring(&storage, &["oi", "tudo", "bem"]);
+    }
+
+    fn assert_ring(storage: &RingStrStorage, expected: &[&str]) {
+        let values: Vec<String> = storage.lines().map(|s| s.clone()).collect();
+        assert_eq!(&values, expected);
     }
 }

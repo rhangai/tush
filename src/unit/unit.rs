@@ -1,7 +1,7 @@
 use tokio::task::JoinSet;
 
 use crate::{
-    base::LogWriter,
+    base::LogWriterRef,
     unit::{
         UnitDefiniton, base::UnitDefinitonHelper, group::UnitGroup, handle::UnitHandle,
         process::UnitProcess,
@@ -32,7 +32,7 @@ impl From<UnitGroup> for Unit {
 }
 
 impl UnitDefiniton for Unit {
-    fn exec(&self, writer: LogWriter) -> UnitHandle {
+    fn exec(&self, writer: LogWriterRef) -> UnitHandle {
         match &self.inner {
             UnitInner::Process(unit_process) => {
                 UnitHandle::from_runner(unit_process.create_runner(writer))
@@ -43,7 +43,7 @@ impl UnitDefiniton for Unit {
         }
     }
 
-    fn exec_in_set(&self, join_set: &mut JoinSet<()>, writer: LogWriter) -> UnitHandle {
+    fn exec_in_set(&self, join_set: &mut JoinSet<()>, writer: LogWriterRef) -> UnitHandle {
         match &self.inner {
             UnitInner::Process(unit_process) => {
                 UnitHandle::from_runner_set(join_set, unit_process.create_runner(writer))

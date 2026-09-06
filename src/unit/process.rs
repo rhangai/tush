@@ -1,7 +1,7 @@
 use tokio::process::Command;
 
 use crate::{
-    base::{LogWriter, ProcessChild},
+    base::{LogWriterRef, ProcessChild},
     unit::base::{UnitDefinitonHelper, UnitRunner},
 };
 
@@ -16,7 +16,7 @@ impl UnitProcess {
 }
 
 impl UnitDefinitonHelper for UnitProcess {
-    fn create_runner(&self, writer: LogWriter) -> impl UnitRunner {
+    fn create_runner(&self, writer: LogWriterRef) -> impl UnitRunner {
         let mut command = Command::new("printf");
         command.arg("starting server\ntudo\nbem\n");
         let child = ProcessChild::spawn(command, writer).unwrap();

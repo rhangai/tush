@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use tokio::task::JoinSet;
 
 use crate::{
-    base::{Log, LogWriter},
+    base::{Log, LogWriterRef},
     unit::{
         Unit, UnitDefiniton, UnitProcess,
         base::{UnitDefinitonHelper, UnitRunner},
@@ -26,11 +26,11 @@ impl UnitGroup {
 }
 
 impl UnitDefinitonHelper for UnitGroup {
-    fn create_runner(&self, writer: LogWriter) -> impl UnitRunner {
+    fn create_runner(&self, writer: LogWriterRef) -> impl UnitRunner {
         let mut join_set = JoinSet::new();
         let mut handles: Vec<UnitHandle> = Vec::with_capacity(self.units.len());
         for unit in &self.units {
-            let writer = writer.share();
+            let writer = writer.clone();
             let handle = unit.exec_in_set(&mut join_set, writer);
             handles.push(handle);
         }

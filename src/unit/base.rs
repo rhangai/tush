@@ -1,6 +1,6 @@
 use tokio::task::JoinSet;
 
-use crate::{base::LogWriter, unit::handle::UnitHandle};
+use crate::{base::LogWriterRef, unit::handle::UnitHandle};
 
 pub enum UnitState {
     Started,
@@ -17,20 +17,20 @@ pub trait UnitRunner: Send + 'static {
 }
 
 pub trait UnitDefinitonHelper {
-    fn create_runner(&self, writer: LogWriter) -> impl UnitRunner;
+    fn create_runner(&self, writer: LogWriterRef) -> impl UnitRunner;
 }
 
 pub trait UnitDefiniton {
-    fn exec(&self, writer: LogWriter) -> UnitHandle;
-    fn exec_in_set(&self, join_set: &mut JoinSet<()>, writer: LogWriter) -> UnitHandle;
+    fn exec(&self, writer: LogWriterRef) -> UnitHandle;
+    fn exec_in_set(&self, join_set: &mut JoinSet<()>, writer: LogWriterRef) -> UnitHandle;
 }
 
 impl<T: UnitDefinitonHelper> UnitDefiniton for T {
-    fn exec(&self, writer: LogWriter) -> UnitHandle {
+    fn exec(&self, writer: LogWriterRef) -> UnitHandle {
         UnitHandle::from_runner(self.create_runner(writer))
     }
 
-    fn exec_in_set(&self, join_set: &mut JoinSet<()>, writer: LogWriter) -> UnitHandle {
+    fn exec_in_set(&self, join_set: &mut JoinSet<()>, writer: LogWriterRef) -> UnitHandle {
         UnitHandle::from_runner_set(join_set, self.create_runner(writer))
     }
 }

@@ -6,7 +6,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::LogWriter;
+use crate::base::log::LogWriterRef;
 
 /// A running process whose stdout is captured into a [`Log`].
 ///
@@ -20,7 +20,7 @@ pub struct ProcessChild {
 
 impl ProcessChild {
     /// Spawns `command`, piping its stdout into a log with `capacity` lines.
-    pub fn spawn(mut command: Command, mut writer: LogWriter) -> std::io::Result<Self> {
+    pub fn spawn(mut command: Command, mut writer: LogWriterRef) -> std::io::Result<Self> {
         command.stdout(Stdio::piped());
         let mut child = command.spawn()?;
 
@@ -56,6 +56,8 @@ impl ProcessChild {
 mod test {
     use std::num::NonZeroUsize;
 
+    use crate::base::Log;
+
     use super::*;
 
     #[tokio::test]
@@ -63,11 +65,12 @@ mod test {
         let mut command = Command::new("printf");
         command.arg("starting server\ntudo\nbem\n");
 
-        let (writer, log) = LogWriter::pair(NonZeroUsize::new(1024).unwrap());
-        let mut process = ProcessChild::spawn(command, writer).unwrap();
+        let log = Log::new(1024);
+        let mut process = ProcessChild::spawn(command, log.writer()).unwrap();
         process.wait().await.unwrap();
 
-        let lines: Vec<String> = log.iter().cloned().collect();
+        let buffer = log.new_buffer();
+        let lines: Vec<String> = buffer.lines().cloned().collect();
         assert_eq!(lines, vec!["starting server", "tudo", "bem"]);
     }
 }
