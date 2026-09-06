@@ -1,34 +1,29 @@
 #![allow(dead_code)]
 
 mod base;
-mod unit;
+mod process;
 mod util;
+use tokio::time::{Duration, sleep};
 
-use std::num::NonZeroUsize;
-
-use tokio::task::JoinSet;
-
-use crate::{
-    base::{Log, LogWriterRef},
-    unit::{Unit, UnitDefiniton, UnitGroup, UnitProcess},
-};
+use crate::process::Process;
 
 #[tokio::main]
 async fn main() {
-    let mut unit = UnitGroup::new();
-    unit.add(UnitProcess::new());
-    unit.add(UnitProcess::new());
-    unit.add(UnitProcess::new());
-
-    let mut set = JoinSet::new();
-    let log = Log::new(1024);
-    let writer = log.writer();
-    unit.exec_in_set(&mut set, writer);
-
-    _ = set.join_all().await;
-
-    let buffer = log.new_buffer();
-    for line in buffer.lines() {
-        println!("{}", &line);
+    let mut proc = Process::new(1024);
+    proc.start();
+    proc.start();
+    proc.start();
+    proc.start();
+    proc.start();
+    proc.start();
+    proc.start();
+    proc.start();
+    proc.start();
+    sleep(Duration::from_millis(2000)).await;
+    proc.stop();
+    proc.start();
+    sleep(Duration::from_millis(100)).await;
+    for line in proc.lines_sync() {
+        println!("{}", line);
     }
 }

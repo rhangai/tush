@@ -6,7 +6,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::base::log::LogWriterRef;
+use crate::base::LogWriterRef;
 
 /// A running process whose stdout is captured into a [`Log`].
 ///
@@ -54,8 +54,6 @@ impl ProcessChild {
 
 #[cfg(test)]
 mod test {
-    use std::num::NonZeroUsize;
-
     use crate::base::Log;
 
     use super::*;
