@@ -4,15 +4,13 @@ mod base;
 mod process;
 mod util;
 
-use tokio::time::{Duration, sleep};
-
-use crate::process::{Process, ProcessPool};
+use crate::process::ProcessPool;
 
 #[tokio::main]
 async fn main() {
-    let mut pool = ProcessPool::new();
-    pool.add("oi".into(), Process::new(1024));
-    pool.add("tchau".into(), Process::new(1024));
+    let mut pool = ProcessPool::new(2048);
+    pool.add("oi", ["bash", "-c", "echo 'oi'; sleep 1; echo 'tchau'"]);
+    pool.add("tchau", ["bash", "-c", "echo 'oi'; sleep 1; echo 'tchau'"]);
 
     println!("{:?}", pool.state("oi"));
     println!("{:?}", pool.state("tchau"));

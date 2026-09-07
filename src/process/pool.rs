@@ -32,22 +32,29 @@ impl ProcessPoolItem {
 }
 
 pub struct ProcessPool {
+    log_capacity: usize,
     map: HashMap<String, Arc<ProcessPoolItem>>,
 }
 
 impl ProcessPool {
-    pub fn new() -> Self {
+    pub fn new(log_capacity: usize) -> Self {
         Self {
+            log_capacity,
             map: HashMap::new(),
         }
     }
-    pub fn add(&mut self, key: String, process: Process) {
+    pub fn add(
+        &mut self,
+        key: impl Into<String>,
+        command: impl IntoIterator<Item = impl Into<String>>,
+    ) {
+        let process = Process::new(self.log_capacity, command);
         let log_buffer = process.log().new_buffer();
         let item = Arc::new(ProcessPoolItem {
             process: RwLock::new(process),
             log_buffer: RwLock::new(log_buffer),
         });
-        self.map.insert(key, item);
+        self.map.insert(key.into(), item);
     }
 
     pub fn start(&self, key: impl AsRef<str>) {

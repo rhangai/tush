@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use tokio::{process::Command, task::JoinSet};
 
 use crate::{
@@ -6,14 +7,20 @@ use crate::{
 };
 
 pub struct Process {
+    command: Vec<String>,
     log: Log,
     handle: Option<ProcessHandle>,
 }
 
 impl Process {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, command: impl IntoIterator<Item = impl Into<String>>) -> Self {
         let log = Log::new(capacity);
-        Self { log, handle: None }
+        let command = command.into_iter().map(Into::into).collect();
+        Self {
+            command,
+            log,
+            handle: None,
+        }
     }
 
     pub fn log(&self) -> &Log {
@@ -53,16 +60,20 @@ impl Process {
         }
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self) -> anyhow::Result<()> {
         let mut join_set = JoinSet::new();
-        self.start_inner(Some(&mut join_set));
+        self.start_inner(Some(&mut join_set))?;
         join_set.join_all().await;
+        Ok(())
     }
 
-    fn start_inner(&mut self, join_set: Option<&mut JoinSet<()>>) {
+    fn start_inner(&mut self, join_set: Option<&mut JoinSet<()>>) -> anyhow::Result<()> {
         let writer = self.log.writer();
-        let mut command = Command::new("bash");
-        command.args(&["-c", "echo 'oi'; sleep 1; echo 'tchau'"]);
+        let Some((command, args)) = self.command.split_first() else {
+            return Err(anyhow!("No commands"));
+        };
+        let mut command = Command::new(command);
+        command.args(args);
         let child = ProcessChild::new(command, writer);
         let handle = if let Some(join_set) = join_set {
             ProcessHandle::new_in_join_set(child, join_set)
@@ -70,5 +81,6 @@ impl Process {
             ProcessHandle::new(child)
         };
         self.handle = Some(handle);
+        Ok(())
     }
 }
