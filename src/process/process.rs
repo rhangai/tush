@@ -20,18 +20,19 @@ impl Process {
         }
     }
 
-    pub fn start(&mut self) {
+    pub fn start(&mut self) -> anyhow::Result<()> {
         if let Some(handle) = &self.handle {
             if handle.state().is_finished() {
-                self.start_inner(None);
+                self.start_inner(None)?;
             }
-            return;
+            Ok(())
+        } else {
+            self.start_inner(None)
         }
-        self.start_inner(None);
     }
 
-    pub fn restart(&mut self) {
-        self.start_inner(None);
+    pub fn restart(&mut self) -> anyhow::Result<()> {
+        self.start_inner(None)
     }
 
     pub fn state(&self) -> ProcessState {

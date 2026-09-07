@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use anyhow::anyhow;
 use parking_lot::RwLock;
 
 use crate::process::{Process, state::ProcessState};
@@ -32,39 +33,41 @@ impl ProcessPool {
         self.map.insert(key.into(), item);
     }
 
-    pub fn start(&self, key: impl AsRef<str>) {
-        self.with_process(key, |p| p.start());
+    pub fn start(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
+        self.with_process(key, |p| p.start()).flatten()
     }
 
     pub fn state(&self, key: impl AsRef<str>) -> Option<ProcessState> {
-        self.with_process(key, |p| p.state())
+        self.with_process(key, |p| p.state()).ok()
     }
 
-    pub fn stop(&self, key: impl AsRef<str>) {
-        self.with_process(key, |p| p.stop());
+    pub fn stop(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
+        self.with_process(key, |p| p.stop())
     }
 
-    pub fn restart(&self, key: impl AsRef<str>) {
-        self.with_process(key, |p| p.restart());
+    pub fn restart(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
+        self.with_process(key, |p| p.restart()).flatten()
     }
 
-    pub async fn wait(&self, key: impl AsRef<str>) {
-        if let Some(item) = self.map.get(key.as_ref()) {
-            let mut proc = item.process.write();
-            proc.wait().await;
-        }
+    pub async fn wait(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
+        let Some(item) = self.map.get(key.as_ref()) else {
+            return Err(anyhow!("Invalid process {}", key.as_ref()));
+        };
+        let mut proc = item.process.write();
+        proc.wait().await;
+        Ok(())
     }
 
     fn with_process<U>(
         &self,
         key: impl AsRef<str>,
         f: impl FnOnce(&mut Process) -> U,
-    ) -> Option<U> {
+    ) -> anyhow::Result<U> {
         if let Some(item) = self.map.get(key.as_ref()) {
             let mut lock = item.process.write();
-            Some(f(&mut lock))
+            Ok(f(&mut lock))
         } else {
-            None
+            Err(anyhow!("Invalid process {}", key.as_ref()))
         }
     }
 }

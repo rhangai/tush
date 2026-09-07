@@ -1,8 +1,4 @@
-use std::{
-    os::unix::process::ExitStatusExt,
-    process::{ExitCode, ExitStatus, Stdio},
-    time::Duration,
-};
+use std::{process::Stdio, time::Duration};
 
 use anyhow::anyhow;
 use tokio::{
@@ -32,6 +28,7 @@ enum ProcessChildInner {
     },
     Running {
         child: Child,
+        pid: Option<u32>,
     },
 }
 
@@ -46,6 +43,7 @@ impl ProcessChildInner {
                 mut command,
                 writer,
             } => {
+                command.process_group(0);
                 let child = if let Some(mut writer) = writer {
                     command.stdout(Stdio::piped());
                     let mut child = command.spawn()?;
@@ -66,7 +64,8 @@ impl ProcessChildInner {
                     let child = command.spawn()?;
                     child
                 };
-                *self = ProcessChildInner::Running { child };
+                let pid = child.id();
+                *self = ProcessChildInner::Running { child, pid };
                 Ok(())
             }
         }
@@ -126,12 +125,19 @@ impl ProcessChild {
 
     /// Inner function to handle the shutdown logic
     async fn kill_inner(&mut self, shutdown_gracefully: bool) -> anyhow::Result<ProcessState> {
-        let ProcessChildInner::Running { child, .. } = &mut self.inner else {
+        let ProcessChildInner::Running { child, pid, .. } = &mut self.inner else {
             return Err(anyhow!("Process was not running"));
         };
+        let pid = pid.clone();
 
         // Check if already exited
         if let Ok(Some(exit_status)) = child.try_wait() {
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                let result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+                println!("{:?}", result);
+            }
+
             return Ok(if exit_status.success() {
                 ProcessState::ExitSuccess
             } else {
@@ -142,8 +148,8 @@ impl ProcessChild {
         // Try to shutdown
         if shutdown_gracefully {
             #[cfg(unix)]
-            if let Some(pid) = child.id() {
-                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            if let Some(pid) = pid {
+                unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
                 let timer = timeout(Duration::from_millis(SHUTDOWN_TIMER), child.wait()).await;
                 if let Ok(wait_result) = timer {
                     return Ok(match wait_result {
@@ -155,6 +161,17 @@ impl ProcessChild {
             }
         }
 
+        #[cfg(unix)]
+        if let Some(pid) = pid {
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            let wait_result = child.wait().await;
+            return Ok(match wait_result {
+                Ok(status) if status.success() => ProcessState::ExitSuccess,
+                Ok(status) => ProcessState::Killed(status.code()),
+                Err(_) => ProcessState::Killed(None),
+            });
+        }
+
         // Kill and return the status
         child.start_kill()?;
         let wait_result = child.wait().await;
@@ -163,6 +180,17 @@ impl ProcessChild {
             Ok(status) => ProcessState::Killed(status.code()),
             Err(_) => ProcessState::Killed(None),
         });
+    }
+}
+
+impl Drop for ProcessChild {
+    fn drop(&mut self) {
+        if let ProcessChildInner::Running { pid, .. } = &mut self.inner {
+            #[cfg(unix)]
+            if let Some(pid) = *pid {
+                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            }
+        };
     }
 }
 
