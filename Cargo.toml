@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0"
 dashmap = "6.2"
 parking_lot = "0.12.5"
 thingbuf = "0.1"

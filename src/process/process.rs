@@ -63,7 +63,7 @@ impl Process {
         let writer = self.log.writer();
         let mut command = Command::new("bash");
         command.args(&["-c", "echo 'oi'; sleep 1; echo 'tchau'"]);
-        let child = ProcessChild::new(command, writer).unwrap();
+        let child = ProcessChild::new(command, writer);
         let handle = if let Some(join_set) = join_set {
             ProcessHandle::new_in_join_set(child, join_set)
         } else {
