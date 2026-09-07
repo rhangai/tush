@@ -2,6 +2,7 @@
 
 mod base;
 mod process;
+mod unit;
 mod util;
 
 use std::time::Duration;
@@ -17,14 +18,7 @@ async fn main() -> anyhow::Result<()> {
         "oi",
         ["bash", "-c", "echo 'oi'; sleep 1; echo 'tchau'; exit 1"],
     );
-    pool.add(
-        "tchau",
-        [
-            "bash",
-            "-c",
-            "echo 'oi'; sleep 100 & bash -c 'sleep 100 &' & echo 'tchau'; sleep 100",
-        ],
-    );
+    pool.add("tchau", ["bash", "-c", "echo 'oi'; sleep 2; echo 'tchau'"]);
 
     println!("{:?}", pool.state("oi"));
     println!("{:?}", pool.state("tchau"));
@@ -34,13 +28,16 @@ async fn main() -> anyhow::Result<()> {
 
     println!("{:?}", pool.state("oi"));
     println!("{:?}", pool.state("tchau"));
-
     pool.wait("oi").await?;
     println!("{:?}", pool.state("oi"));
+    println!("{:?}", pool.state("tchau"));
 
-    sleep(Duration::from_secs(1000)).await;
     pool.stop("tchau")?;
+    println!("{:?}", pool.state("oi"));
+    println!("{:?}", pool.state("tchau"));
+
     pool.wait("tchau").await?;
+    println!("{:?}", pool.state("oi"));
     println!("{:?}", pool.state("tchau"));
 
     Ok(())

@@ -1,14 +1,15 @@
 use anyhow::anyhow;
+use parking_lot::Mutex;
 use tokio::process::Command;
 
 use crate::{
     base::LogWriterRef,
-    process::{child::ProcessChild, handle::ProcessHandle, state::ProcessState},
+    process::{child::ProcessChild, state::ProcessState},
 };
 
 pub struct Process {
     command: Vec<String>,
-    handle: Option<ProcessHandle>,
+    handle: Mutex<Option<ProcessHandle>>,
 }
 
 impl Process {
@@ -16,51 +17,53 @@ impl Process {
         let command = command.into_iter().map(Into::into).collect();
         Self {
             command,
-            handle: None,
+            handle: Mutex::new(None),
         }
     }
 
-    pub fn start(&mut self) -> anyhow::Result<()> {
-        if let Some(handle) = &self.handle {
-            if handle.state().is_finished() {
-                self.start_inner(None)?;
-            }
-            Ok(())
-        } else {
-            self.start_inner(None)
+    pub fn start(&self) -> anyhow::Result<()> {
+        let mut handle = self.handle.lock();
+        let is_stopped = handle.as_ref().is_none_or(|h| h.state().is_finished());
+        if is_stopped {
+            *handle = Some(self.create_handle(None)?);
         }
+        Ok(())
     }
 
-    pub fn restart(&mut self) -> anyhow::Result<()> {
-        self.start_inner(None)
+    pub fn restart(&self) -> anyhow::Result<()> {
+        *self.handle.lock() = Some(self.create_handle(None)?);
+        Ok(())
+    }
+
+    pub async fn wait(&self) -> anyhow::Result<()> {
+        let mut receiver = {
+            let mut handle = self.handle.lock();
+            let Some(handle) = handle.as_mut() else {
+                return Ok(());
+            };
+            handle.state_receiver.clone()
+        };
+        _ = receiver.wait_for(|s| s.is_finished()).await;
+        Ok(())
     }
 
     pub fn state(&self) -> ProcessState {
         self.handle
+            .lock()
             .as_ref()
             .map(|h| h.state())
             .unwrap_or(ProcessState::Stopped)
     }
 
-    pub async fn wait(&mut self) {
-        if let Some(handle) = &mut self.handle {
-            handle.wait().await;
-        }
-    }
-
-    pub fn stop(&mut self) {
-        if let Some(handle) = &mut self.handle {
+    pub fn stop(&self) -> anyhow::Result<()> {
+        let mut handle = self.handle.lock();
+        if let Some(handle) = handle.as_mut() {
             handle.abort();
         }
-    }
-
-    pub async fn run(&mut self) -> anyhow::Result<()> {
-        self.start_inner(None)?;
-        self.wait().await;
         Ok(())
     }
 
-    fn start_inner(&mut self, writer: Option<LogWriterRef>) -> anyhow::Result<()> {
+    fn create_handle(&self, writer: Option<LogWriterRef>) -> anyhow::Result<ProcessHandle> {
         let Some((command, args)) = self.command.split_first() else {
             return Err(anyhow!("No commands"));
         };
@@ -68,7 +71,52 @@ impl Process {
         command.args(args);
         let child = ProcessChild::new(command, writer);
         let handle = ProcessHandle::new(child);
-        self.handle = Some(handle);
-        Ok(())
+        Ok(handle)
+    }
+}
+
+struct ProcessHandle {
+    abort_sender: Option<tokio::sync::oneshot::Sender<()>>,
+    state_sender: tokio::sync::watch::Sender<ProcessState>,
+    state_receiver: tokio::sync::watch::Receiver<ProcessState>,
+}
+
+impl ProcessHandle {
+    fn new(child: ProcessChild) -> Self {
+        let (abort_sender, abort_receiver) = tokio::sync::oneshot::channel::<()>();
+        let (state_sender, state_receiver) = tokio::sync::watch::channel(ProcessState::Started);
+
+        let handle = ProcessHandle {
+            abort_sender: Some(abort_sender),
+            state_sender: state_sender.clone(),
+            state_receiver,
+        };
+        tokio::spawn(async move {
+            let mut child = child;
+            _ = child.start().await;
+            _ = state_sender.send(ProcessState::Running);
+            tokio::select! {
+                wait_result = child.wait() => {
+                    _ = state_sender.send(wait_result.unwrap_or(ProcessState::ExitError(None)));
+                }
+                _ = abort_receiver => {
+                    _ = state_sender.send(ProcessState::Killing);
+                    let shutdown_state = child.shutdown().await;
+                    _ = state_sender.send(shutdown_state.unwrap_or(ProcessState::Killed(None)));
+                }
+            }
+        });
+        handle
+    }
+
+    fn state(&self) -> ProcessState {
+        *self.state_receiver.borrow()
+    }
+
+    fn abort(&mut self) {
+        if let Some(abort_sender) = self.abort_sender.take() {
+            _ = abort_sender.send(());
+            _ = self.state_sender.send(ProcessState::Killing);
+        }
     }
 }

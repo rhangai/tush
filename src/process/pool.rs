@@ -1,17 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::anyhow;
-use parking_lot::RwLock;
 
 use crate::process::{Process, state::ProcessState};
 
-struct ProcessPoolItem {
-    process: RwLock<Process>,
-}
-
 pub struct ProcessPool {
     log_capacity: usize,
-    map: HashMap<String, Arc<ProcessPoolItem>>,
+    map: HashMap<String, Arc<Process>>,
 }
 
 impl ProcessPool {
@@ -27,45 +22,37 @@ impl ProcessPool {
         command: impl IntoIterator<Item = impl Into<String>>,
     ) {
         let process = Process::new(command);
-        let item = Arc::new(ProcessPoolItem {
-            process: RwLock::new(process),
-        });
+        let item = Arc::new(process);
         self.map.insert(key.into(), item);
     }
 
     pub fn start(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
-        self.with_process(key, |p| p.start()).flatten()
+        let proc = self.get_proc(key)?;
+        proc.start()
     }
 
     pub fn state(&self, key: impl AsRef<str>) -> Option<ProcessState> {
-        self.with_process(key, |p| p.state()).ok()
+        self.get_proc(key).ok().map(|s| s.state())
     }
 
     pub fn stop(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
-        self.with_process(key, |p| p.stop())
+        let proc = self.get_proc(key)?;
+        proc.stop()
     }
 
     pub fn restart(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
-        self.with_process(key, |p| p.restart()).flatten()
+        let proc = self.get_proc(key)?;
+        proc.restart()
     }
 
     pub async fn wait(&self, key: impl AsRef<str>) -> anyhow::Result<()> {
-        let Some(item) = self.map.get(key.as_ref()) else {
-            return Err(anyhow!("Invalid process {}", key.as_ref()));
-        };
-        let mut proc = item.process.write();
-        proc.wait().await;
-        Ok(())
+        let proc = self.get_proc(key)?;
+        proc.wait().await
     }
 
-    fn with_process<U>(
-        &self,
-        key: impl AsRef<str>,
-        f: impl FnOnce(&mut Process) -> U,
-    ) -> anyhow::Result<U> {
+    fn get_proc(&self, key: impl AsRef<str>) -> anyhow::Result<Arc<Process>> {
         if let Some(item) = self.map.get(key.as_ref()) {
-            let mut lock = item.process.write();
-            Ok(f(&mut lock))
+            Ok(item.clone())
         } else {
             Err(anyhow!("Invalid process {}", key.as_ref()))
         }

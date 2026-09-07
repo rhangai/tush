@@ -134,8 +134,7 @@ impl ProcessChild {
         if let Ok(Some(exit_status)) = child.try_wait() {
             #[cfg(unix)]
             if let Some(pid) = pid {
-                let result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
-                println!("{:?}", result);
+                unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
             }
 
             return Ok(if exit_status.success() {
