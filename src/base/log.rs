@@ -1,6 +1,6 @@
 use std::sync::{Arc, Weak};
 
-use crate::util::ring::{RingStr, RingStrStorage};
+use crate::util::ring::{RingStr, RingStrLines, RingStrStorage};
 
 /// A log buffer
 #[derive(Clone)]
@@ -9,7 +9,7 @@ pub struct LogBuffer {
 }
 
 impl LogBuffer {
-    pub fn lines(&self) -> impl Iterator<Item = &String> {
+    pub fn lines(&self) -> RingStrLines<'_> {
         self.storage.lines()
     }
 }

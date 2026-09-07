@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, num::NonZeroUsize};
+use std::{
+    collections::{VecDeque, vec_deque::Iter},
+    num::NonZeroUsize,
+};
 
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use thingbuf::ThingBuf;
@@ -11,6 +14,8 @@ pub struct RingStrStorage {
     buf: VecDeque<String>,
     offset: u128,
 }
+
+pub type RingStrLines<'a> = Iter<'a, String>;
 
 impl RingStrStorage {
     fn new(capacity: usize) -> Self {
@@ -71,7 +76,7 @@ impl RingStrStorage {
         self.offset = other.offset;
     }
 
-    pub fn lines(&self) -> impl Iterator<Item = &String> {
+    pub fn lines(&self) -> RingStrLines<'_> {
         self.buf.iter()
     }
 }

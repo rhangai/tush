@@ -1,5 +1,6 @@
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ProcessState {
+    Stopped,
     Started,
     Running,
     ExitSuccess,

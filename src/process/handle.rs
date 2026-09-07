@@ -1,4 +1,4 @@
-use tokio::{sync::OnceCell, task::JoinSet};
+use tokio::task::JoinSet;
 
 use crate::process::{child::ProcessChild, state::ProcessState};
 
@@ -26,7 +26,9 @@ impl ProcessHandle {
 
         let future = async move {
             let mut runner = child;
+            runner.start().await;
             _ = state_sender.send(ProcessState::Running);
+
             tokio::select! {
                 ok = runner.wait() => {
                     _ = state_sender.send(ProcessState::ExitSuccess);
@@ -55,6 +57,10 @@ impl ProcessHandle {
 
     pub fn state(&self) -> ProcessState {
         *self.state_receiver.borrow()
+    }
+
+    pub async fn wait(&mut self) {
+        _ = self.state_receiver.wait_for(|s| s.is_finished()).await;
     }
 
     pub fn kill(&mut self) {

@@ -1,38 +1,23 @@
 use tokio::{process::Command, task::JoinSet};
 
 use crate::{
-    base::{Log, LogBuffer},
-    process::{child::ProcessChild, handle::ProcessHandle},
+    base::Log,
+    process::{child::ProcessChild, handle::ProcessHandle, state::ProcessState},
 };
 
 pub struct Process {
     log: Log,
-    log_buffer: LogBuffer,
     handle: Option<ProcessHandle>,
 }
 
 impl Process {
     pub fn new(capacity: usize) -> Self {
         let log = Log::new(capacity);
-        let log_buffer = log.new_buffer();
-        Self {
-            log,
-            log_buffer,
-            handle: None,
-        }
+        Self { log, handle: None }
     }
 
-    pub fn log_sync(&mut self) {
-        self.log.update_buffer(&mut self.log_buffer);
-    }
-
-    pub fn lines(&self) -> impl IntoIterator<Item = &String> {
-        self.log_buffer.lines()
-    }
-
-    pub fn lines_sync(&mut self) -> impl IntoIterator<Item = &String> {
-        self.log_sync();
-        self.lines()
+    pub fn log(&self) -> &Log {
+        &self.log
     }
 
     pub fn start(&mut self) {
@@ -47,6 +32,19 @@ impl Process {
 
     pub fn restart(&mut self) {
         self.start_inner(None);
+    }
+
+    pub fn state(&self) -> ProcessState {
+        self.handle
+            .as_ref()
+            .map(|h| h.state())
+            .unwrap_or(ProcessState::Stopped)
+    }
+
+    pub async fn wait(&mut self) {
+        if let Some(handle) = &mut self.handle {
+            handle.wait().await;
+        }
     }
 
     pub fn stop(&mut self) {
@@ -65,7 +63,7 @@ impl Process {
         let writer = self.log.writer();
         let mut command = Command::new("bash");
         command.args(&["-c", "echo 'oi'; sleep 1; echo 'tchau'"]);
-        let child = ProcessChild::spawn(command, writer).unwrap();
+        let child = ProcessChild::new(command, writer).unwrap();
         let handle = if let Some(join_set) = join_set {
             ProcessHandle::new_in_join_set(child, join_set)
         } else {
