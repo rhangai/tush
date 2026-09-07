@@ -4,16 +4,16 @@ pub enum ProcessState {
     Started,
     Running,
     ExitSuccess,
-    ExitError,
+    ExitError(Option<i32>),
     Killing,
-    Killed,
+    Killed(Option<i32>),
 }
 
 impl ProcessState {
     pub fn is_finished(&self) -> bool {
         matches!(
             self,
-            ProcessState::ExitSuccess | ProcessState::ExitError | ProcessState::Killed
+            ProcessState::ExitSuccess | ProcessState::ExitError(..) | ProcessState::Killed(..)
         )
     }
 }

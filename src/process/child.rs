@@ -1,13 +1,19 @@
-use std::process::Stdio;
+use std::{
+    os::unix::process::ExitStatusExt,
+    process::{ExitCode, ExitStatus, Stdio},
+    time::Duration,
+};
 
 use anyhow::anyhow;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::{Child, Command},
-    task::JoinHandle,
+    time::timeout,
 };
 
-use crate::base::LogWriterRef;
+use crate::{base::LogWriterRef, process::state::ProcessState};
+
+const SHUTDOWN_TIMER: u64 = 10_000;
 
 /// A running process whose stdout is captured into a [`Log`].
 ///
@@ -22,11 +28,10 @@ enum ProcessChildInner {
     Empty,
     Setup {
         command: Command,
-        writer: LogWriterRef,
+        writer: Option<LogWriterRef>,
     },
     Running {
         child: Child,
-        reader: JoinHandle<()>,
     },
 }
 
@@ -39,21 +44,29 @@ impl ProcessChildInner {
             ProcessChildInner::Running { .. } => Ok(()),
             ProcessChildInner::Setup {
                 mut command,
-                mut writer,
+                writer,
             } => {
-                command.stdout(Stdio::piped());
-                let mut child = command.spawn().unwrap();
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or(anyhow!("stdout should be piped after Stdio::piped()"))?;
-                let reader = tokio::spawn(async move {
-                    let mut lines = BufReader::new(stdout).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        writer.write_line(line);
-                    }
-                });
-                *self = ProcessChildInner::Running { child, reader };
+                let child = if let Some(mut writer) = writer {
+                    command.stdout(Stdio::piped());
+                    let mut child = command.spawn()?;
+                    let stdout = child
+                        .stdout
+                        .take()
+                        .ok_or(anyhow!("stdout should be piped after Stdio::piped()"))?;
+
+                    tokio::spawn(async move {
+                        let mut lines = BufReader::new(stdout).lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            writer.write_line(line);
+                        }
+                    });
+                    child
+                } else {
+                    command.stdout(Stdio::null());
+                    let child = command.spawn()?;
+                    child
+                };
+                *self = ProcessChildInner::Running { child };
                 Ok(())
             }
         }
@@ -62,14 +75,17 @@ impl ProcessChildInner {
 
 impl ProcessChild {
     /// Create the child, unspawned
-    pub fn new(command: Command, writer: LogWriterRef) -> Self {
-        let inner = ProcessChildInner::Setup { command, writer };
+    pub fn new(command: Command, writer: Option<LogWriterRef>) -> Self {
+        let inner = ProcessChildInner::Setup {
+            command,
+            writer: writer,
+        };
         Self { inner }
     }
 
     /// Spawns `command`, piping its stdout into a log with `capacity` lines.
     pub async fn spawn(command: Command, writer: LogWriterRef) -> anyhow::Result<Self> {
-        let mut child = Self::new(command, writer);
+        let mut child = Self::new(command, Some(writer));
         child.start().await?;
         Ok(child)
     }
@@ -80,23 +96,73 @@ impl ProcessChild {
     }
 
     /// Waits for the process to exit, draining the remaining stdout.
-    pub async fn wait(&mut self) -> anyhow::Result<std::process::ExitStatus> {
+    pub async fn wait(&mut self) -> anyhow::Result<ProcessState> {
         if let ProcessChildInner::Running { child, .. } = &mut self.inner {
-            let status = child.wait().await?;
-            Ok(status)
+            let wait_result = child.wait().await;
+            Ok(match wait_result {
+                Ok(status) if status.success() => ProcessState::ExitSuccess,
+                Ok(status) => ProcessState::ExitError(status.code()),
+                Err(_) => ProcessState::ExitError(None),
+            })
         } else {
             Err(anyhow!("Child is not running"))
         }
     }
 
     /// Kills the process.
-    pub async fn kill(&mut self) -> anyhow::Result<()> {
-        if let ProcessChildInner::Running { child, .. } = &mut self.inner {
-            _ = child.kill().await?;
-            Ok(())
-        } else {
-            Ok(())
+    ///
+    /// Sends a SIGKILL and wait for it to terminate
+    pub async fn kill(&mut self) -> anyhow::Result<ProcessState> {
+        self.kill_inner(false).await
+    }
+
+    /// Shutdown the process
+    ///
+    /// First send a sigterm then waits for n milliseconds
+    /// If the process did not shutdown, it sends a SIGKILL and terminates
+    pub async fn shutdown(&mut self) -> anyhow::Result<ProcessState> {
+        self.kill_inner(true).await
+    }
+
+    /// Inner function to handle the shutdown logic
+    async fn kill_inner(&mut self, shutdown_gracefully: bool) -> anyhow::Result<ProcessState> {
+        let ProcessChildInner::Running { child, .. } = &mut self.inner else {
+            return Err(anyhow!("Process was not running"));
+        };
+
+        // Check if already exited
+        if let Ok(Some(exit_status)) = child.try_wait() {
+            return Ok(if exit_status.success() {
+                ProcessState::ExitSuccess
+            } else {
+                ProcessState::ExitError(exit_status.code())
+            });
         }
+
+        // Try to shutdown
+        if shutdown_gracefully {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                let timer = timeout(Duration::from_millis(SHUTDOWN_TIMER), child.wait()).await;
+                if let Ok(wait_result) = timer {
+                    return Ok(match wait_result {
+                        Ok(status) if status.success() => ProcessState::ExitSuccess,
+                        Ok(status) => ProcessState::Killed(status.code()),
+                        Err(_) => ProcessState::Killed(None),
+                    });
+                }
+            }
+        }
+
+        // Kill and return the status
+        child.start_kill()?;
+        let wait_result = child.wait().await;
+        return Ok(match wait_result {
+            Ok(status) if status.success() => ProcessState::ExitSuccess,
+            Ok(status) => ProcessState::Killed(status.code()),
+            Err(_) => ProcessState::Killed(None),
+        });
     }
 }
 
