@@ -7,17 +7,9 @@ use tokio::{
     time::timeout,
 };
 
-use crate::base::LogWriterRef;
+use crate::base::{ExitReason, LogWriterRef};
 
 const SHUTDOWN_TIMER: u64 = 10_000;
-
-/// Exit state for the process
-#[derive(Clone, Copy, Debug)]
-pub enum ProcessExit {
-    Success,
-    Error(Option<i32>),
-    Killed(Option<i32>),
-}
 
 /// A running process whose stdout is captured into a [`Log`].
 ///
@@ -51,13 +43,13 @@ impl Process {
     }
 
     /// Waits for the process to exit, draining the remaining stdout.
-    pub async fn wait(&mut self) -> anyhow::Result<ProcessExit> {
+    pub async fn wait(&mut self) -> anyhow::Result<ExitReason> {
         if let ProcessInner::Running { child, .. } = &mut self.inner {
             let wait_result = child.wait().await;
             Ok(match wait_result {
-                Ok(status) if status.success() => ProcessExit::Success,
-                Ok(status) => ProcessExit::Error(status.code()),
-                Err(_) => ProcessExit::Error(None),
+                Ok(status) if status.success() => ExitReason::Success,
+                Ok(status) => ExitReason::Error(status.code()),
+                Err(_) => ExitReason::Error(None),
             })
         } else {
             Err(anyhow!("Child is not running"))
@@ -67,7 +59,7 @@ impl Process {
     /// Kills the process.
     ///
     /// Sends a SIGKILL and wait for it to terminate
-    pub async fn kill(&mut self) -> anyhow::Result<ProcessExit> {
+    pub async fn kill(&mut self) -> anyhow::Result<ExitReason> {
         self.kill_inner(false).await
     }
 
@@ -75,12 +67,12 @@ impl Process {
     ///
     /// First send a sigterm then waits for n milliseconds
     /// If the process did not shutdown, it sends a SIGKILL and terminates
-    pub async fn shutdown(&mut self) -> anyhow::Result<ProcessExit> {
+    pub async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
         self.kill_inner(true).await
     }
 
     /// Inner function to handle the shutdown logic
-    async fn kill_inner(&mut self, shutdown_gracefully: bool) -> anyhow::Result<ProcessExit> {
+    async fn kill_inner(&mut self, shutdown_gracefully: bool) -> anyhow::Result<ExitReason> {
         let ProcessInner::Running { child, pid, .. } = &mut self.inner else {
             return Err(anyhow!("Process was not running"));
         };
@@ -94,9 +86,9 @@ impl Process {
             }
 
             return Ok(if exit_status.success() {
-                ProcessExit::Success
+                ExitReason::Success
             } else {
-                ProcessExit::Error(exit_status.code())
+                ExitReason::Error(exit_status.code())
             });
         }
 
@@ -108,9 +100,9 @@ impl Process {
                 let timer = timeout(Duration::from_millis(SHUTDOWN_TIMER), child.wait()).await;
                 if let Ok(wait_result) = timer {
                     return Ok(match wait_result {
-                        Ok(status) if status.success() => ProcessExit::Success,
-                        Ok(status) => ProcessExit::Killed(status.code()),
-                        Err(_) => ProcessExit::Killed(None),
+                        Ok(status) if status.success() => ExitReason::Success,
+                        Ok(status) => ExitReason::Killed(status.code()),
+                        Err(_) => ExitReason::Killed(None),
                     });
                 }
             }
@@ -121,9 +113,9 @@ impl Process {
             unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
             let wait_result = child.wait().await;
             return Ok(match wait_result {
-                Ok(status) if status.success() => ProcessExit::Success,
-                Ok(status) => ProcessExit::Killed(status.code()),
-                Err(_) => ProcessExit::Killed(None),
+                Ok(status) if status.success() => ExitReason::Success,
+                Ok(status) => ExitReason::Killed(status.code()),
+                Err(_) => ExitReason::Killed(None),
             });
         }
 
@@ -131,9 +123,9 @@ impl Process {
         child.start_kill()?;
         let wait_result = child.wait().await;
         return Ok(match wait_result {
-            Ok(status) if status.success() => ProcessExit::Success,
-            Ok(status) => ProcessExit::Killed(status.code()),
-            Err(_) => ProcessExit::Killed(None),
+            Ok(status) if status.success() => ExitReason::Success,
+            Ok(status) => ExitReason::Killed(status.code()),
+            Err(_) => ExitReason::Killed(None),
         });
     }
 }

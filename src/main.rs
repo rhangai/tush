@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod base;
+mod runner;
 mod unit;
 mod util;
 
@@ -8,11 +9,11 @@ use std::time::Duration;
 
 use tokio::time::sleep;
 
-use crate::unit::{Unit, UnitProcess};
+use crate::runner::{RunnerProcessDescription, RunnerUnit};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let unit = Unit::new(UnitProcess::new([
+    let unit = RunnerUnit::new(RunnerProcessDescription::new([
         "bash",
         "-c",
         "echo 'oi'; sleep 1; echo 'tchau'; exit 1",
