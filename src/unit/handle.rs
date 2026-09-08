@@ -38,6 +38,11 @@ impl UnitHandle {
         *self.state_receiver.borrow()
     }
 
+    pub async fn wait(&mut self) -> UnitState {
+        let result = self.state_receiver.wait_for(|s| s.is_finished()).await;
+        result.map_or(UnitState::Killed(None), |s| *s)
+    }
+
     pub fn abort(&mut self) {
         if let Some(abort_sender) = self.abort_sender.take() {
             _ = abort_sender.send(());

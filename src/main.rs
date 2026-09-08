@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 mod base;
-mod process;
 mod unit;
 mod util;
 
@@ -9,36 +8,28 @@ use std::time::Duration;
 
 use tokio::time::sleep;
 
-use crate::process::ProcessPool;
+use crate::unit::{Unit, UnitProcess};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut pool = ProcessPool::new(2048);
-    pool.add(
-        "oi",
-        ["bash", "-c", "echo 'oi'; sleep 1; echo 'tchau'; exit 1"],
-    );
-    pool.add("tchau", ["bash", "-c", "echo 'oi'; sleep 2; echo 'tchau'"]);
+    let unit = Unit::new(UnitProcess::new([
+        "bash",
+        "-c",
+        "echo 'oi'; sleep 1; echo 'tchau'; exit 1",
+    ]));
+    _ = unit.start();
+    println!("{:?}", unit.state());
+    sleep(Duration::from_secs(2)).await;
+    println!("{:?}", unit.state());
+    _ = unit.start();
+    println!("{:?}", unit.state());
+    sleep(Duration::from_secs(2)).await;
+    println!("{:?}", unit.state());
 
-    println!("{:?}", pool.state("oi"));
-    println!("{:?}", pool.state("tchau"));
-
-    pool.start("oi")?;
-    pool.start("tchau")?;
-
-    println!("{:?}", pool.state("oi"));
-    println!("{:?}", pool.state("tchau"));
-    pool.wait("oi").await?;
-    println!("{:?}", pool.state("oi"));
-    println!("{:?}", pool.state("tchau"));
-
-    pool.stop("tchau")?;
-    println!("{:?}", pool.state("oi"));
-    println!("{:?}", pool.state("tchau"));
-
-    pool.wait("tchau").await?;
-    println!("{:?}", pool.state("oi"));
-    println!("{:?}", pool.state("tchau"));
+    let mut h = unit.spawn(None)?;
+    println!("{:?}", h.state());
+    h.wait().await;
+    println!("{:?}", h.state());
 
     Ok(())
 

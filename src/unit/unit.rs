@@ -22,7 +22,7 @@ impl<D: UnitDescription> Unit<D> {
         let mut handle = self.handle.lock();
         let is_stopped = handle.as_ref().is_none_or(|h| h.state().is_finished());
         if is_stopped {
-            *handle = Some(self.create_handle(None)?);
+            *handle = Some(self.spawn(None)?);
         }
         Ok(())
     }
@@ -36,13 +36,14 @@ impl<D: UnitDescription> Unit<D> {
     }
 
     pub fn restart(&self) -> anyhow::Result<()> {
-        *self.handle.lock() = Some(self.create_handle(None)?);
+        *self.handle.lock() = Some(self.spawn(None)?);
         Ok(())
     }
 
-    pub async fn run(&self) -> anyhow::Result<()> {
-        let handle = self.create_handle(None)?;
-        Ok(())
+    /// Spawn a new handle for this unit
+    pub fn spawn(&self, writer: Option<LogWriterRef>) -> anyhow::Result<UnitHandle> {
+        let handle = UnitHandle::new(self.description.exec(writer)?);
+        Ok(handle)
     }
 
     pub fn state(&self) -> UnitState {
@@ -51,10 +52,5 @@ impl<D: UnitDescription> Unit<D> {
             .as_ref()
             .map(|h| h.state())
             .unwrap_or(UnitState::Stopped)
-    }
-
-    fn create_handle(&self, writer: Option<LogWriterRef>) -> anyhow::Result<UnitHandle> {
-        let handle = UnitHandle::new(self.description.exec(writer)?);
-        Ok(handle)
     }
 }
