@@ -1,16 +1,12 @@
-use tokio::task::JoinHandle;
+use crate::{base::LogWriterRef, unit::state::UnitExitReason};
 
-trait UnitRunner {
-    fn run(self);
+type Exit = anyhow::Result<UnitExitReason>;
+
+pub trait UnitRunner: Send + 'static {
+    fn run(&mut self) -> impl Future<Output = Exit> + Send;
+    fn shutdown(&mut self) -> impl Future<Output = Exit> + Send;
 }
 
-trait UnitHandle {
-    fn abort(&self);
-}
-
-trait UnitDescriptor {
-    type Runner: UnitRunner;
-    type Handle: UnitHandle;
-
-    fn exec(&self) -> (JoinHandle<()>, Self::Handle);
+pub trait UnitDescription {
+    fn exec(&self, writer: Option<LogWriterRef>) -> anyhow::Result<impl UnitRunner>;
 }
