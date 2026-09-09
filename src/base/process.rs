@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+use std::num::NonZeroU8;
 use std::{process::Stdio, time::Duration};
 
 use anyhow::anyhow;
@@ -48,7 +50,9 @@ impl Process {
             let wait_result = child.wait().await;
             Ok(match wait_result {
                 Ok(status) if status.success() => ExitReason::Success,
-                Ok(status) => ExitReason::Error(status.code()),
+                Ok(status) => {
+                    ExitReason::Error(status.code().and_then(|v| NonZeroU8::new(v as u8)))
+                }
                 Err(_) => ExitReason::Error(None),
             })
         } else {
@@ -88,7 +92,7 @@ impl Process {
             return Ok(if exit_status.success() {
                 ExitReason::Success
             } else {
-                ExitReason::Error(exit_status.code())
+                ExitReason::Error(exit_status.code().and_then(|v| NonZeroU8::new(v as u8)))
             });
         }
 
@@ -101,7 +105,9 @@ impl Process {
                 if let Ok(wait_result) = timer {
                     return Ok(match wait_result {
                         Ok(status) if status.success() => ExitReason::Success,
-                        Ok(status) => ExitReason::Killed(status.code()),
+                        Ok(status) => {
+                            ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8)))
+                        }
                         Err(_) => ExitReason::Killed(None),
                     });
                 }
@@ -114,7 +120,9 @@ impl Process {
             let wait_result = child.wait().await;
             return Ok(match wait_result {
                 Ok(status) if status.success() => ExitReason::Success,
-                Ok(status) => ExitReason::Killed(status.code()),
+                Ok(status) => {
+                    ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8)))
+                }
                 Err(_) => ExitReason::Killed(None),
             });
         }
@@ -124,7 +132,7 @@ impl Process {
         let wait_result = child.wait().await;
         return Ok(match wait_result {
             Ok(status) if status.success() => ExitReason::Success,
-            Ok(status) => ExitReason::Killed(status.code()),
+            Ok(status) => ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8))),
             Err(_) => ExitReason::Killed(None),
         });
     }

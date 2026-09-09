@@ -1,6 +1,8 @@
+use std::num::NonZeroU8;
+
 #[derive(Clone, Copy, Debug)]
 pub enum ExitReason {
     Success,
-    Error(Option<i32>),
-    Killed(Option<i32>),
+    Error(Option<NonZeroU8>),
+    Killed(Option<NonZeroU8>),
 }

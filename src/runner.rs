@@ -1,12 +1,12 @@
-mod base;
-mod process;
-mod unit;
+mod handle;
+mod runner;
+mod state;
 
 #[allow(unused_imports)]
-pub use base::{Runner, RunnerDescription, RunnerState};
+pub use runner::Runner;
 
 #[allow(unused_imports)]
-pub use process::RunnerProcessDescription;
+pub use handle::RunnerHandle;
 
 #[allow(unused_imports)]
-pub use unit::{RunnerHandle, RunnerUnit};
+pub use state::{RunnerState, RunnerStateAtomic};
