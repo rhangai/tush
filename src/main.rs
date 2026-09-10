@@ -29,6 +29,7 @@
 #![allow(dead_code)]
 
 mod base;
+mod log;
 mod runner;
 mod unit;
 mod util;
