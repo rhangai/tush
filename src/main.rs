@@ -34,6 +34,10 @@ mod runner;
 mod unit;
 mod util;
 
+use std::time::Duration;
+
+use tokio::time::sleep;
+
 use crate::unit::{Unit, UnitDescription};
 
 /// Temporary entrypoint used to exercise the runtime while the CLI does not
@@ -45,20 +49,9 @@ use crate::unit::{Unit, UnitDescription};
 async fn main() -> anyhow::Result<()> {
     let unit = Unit::new(UnitDescription::program());
     let h1 = unit.start()?;
-    let h2 = unit.start_with_description(UnitDescription::noop())?;
     println!("{:?}", h1.state());
-    println!("{:?}", h2.state());
-    h2.wait().await;
-    let h3 = unit.start_with_description(UnitDescription::noop())?;
-    println!("{:?}", h1.state());
-    println!("{:?}", h2.state());
-    println!("{:?}", h3.state());
-
+    sleep(Duration::from_millis(1000)).await;
+    h1.abort();
+    h1.wait().await;
     Ok(())
-
-    // pool.use_lines("tchau", |lines| {
-    //     for line in lines {
-    //         println!("{}", line);
-    //     }
-    // });
 }

@@ -5,6 +5,7 @@ use crate::{
     util::localring::LocalRingBuffer,
 };
 use parking_lot::RwLock;
+use thingbuf::{Recycle, ThingBuf};
 use tokio::{io::AsyncRead, sync::Notify, task::JoinHandle};
 
 /// A handle for appending to a [`Log`] from a reader task.
@@ -35,8 +36,9 @@ impl LogWriterRef {
     /// pipe, not seize up.
     pub(super) fn push_chunk(&mut self, chunk: &mut LogChunk) {
         if let Some(inner) = self.inner.upgrade() {
-            let mut chunks = inner.chunks.write();
-            chunks.push().swap(chunk);
+            if let Ok(mut item) = inner.chunks_queue.push_ref() {
+                item.swap(chunk);
+            };
             self.pushed = true;
         }
         chunk.clear();
@@ -101,10 +103,21 @@ impl Log {
             pushed: false,
         }
     }
+
+    pub fn sync(&self) {
+        self.inner.sync();
+    }
+
+    pub fn debug(&self) {
+        for line in self.inner.chunks.read().iter() {
+            println!("{}", line.as_str());
+        }
+    }
 }
 
 struct LogInner {
     chunks: RwLock<LocalRingBuffer<LogChunk>>,
+    chunks_queue: ThingBuf<LogChunk, LogChunkRecycler>,
     sync_handle: JoinHandle<()>,
     notify: Arc<Notify>,
 }
@@ -135,6 +148,7 @@ impl LogInner {
             };
             LogInner {
                 chunks: RwLock::new(LocalRingBuffer::new_with(capacity, LogChunk::new)),
+                chunks_queue: ThingBuf::with_recycle(8, LogChunkRecycler {}),
                 sync_handle,
                 notify,
             }
@@ -142,10 +156,25 @@ impl LogInner {
     }
 
     fn sync(&self) {
-        // Se tiver algo que precisa syncar depois de escrever, fica aqui
+        let mut chunks = self.chunks.write();
+        while let Some(mut item) = self.chunks_queue.pop_ref() {
+            chunks.push().swap(&mut item);
+        }
     }
 
     fn notify_writer(&self) {
         self.notify.notify_one();
+    }
+}
+
+/// Recycler
+struct LogChunkRecycler {}
+impl Recycle<LogChunk> for LogChunkRecycler {
+    fn new_element(&self) -> LogChunk {
+        LogChunk::new()
+    }
+
+    fn recycle(&self, element: &mut LogChunk) {
+        element.clear();
     }
 }
