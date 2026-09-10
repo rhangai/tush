@@ -56,17 +56,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "delegate"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "780eb241654bf097afb00fc5f054a09b687dad862e485fdcf8399bb056565370"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "enum_dispatch"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -321,7 +310,6 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "dashmap",
- "delegate",
  "enum_dispatch",
  "libc",
  "parking_lot",
