@@ -5,19 +5,34 @@ use std::{
 
 use crate::base::ExitReason;
 
+/// Where a run currently is in its lifecycle.
+///
+/// The variants are ordered: each one is "later" than the one above it, and
+/// [`RunnerStateAtomic::store_next`] relies on that to make progress
+/// monotonic. Everything from [`ExitSuccess`](RunnerState::ExitSuccess) down
+/// is terminal.
 #[derive(Clone, Copy, Debug)]
 pub enum RunnerState {
+    /// Nothing was ever started (the state a unit reports with no handle).
     Stopped,
+    /// The handle exists but is parked at the start gate.
     Waiting,
+    /// Released to run; the task may not have been scheduled yet.
     Started,
+    /// The runner's `run` future is in flight.
     Running,
+    /// Aborted, waiting for the shutdown to complete.
     Killing,
+    /// Finished on its own, successfully.
     ExitSuccess,
+    /// Finished on its own, with a failure code.
     ExitError(Option<NonZeroU8>),
+    /// Terminated by us.
     Killed(Option<NonZeroU8>),
 }
 
 impl RunnerState {
+    /// Whether the run reached a terminal state.
     pub fn is_finished(&self) -> bool {
         matches!(
             self,
@@ -25,6 +40,7 @@ impl RunnerState {
         )
     }
 
+    /// Whether nothing is running — terminal, or never started at all.
     pub fn is_stopped(&self) -> bool {
         matches!(
             self,
@@ -37,6 +53,7 @@ impl RunnerState {
 }
 
 impl From<ExitReason> for RunnerState {
+    /// Lift a finished process into the matching terminal state.
     fn from(value: ExitReason) -> Self {
         match value {
             ExitReason::Success => RunnerState::ExitSuccess,
@@ -47,6 +64,7 @@ impl From<ExitReason> for RunnerState {
 }
 
 impl TryFrom<RunnerState> for ExitReason {
+    /// The state itself, when it was not a terminal one.
     type Error = RunnerState;
     fn try_from(value: RunnerState) -> Result<Self, RunnerState> {
         match value {
@@ -62,6 +80,11 @@ impl TryFrom<RunnerState> for ExitReason {
 //
 // RunnerState intended to be set atomically between tasks, it is Sync so it can
 // be send across threads in an Arc
+//
+// The whole state fits in a u16: the low byte is the variant tag and the high
+// byte is the exit code (0 meaning "no code", which is why the code is a
+// NonZeroU8). Packing it this way keeps reads to a single atomic load, so any
+// task can poll the state without a lock or a channel.
 pub struct RunnerStateAtomic {
     inner: AtomicU16,
 }
@@ -78,6 +101,11 @@ impl RunnerStateAtomic {
     ///
     /// Intended to be used with
     /// Stopped => Started => Running => Killing
+    ///
+    /// Only the variant tag is compared, so the exit code carried in the high
+    /// byte never interferes with the ordering. The CAS loop makes this safe
+    /// against a racing writer: a late `Running` cannot undo a `Killing` that
+    /// another task already published.
     pub fn store_next(&self, value: RunnerState) {
         let value = Self::state_to_u16(value);
         let value_low = value & 0xff;
@@ -101,6 +129,9 @@ impl RunnerStateAtomic {
     }
 
     /// Just store the state
+    ///
+    /// Unconditional, for the transitions that must land no matter what — the
+    /// terminal state published by the supervising task.
     pub fn store(&self, value: RunnerState) {
         self.inner
             .store(Self::state_to_u16(value), Ordering::Release);
@@ -111,6 +142,10 @@ impl RunnerStateAtomic {
         Self::u16_to_state(self.inner.load(Ordering::Acquire))
     }
 
+    /// Pack a state: variant tag in the low byte, exit code in the high byte.
+    ///
+    /// The tags are ordered on purpose; see
+    /// [`store_next`](RunnerStateAtomic::store_next).
     const fn state_to_u16(value: RunnerState) -> u16 {
         match value {
             RunnerState::Stopped => 0,
@@ -124,6 +159,7 @@ impl RunnerStateAtomic {
         }
     }
 
+    /// Shift an exit code into the high byte, `None` becoming zero.
     const fn state_to_u16_code(value: Option<NonZeroU8>) -> u16 {
         match value {
             Some(v) => (v.get() as u16) << 8,
@@ -131,6 +167,7 @@ impl RunnerStateAtomic {
         }
     }
 
+    /// Unpack a state. An unknown tag is reported as `Killed(None)`.
     const fn u16_to_state(value: u16) -> RunnerState {
         let low = value & 0xff;
         let high = ((value & 0xff00) >> 8) as u8;

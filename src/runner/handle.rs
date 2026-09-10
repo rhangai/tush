@@ -9,15 +9,45 @@ use crate::runner::{
 };
 
 /// A handle for the runner
+///
+/// Creating a handle immediately spawns the supervising task, but the runner
+/// itself may be held at the gate: [`RunnerHandle::new`] parks it until
+/// [`start`](RunnerHandle::start) is called, while
+/// [`new_running`](RunnerHandle::new_running) lets it go right away. The
+/// paused form is what makes an orderly restart possible — the replacement can
+/// exist, and be observable, before the outgoing one has finished dying.
+///
+/// A handle covers exactly one run: once it reaches a terminal state it stays
+/// there, and restarting means building a new handle.
+///
+/// # Lifecycle
+///
+/// ```text
+///          new()                start()            run()
+///  ────> Waiting ──────────────> Started ─────────> Running ──┬──> ExitSuccess / ExitError
+///           │                       │                         │
+///           └────── abort() ────────┴───> Killing ────────────┴──> Killed
+/// ```
+///
+/// Aborting before the start gate opens is honoured: the task wakes up, sees
+/// the cancelled token and finishes as `Killed` without ever running.
 pub struct RunnerHandle {
+    /// Start gate. `None` when the handle was created already running.
     start_notify: Option<Notify>,
     abort_token: CancellationToken,
+    /// Current state, readable without awaiting anything.
     state: RunnerStateAtomic,
+    /// Resolves once, with the terminal state, for every waiter.
     exit_state_receiver: tokio::sync::watch::Receiver<Option<RunnerState>>,
 }
 
 impl RunnerHandle {
     /// Create the handle from the runner
+    ///
+    /// The runner stays [`Waiting`](RunnerState::Waiting) until
+    /// [`start`](RunnerHandle::start) — or anything else that opens the gate,
+    /// such as [`abort`](RunnerHandle::abort) or
+    /// [`wait`](RunnerHandle::wait) — is called.
     pub fn new(runner: impl Runner) -> Arc<Self> {
         Self::new_inner(runner, true)
     }
@@ -28,6 +58,10 @@ impl RunnerHandle {
     }
 
     /// Create the handle from the runner
+    ///
+    /// Spawns the supervising task, which owns the runner for the rest of its
+    /// life. The task holds an `Arc` back to the handle, so it keeps reporting
+    /// state even if every external reference is dropped.
     fn new_inner(runner: impl Runner, paused: bool) -> Arc<Self> {
         let (exit_state_sender, exit_state_receiver) =
             tokio::sync::watch::channel::<Option<RunnerState>>(None);
@@ -77,17 +111,26 @@ impl RunnerHandle {
     }
 
     /// State of the current runner
+    ///
+    /// A plain atomic load: cheap enough to poll from a render loop.
     pub fn state(&self) -> RunnerState {
         self.state.load()
     }
 
     /// Start the handle
+    ///
+    /// Opens the start gate. Idempotent, and a no-op on a handle created with
+    /// [`new_running`](RunnerHandle::new_running).
     pub fn start(&self) {
         self.state.store_next(RunnerState::Started);
         self.notify_start();
     }
 
     /// Abort the runner
+    ///
+    /// Cancels the token and opens the gate, so a runner still parked at the
+    /// start also gets to observe the cancellation and finish. Returns without
+    /// waiting; use [`wait`](RunnerHandle::wait) for that.
     pub fn abort(&self) {
         self.state.store_next(RunnerState::Killing);
         self.abort_token.cancel();
@@ -95,6 +138,11 @@ impl RunnerHandle {
     }
 
     /// Wait for the runner
+    ///
+    /// Note this also opens the start gate: waiting on a parked runner runs
+    /// it, instead of deadlocking on something that would never begin.
+    /// Returns `None` only if the supervising task went away without
+    /// publishing a terminal state.
     pub async fn wait(&self) -> Option<RunnerState> {
         self.notify_start();
         let mut receiver = self.exit_state_receiver.clone();
