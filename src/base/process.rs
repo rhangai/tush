@@ -24,10 +24,7 @@ pub struct Process {
 impl Process {
     /// Create the child, unspawned
     pub fn new(command: Command, writer: Option<LogWriterRef>) -> Self {
-        let inner = ProcessInner::Setup {
-            command,
-            writer: writer,
-        };
+        let inner = ProcessInner::Setup { command, writer };
         Self { inner }
     }
 
@@ -79,7 +76,7 @@ impl Process {
         let ProcessInner::Running { child, pid, .. } = &mut self.inner else {
             return Err(anyhow!("Process was not running"));
         };
-        let pid = pid.clone();
+        let pid = *pid;
 
         // Check if already exited
         if let Ok(Some(exit_status)) = child.try_wait() {
@@ -129,21 +126,19 @@ impl Process {
         // Kill and return the status
         child.start_kill()?;
         let wait_result = child.wait().await;
-        return Ok(match wait_result {
+        Ok(match wait_result {
             Ok(status) if status.success() => ExitReason::Success,
             Ok(status) => ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8))),
             Err(_) => ExitReason::Killed(None),
-        });
+        })
     }
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
-        if let ProcessInner::Running { pid, .. } = &mut self.inner {
-            #[cfg(unix)]
-            if let Some(pid) = *pid {
-                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-            }
+        #[cfg(unix)]
+        if let ProcessInner::Running { pid: Some(pid), .. } = &mut self.inner {
+            unsafe { libc::kill(-(*pid as i32), libc::SIGKILL) };
         };
     }
 }
@@ -190,8 +185,8 @@ impl ProcessInner {
                     child
                 } else {
                     command.stdout(Stdio::null());
-                    let child = command.spawn()?;
-                    child
+
+                    command.spawn()?
                 };
                 let pid = child.id();
                 *self = ProcessInner::Running { child, pid };

@@ -59,14 +59,14 @@ impl Unit {
         Ok(handle)
     }
 
-    ///
+    /// Stop the
     pub fn stop(&self) {
         if let Some(handle) = self.handle.load().as_ref() {
             handle.abort();
         }
     }
 
-    ///
+    /// State for the
     pub fn state(&self) -> RunnerState {
         self.handle
             .load()

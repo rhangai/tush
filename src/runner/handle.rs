@@ -101,7 +101,7 @@ impl RunnerHandle {
         receiver
             .wait_for(|s| s.is_some())
             .await
-            .map_or(None, |v| v.clone())
+            .map_or(None, |v| *v)
     }
 
     /// Notify the start handle

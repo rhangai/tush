@@ -89,7 +89,7 @@ impl Clone for RingStrStorage {
         }
         Self {
             buf,
-            offset: self.offset.clone(),
+            offset: self.offset,
         }
     }
 }
@@ -180,7 +180,7 @@ mod test {
     }
 
     fn assert_ring(storage: &RingStrStorage, expected: &[&str]) {
-        let values: Vec<String> = storage.lines().map(|s| s.clone()).collect();
+        let values: Vec<String> = storage.lines().cloned().collect();
         assert_eq!(&values, expected);
     }
 }
