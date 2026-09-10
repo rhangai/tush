@@ -1,4 +1,4 @@
-use crate::base::{ExitReason, LogWriterRef, Process};
+use crate::base::{ExitReason, Process};
 
 /// A runner
 pub trait Runner: Send + 'static {
@@ -15,5 +15,16 @@ impl Runner for Process {
 
     async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
         Process::shutdown(self).await
+    }
+}
+
+/// A process is a runner
+impl Runner for () {
+    async fn run(&mut self) -> anyhow::Result<ExitReason> {
+        Ok(ExitReason::Success)
+    }
+
+    async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
+        Ok(ExitReason::Success)
     }
 }

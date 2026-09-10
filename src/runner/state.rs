@@ -8,6 +8,7 @@ use crate::base::ExitReason;
 #[derive(Clone, Copy, Debug)]
 pub enum RunnerState {
     Stopped,
+    Waiting,
     Started,
     Running,
     Killing,
@@ -113,12 +114,13 @@ impl RunnerStateAtomic {
     const fn state_to_u16(value: RunnerState) -> u16 {
         match value {
             RunnerState::Stopped => 0,
-            RunnerState::Started => 1,
-            RunnerState::Running => 2,
-            RunnerState::Killing => 3,
-            RunnerState::ExitSuccess => 4,
-            RunnerState::ExitError(code) => 5 | Self::state_to_u16_code(code),
-            RunnerState::Killed(code) => 6 | Self::state_to_u16_code(code),
+            RunnerState::Waiting => 1,
+            RunnerState::Started => 2,
+            RunnerState::Running => 3,
+            RunnerState::Killing => 4,
+            RunnerState::ExitSuccess => 5,
+            RunnerState::ExitError(code) => 6 | Self::state_to_u16_code(code),
+            RunnerState::Killed(code) => 7 | Self::state_to_u16_code(code),
         }
     }
 
@@ -134,12 +136,13 @@ impl RunnerStateAtomic {
         let high = ((value & 0xff00) >> 8) as u8;
         match low {
             0 => RunnerState::Stopped,
-            1 => RunnerState::Started,
-            2 => RunnerState::Running,
-            3 => RunnerState::Killing,
-            4 => RunnerState::ExitSuccess,
-            5 => RunnerState::ExitError(NonZeroU8::new(high)),
-            6 => RunnerState::Killed(NonZeroU8::new(high)),
+            1 => RunnerState::Waiting,
+            2 => RunnerState::Started,
+            3 => RunnerState::Running,
+            4 => RunnerState::Killing,
+            5 => RunnerState::ExitSuccess,
+            6 => RunnerState::ExitError(NonZeroU8::new(high)),
+            7 => RunnerState::Killed(NonZeroU8::new(high)),
             _ => RunnerState::Killed(None),
         }
     }
