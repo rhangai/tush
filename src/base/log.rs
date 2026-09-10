@@ -56,8 +56,26 @@ impl Log {
     ///
     /// Only the lines written since the last sync are copied; if the buffer
     /// fell behind by more than the capacity, it is refilled from scratch.
+    ///
+    /// `buffer` must have come from this log — see
+    /// [`force_update_buffer`](Log::force_update_buffer) for moving one
+    /// between logs.
     pub fn update_buffer(&self, buffer: &mut LogBuffer) {
         self.inner.ringstr.update_storage(&mut buffer.storage);
+    }
+
+    /// Re-point an existing buffer at this log, discarding what it held.
+    ///
+    /// [`update_buffer`](Log::update_buffer) only works on a buffer this log
+    /// issued: cursors are meaningless across logs, so refreshing a foreign
+    /// one either splices in unrelated lines or silently freezes. This is the
+    /// deliberate way across — a view following a unit as the user switches
+    /// between them reuses its buffer instead of allocating a new one.
+    ///
+    /// The buffer keeps the size it was created with, so moving onto a log
+    /// with a longer history yields only the newest lines that fit.
+    pub fn force_update_buffer(&self, buffer: &mut LogBuffer) {
+        self.inner.ringstr.force_update_storage(&mut buffer.storage);
     }
 
     /// Get a cloneable handle that can append lines to this log.

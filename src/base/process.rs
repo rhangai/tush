@@ -267,3 +267,4 @@ mod test {
         assert_eq!(lines, vec!["starting server", "tudo", "bem"]);
     }
 }
+
