@@ -4,10 +4,7 @@ use anyhow::Result;
 use enum_dispatch::enum_dispatch;
 use tokio::process::Command;
 
-use crate::{
-    base::{LogWriterRef, Process},
-    runner::RunnerHandle,
-};
+use crate::{base::Process, log::LogWriterRef, runner::RunnerHandle};
 
 /// The recipe for a run: what a [`Unit`](crate::unit::Unit) spawns when started.
 ///

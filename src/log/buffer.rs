@@ -60,7 +60,7 @@ impl LogBuffer {
     /// characters. At most three bytes are ever held: past four, an
     /// undecodable sequence is broken rather than unfinished, and the chunk
     /// takes it as replacement characters.
-    pub async fn read<R>(&mut self, mut read: R) -> io::Result<bool>
+    pub async fn read<R>(&mut self, read: &mut R) -> io::Result<bool>
     where
         R: AsyncRead + Unpin,
     {
@@ -129,9 +129,4 @@ fn is_disconnected(error: &io::Error) -> bool {
             | ErrorKind::ConnectionReset
             | ErrorKind::ConnectionAborted
     )
-}
-
-struct LogBufferBuf {
-    buf: Box<[u8]>,
-    offset: usize,
 }

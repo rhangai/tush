@@ -1,8 +1,11 @@
 use std::sync::{Arc, Weak};
 
-use crate::{log::chunk::LogChunk, util::localring::LocalRingBuffer};
+use crate::{
+    log::{LogBuffer, chunk::LogChunk},
+    util::localring::LocalRingBuffer,
+};
 use parking_lot::RwLock;
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::{io::AsyncRead, sync::Notify, task::JoinHandle};
 
 /// A handle for appending to a [`Log`] from a reader task.
 ///
@@ -30,7 +33,7 @@ impl LogWriterRef {
     /// A log that has already been dropped takes nothing, but the chunk is
     /// still reset: a reader whose log went away should keep draining its
     /// pipe, not seize up.
-    pub(crate) fn push_chunk(&mut self, chunk: &mut LogChunk) {
+    pub(super) fn push_chunk(&mut self, chunk: &mut LogChunk) {
         if let Some(inner) = self.inner.upgrade() {
             let mut chunks = inner.chunks.write();
             chunks.push().swap(chunk);
@@ -40,13 +43,24 @@ impl LogWriterRef {
     }
 
     /// Sync the writer
-    pub(crate) fn sync(&mut self) {
+    pub(super) fn sync(&mut self) {
         if self.pushed {
             if let Some(inner) = self.inner.upgrade() {
                 inner.notify_writer();
             }
             self.pushed = false;
         }
+    }
+
+    /// Consume toda a
+    pub fn consume_spawn<R>(self, mut read: R) -> JoinHandle<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        tokio::spawn(async move {
+            let mut log_buffer = LogBuffer::new(self);
+            while log_buffer.read(&mut read).await.is_ok() {}
+        })
     }
 }
 

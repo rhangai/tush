@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 
 use crate::{
-    base::Log,
+    log::Log,
     runner::{RunnerHandle, RunnerState},
     unit::description::UnitDescription,
 };

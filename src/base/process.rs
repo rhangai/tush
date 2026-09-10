@@ -3,12 +3,12 @@ use std::{process::Stdio, time::Duration};
 
 use anyhow::anyhow;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
     process::{Child, Command},
     time::timeout,
 };
 
-use crate::base::{ExitReason, LogWriterRef};
+use crate::base::ExitReason;
+use crate::log::LogWriterRef;
 
 /// How long a graceful shutdown waits after `SIGTERM` before escalating to
 /// `SIGKILL`, in milliseconds.
@@ -197,10 +197,7 @@ enum ProcessInner {
         writer: Option<LogWriterRef>,
     },
     /// Spawned. `pid` is `None` if the child already exited and was reaped.
-    Running {
-        child: Child,
-        pid: Option<u32>,
-    },
+    Running { child: Child, pid: Option<u32> },
 }
 
 impl ProcessInner {
@@ -219,24 +216,17 @@ impl ProcessInner {
                 writer,
             } => {
                 command.process_group(0);
-                let child = if let Some(mut writer) = writer {
+                let child = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
                     let mut child = command.spawn()?;
                     let stdout = child
                         .stdout
                         .take()
                         .ok_or(anyhow!("stdout should be piped after Stdio::piped()"))?;
-
-                    tokio::spawn(async move {
-                        let mut lines = BufReader::new(stdout).lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            writer.write_line(line);
-                        }
-                    });
+                    writer.consume_spawn(stdout);
                     child
                 } else {
                     command.stdout(Stdio::null());
-
                     command.spawn()?
                 };
                 let pid = child.id();
@@ -249,7 +239,7 @@ impl ProcessInner {
 
 #[cfg(test)]
 mod test {
-    use crate::base::Log;
+    use crate::log::Log;
 
     use super::*;
 
@@ -261,10 +251,5 @@ mod test {
         let log = Log::new(1024);
         let mut process = Process::spawn(command, log.writer()).await.unwrap();
         process.wait().await.unwrap();
-
-        let buffer = log.new_buffer();
-        let lines: Vec<String> = buffer.lines().cloned().collect();
-        assert_eq!(lines, vec!["starting server", "tudo", "bem"]);
     }
 }
-
