@@ -1,8 +1,8 @@
 use std::sync::{Arc, Weak};
 
-use parking_lot::RwLock;
-
 use crate::{log::chunk::LogChunk, util::localring::LocalRingBuffer};
+use parking_lot::RwLock;
+use tokio::{sync::Notify, task::JoinHandle};
 
 /// A handle for appending to a [`Log`] from a reader task.
 ///
@@ -11,6 +11,7 @@ use crate::{log::chunk::LogChunk, util::localring::LocalRingBuffer};
 /// and the reader carries on emptying its pipe.
 pub struct LogWriterRef {
     inner: Weak<LogInner>,
+    pushed: bool,
 }
 
 impl LogWriterRef {
@@ -33,8 +34,19 @@ impl LogWriterRef {
         if let Some(inner) = self.inner.upgrade() {
             let mut chunks = inner.chunks.write();
             chunks.push().swap(chunk);
+            self.pushed = true;
         }
         chunk.clear();
+    }
+
+    /// Sync the writer
+    pub(crate) fn sync(&mut self) {
+        if self.pushed {
+            if let Some(inner) = self.inner.upgrade() {
+                inner.notify_writer();
+            }
+            self.pushed = false;
+        }
     }
 }
 
@@ -61,9 +73,7 @@ impl Log {
     /// If `capacity` is zero.
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Arc::new(LogInner {
-                chunks: RwLock::new(LocalRingBuffer::new_with(capacity, LogChunk::new)),
-            }),
+            inner: LogInner::new(capacity),
         }
     }
 
@@ -74,10 +84,54 @@ impl Log {
     pub fn writer(&self) -> LogWriterRef {
         LogWriterRef {
             inner: Arc::downgrade(&self.inner),
+            pushed: false,
         }
     }
 }
 
 struct LogInner {
     chunks: RwLock<LocalRingBuffer<LogChunk>>,
+    sync_handle: JoinHandle<()>,
+    notify: Arc<Notify>,
+}
+
+impl Drop for LogInner {
+    fn drop(&mut self) {
+        self.sync_handle.abort();
+        self.notify.notify_one();
+    }
+}
+
+impl LogInner {
+    fn new(capacity: usize) -> Arc<Self> {
+        let notify = Arc::new(Notify::new());
+        Arc::new_cyclic(|weak: &Weak<Self>| {
+            let sync_handle = {
+                let notify = notify.clone();
+                let weak = weak.clone();
+                tokio::spawn(async move {
+                    loop {
+                        notify.notified().await;
+                        let Some(inner) = weak.upgrade() else {
+                            break;
+                        };
+                        inner.sync();
+                    }
+                })
+            };
+            LogInner {
+                chunks: RwLock::new(LocalRingBuffer::new_with(capacity, LogChunk::new)),
+                sync_handle,
+                notify,
+            }
+        })
+    }
+
+    fn sync(&self) {
+        // Se tiver algo que precisa syncar depois de escrever, fica aqui
+    }
+
+    fn notify_writer(&self) {
+        self.notify.notify_one();
+    }
 }

@@ -21,8 +21,8 @@ enum LogChunkState {
     Open,
     /// A newline closed the line.
     EndLine,
-    /// Ran out of room; the line continues in the next chunk.
-    EndFull,
+    /// Just ended
+    End,
 }
 
 /// Internal log chunk, contains a pointer to the data and performs operations on bytes
@@ -141,7 +141,7 @@ impl LogChunk {
                 return taken + 1;
             }
             if !self.has_room() {
-                self.state = LogChunkState::EndFull;
+                self.state = LogChunkState::End;
                 return taken;
             }
 
@@ -180,7 +180,7 @@ impl LogChunk {
         // The input ran out just as the room did. Settling it here spares
         // the caller a further `write` that could only come back as 0.
         if !self.has_room() {
-            self.state = LogChunkState::EndFull;
+            self.state = LogChunkState::End;
         }
         taken
     }
