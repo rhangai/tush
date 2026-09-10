@@ -13,8 +13,8 @@ const REPLACEMENT: &[u8] = "\u{fffd}".as_bytes();
 /// Why a chunk stopped accepting bytes.
 ///
 /// Private on purpose: the outside asks
-/// [`is_finished`](LogChunk::is_finished), [`is_line`](LogChunk::is_line)
-/// or [`is_full`](LogChunk::is_full) and never has to name a state.
+/// [`is_finished`](LogChunk::is_finished) or
+/// [`is_line`](LogChunk::is_line) and never has to name a state.
 #[derive(PartialEq, Eq)]
 enum LogChunkState {
     /// Still accepting bytes.
@@ -53,7 +53,7 @@ enum LogChunkState {
 ///     // read more; whatever is left is a partial character
 /// }
 /// ```
-pub struct LogChunk {
+pub(super) struct LogChunk {
     buf: Box<[u8; LOG_CHUNK_SIZE]>,
     len: usize,
     state: LogChunkState,
