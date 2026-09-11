@@ -9,6 +9,5 @@ arc-swap = "1.9"
 enum_dispatch = "0.3"
 libc = "0.2"
 parking_lot = "0.12.5"
-thingbuf = { version = "0.1", features = ["static"] }
 tokio = { version = "^1.52", features = ["full"] }
 tokio-util = "0.7"

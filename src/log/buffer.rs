@@ -99,18 +99,18 @@ impl LogBuffer {
     /// Feeding it that way is also what keeps the loop moving: plain
     /// [`write`](LogBufferLine::write) would hold a partial tail back and
     /// take none of it, leaving `buf` the same length on every pass — and
-    /// with no `await` on that path, the spin would wedge the whole runtime
-    /// thread rather than just this task.
+    /// nothing on this path yields, so the spin would wedge the thread
+    /// rather than just this task.
     ///
     /// Returns early, dropping the rest, once the log is gone.
-    pub async fn write(&mut self, mut buf: &[u8]) {
+    pub fn write(&mut self, mut buf: &[u8]) {
         while !buf.is_empty() {
             buf = &buf[self.line.write_eof(buf)..];
-            if self.line.is_ready() && !self.flush_line().await {
+            if self.line.is_ready() && !self.flush_line() {
                 return;
             }
         }
-        self.flush_chunk().await;
+        self.flush_chunk();
     }
 
     /// Hand over a chunk holding text, whether or not it filled up.
@@ -121,11 +121,14 @@ impl LogBuffer {
     /// is the line that matters most. So a chunk goes at the end of every
     /// read: a burst fills one several times over and packs, a trickle sends
     /// one line at a time and packs nothing, and neither has to be detected.
-    async fn flush_chunk(&mut self) -> bool {
+    ///
+    /// Once it goes it is in the ring, visible to any reader that looks
+    /// next — there is no stage between here and the history.
+    fn flush_chunk(&mut self) -> bool {
         if self.chunk.is_empty() {
             return true;
         }
-        self.writer.push_chunk(&mut self.chunk).await
+        self.writer.push_chunk(&mut self.chunk)
     }
 
     /// Hand the finished line to the log, then clear it.
@@ -136,14 +139,13 @@ impl LogBuffer {
     /// chunk a finished line, which is what keeps a split line readable as
     /// one afterwards.
     ///
-    /// Returns `false` once the log is gone. There is nowhere left to put
-    /// anything then, and a push that fails that way never yields, so a
-    /// caller that carried on would spin.
-    async fn flush_line(&mut self) -> bool {
+    /// Returns `false` once the log is gone: there is nowhere left to put
+    /// anything, and no reason for the caller to carry on.
+    fn flush_line(&mut self) -> bool {
         loop {
             self.chunk.push_line(&mut self.line);
             if self.chunk.is_finished() {
-                let is_open = self.writer.push_chunk(&mut self.chunk).await;
+                let is_open = self.writer.push_chunk(&mut self.chunk);
                 if !is_open {
                     return false;
                 }
@@ -228,7 +230,7 @@ impl LogBuffer {
                 // character the next one finishes. Both mean stop here.
                 break;
             }
-            if !self.flush_line().await {
+            if !self.flush_line() {
                 self.buf_offset = 0;
                 return Ok(false);
             }
@@ -239,15 +241,15 @@ impl LogBuffer {
             // otherwise sit here for ever.
             self.line.seal();
             if !self.line.is_empty() {
-                self.flush_line().await;
+                self.flush_line();
             }
             // And a chunk still holding text has no later line to close it.
-            self.flush_chunk().await;
+            self.flush_chunk();
             self.buf_offset = 0;
             return Ok(false);
         }
 
-        self.flush_chunk().await;
+        self.flush_chunk();
 
         // Whatever the chunk would not take is the head of a character the
         // next read will finish — at most three bytes, and usually none at
@@ -306,11 +308,6 @@ mod test {
         line::LOG_LINE_SIZE,
     };
 
-    /// Let the sync task move what was pushed into the ring.
-    async fn settle() {
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-    }
 
     #[tokio::test]
     async fn write_keeps_every_line_in_the_buffer() {
@@ -318,8 +315,7 @@ mod test {
         let mut buffer = LogBuffer::new(log.writer());
         // Regression: the loop used to advance by a count it never read, so
         // everything after the first newline was dropped.
-        buffer.write(b"um\ndois\ntres\n").await;
-        settle().await;
+        buffer.write(b"um\ndois\ntres\n");
         assert_eq!(log.collect_lines(), ["um", "dois", "tres"]);
     }
 
@@ -327,9 +323,8 @@ mod test {
     async fn write_carries_an_unfinished_line_between_calls() {
         let log = Log::new(16);
         let mut buffer = LogBuffer::new(log.writer());
-        buffer.write(b"sta").await;
-        buffer.write(b"rting\nup\n").await;
-        settle().await;
+        buffer.write(b"sta");
+        buffer.write(b"rting\nup\n");
         assert_eq!(log.collect_lines(), ["starting", "up"]);
     }
 
@@ -341,10 +336,9 @@ mod test {
     async fn write_terminates_on_a_partial_character() {
         let log = Log::new(16);
         let mut buffer = LogBuffer::new(log.writer());
-        buffer.write("olá".as_bytes()).await;
-        buffer.write(b"ol\xc3").await;
-        buffer.write(b"\n").await;
-        settle().await;
+        buffer.write("olá".as_bytes());
+        buffer.write(b"ol\xc3");
+        buffer.write(b"\n");
         assert_eq!(log.collect_lines(), ["oláol\u{fffd}"]);
     }
 
@@ -356,7 +350,7 @@ mod test {
         let writer = log.writer();
         drop(log);
         let mut buffer = LogBuffer::new(writer);
-        buffer.write(&b"linha\n".repeat(500)).await;
+        buffer.write(&b"linha\n".repeat(500));
     }
 
     /// Each writer gets its own id, and it is dense from zero so a renderer
@@ -384,11 +378,10 @@ mod test {
         let mut um = LogBuffer::new(log.writer());
         let mut dois = LogBuffer::new(log.writer());
 
-        um.write(b"um-a\n").await;
-        dois.write(b"dois-a\n").await;
-        um.write(b"um-b\n").await;
-        dois.write(b"dois-b\n").await;
-        settle().await;
+        um.write(b"um-a\n");
+        dois.write(b"dois-a\n");
+        um.write(b"um-b\n");
+        dois.write(b"dois-b\n");
 
         let a = LogWriterId::new(0);
         let b = LogWriterId::new(1);
@@ -409,8 +402,7 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         let longa = "z".repeat(LOG_CHUNK_SIZE * 3);
-        buffer.write(format!("{longa}\n").as_bytes()).await;
-        settle().await;
+        buffer.write(format!("{longa}\n").as_bytes());
 
         assert_eq!(
             log.collect_attributed(),
@@ -429,8 +421,7 @@ mod test {
         let longa = "abcdefghij".repeat(937);
         assert!(longa.len() > LOG_CHUNK_SIZE * 4, "should cross many chunks");
 
-        buffer.write(format!("{longa}\ndepois\n").as_bytes()).await;
-        settle().await;
+        buffer.write(format!("{longa}\ndepois\n").as_bytes());
 
         assert_eq!(
             log.collect_attributed(),
@@ -453,7 +444,6 @@ mod test {
         let bytes = texto.as_bytes();
         let mut src = bytes;
         while buffer.read(&mut src).await.unwrap() {}
-        settle().await;
 
         assert_eq!(log.collect_lines(), [longa, "curta".to_string()]);
     }
@@ -480,8 +470,7 @@ mod test {
         // 255 ASCII bytes leave a single byte of room, and the next
         // character needs two.
         let linha = format!("{}{}", "a".repeat(LOG_CHUNK_SIZE - 1), "á".repeat(64));
-        buffer.write(format!("{linha}\n").as_bytes()).await;
-        settle().await;
+        buffer.write(format!("{linha}\n").as_bytes());
 
         for (i, bytes) in log.chunk_bytes().iter().enumerate() {
             assert!(
@@ -499,8 +488,7 @@ mod test {
     async fn lines_arriving_together_share_a_chunk() {
         let log = Log::new(16);
         let mut buffer = LogBuffer::new(log.writer());
-        buffer.write(b"um\ndois\ntres\nquatro\n").await;
-        settle().await;
+        buffer.write(b"um\ndois\ntres\nquatro\n");
 
         // Two per chunk, and every piece ends a line.
         assert_eq!(
@@ -521,8 +509,7 @@ mod test {
         let log = Log::new(16);
         let mut buffer = LogBuffer::new(log.writer());
 
-        buffer.write(b"sozinha\n").await;
-        settle().await;
+        buffer.write(b"sozinha\n");
         assert_eq!(log.collect_lines(), ["sozinha"]);
         assert_eq!(log.chunk_pieces(), [vec![("sozinha".to_string(), true)]]);
     }
@@ -536,8 +523,7 @@ mod test {
         let mut buffer = LogBuffer::new(log.writer());
         let longa = "x".repeat(LOG_CHUNK_LIMIT + 8);
 
-        buffer.write(format!("{longa}\ncurta\n").as_bytes()).await;
-        settle().await;
+        buffer.write(format!("{longa}\ncurta\n").as_bytes());
 
         assert_eq!(
             log.chunk_pieces(),
@@ -557,8 +543,7 @@ mod test {
         let mut buffer = LogBuffer::new(log.writer());
         let longa = "y".repeat(LOG_CHUNK_SIZE + 40);
 
-        buffer.write(format!("{longa}\n").as_bytes()).await;
-        settle().await;
+        buffer.write(format!("{longa}\n").as_bytes());
 
         let pieces = log.chunk_pieces();
         assert_eq!(pieces.len(), 2, "expected the line to span two chunks");
@@ -573,8 +558,7 @@ mod test {
     async fn empty_lines_are_kept() {
         let log = Log::new(16);
         let mut buffer = LogBuffer::new(log.writer());
-        buffer.write(b"\n\na\n").await;
-        settle().await;
+        buffer.write(b"\n\na\n");
 
         assert_eq!(log.collect_lines(), ["", "", "a"]);
     }
@@ -597,10 +581,9 @@ mod test {
                 buffer.block_index().is_some(),
                 "run {run} fell back to the heap: the pool drained"
             );
-            buffer.write(b"linha\n").await;
+            buffer.write(b"linha\n");
             // The reader finishes and its buffer falls, as on a restart.
         }
-        settle().await;
         assert_eq!(log.collect_lines().len(), 16, "the ring should be full");
     }
 
@@ -615,12 +598,11 @@ mod test {
         let log = Log::new(16);
 
         let mut primeiro = LogBuffer::new(log.writer());
-        primeiro.write(b"inacabada").await;
+        primeiro.write(b"inacabada");
         drop(primeiro);
 
         let mut segundo = LogBuffer::new(log.writer());
-        segundo.write(b"nova\n").await;
-        settle().await;
+        segundo.write(b"nova\n");
 
         assert_eq!(
             log.collect_lines(),
@@ -668,12 +650,11 @@ mod test {
         longo.read(&mut src).await.unwrap();
 
         // O outro processo escreve no meio.
-        curto.write(b"do outro\n").await;
+        curto.write(b"do outro\n");
 
         // E o longo termina a linha dele.
         let mut src = &b"FIM\n"[..];
         longo.read(&mut src).await.unwrap();
-        settle().await;
 
         let linhas = log.collect_attributed();
         let a = LogWriterId::new(0);
@@ -702,7 +683,6 @@ mod test {
         let src = format!("{long}\ncurta\n").into_bytes();
         let mut src = &src[..];
         while buffer.read(&mut src).await.unwrap() {}
-        settle().await;
         assert_eq!(log.collect_lines(), [long, "curta".to_string()]);
     }
 
@@ -718,7 +698,6 @@ mod test {
             let mut one = &text[i..i + 1];
             buffer.read(&mut one).await.unwrap();
         }
-        settle().await;
         assert_eq!(log.collect_lines(), ["coração"]);
     }
 }

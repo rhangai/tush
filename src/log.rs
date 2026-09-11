@@ -13,11 +13,8 @@
 //!   LogBuffer      holds a partial character across reads
 //!        │  whole characters
 //!        ▼
-//!   LogChunk       fills until a '\n' or until it is full
+//!   LogChunk       packs lines until it is full
 //!        │  finished chunks, by swap — never copied
-//!        ▼
-//!   ThingBuf       lock free hand off, writers never touch the ring
-//!        │  drained by the sync task
 //!        ▼
 //!   LocalRingBuffer<LogChunk>     the last `capacity` chunks
 //! ```
@@ -28,14 +25,25 @@
 //!   regularly mid character, so it keeps the trailing bytes of an unfinished
 //!   character and prepends them to the next read. At most three bytes are
 //!   ever held back.
-//! - `LogChunk` is the unit of storage: one line, or one `LOG_CHUNK_SIZE`
-//!   slice of a line too long to fit. It owns a fixed buffer and only ever
-//!   stores valid UTF-8, so reading it back is a borrow rather than a decode.
-//! - The [`ThingBuf`] queue decouples the readers from the ring. A writer
-//!   swaps its finished chunk for a recycled one and moves on; it never waits
-//!   on the mutex that guards the ring.
-//! - The ring is the history proper, guarded by a mutex and drained into by a
-//!   single background task woken through a [`Notify`].
+//! - `LogChunk` is the unit of storage: as many whole lines as fit, plus what
+//!   it could take of one too long for the room left. It only ever stores
+//!   valid UTF-8, so reading it back is a borrow rather than a decode.
+//! - The ring is the history proper, guarded by a mutex. A writer takes it,
+//!   swaps its finished chunk for the one the ring was about to overwrite,
+//!   and lets go — everything else it does happens outside.
+//!
+//! # Why there is no queue between them
+//!
+//! There was one, with a task draining it into the ring so a writer never
+//! waited on the mutex. It cost more than it saved: measured against pushing
+//! under the lock it ran 1.8 to 3.2 times slower, because the queue's own
+//! hand off, the notification and the task wake up add up to more than an
+//! uncontended lock — and the task took that same lock anyway, so the
+//! contention moved rather than went.
+//!
+//! What it did buy was shelter from a slow reader. That is bought instead by
+//! keeping the critical section to a single swap: nothing is decoded,
+//! allocated or printed while the lock is held, on either side.
 //!
 //! # Why swapping
 //!
@@ -53,8 +61,6 @@
 //! purpose, so a reader task still draining a pipe cannot keep a log alive
 //! past its unit.
 //!
-//! [`ThingBuf`]: thingbuf::StaticThingBuf
-//! [`Notify`]: tokio::sync::Notify
 
 mod buffer;
 mod chunk;
