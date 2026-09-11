@@ -398,6 +398,41 @@ mod test {
         assert_eq!(log.collect_lines(), [longa, "curta".to_string()]);
     }
 
+    /// Every chunk must be valid UTF-8 **on its own**, because
+    /// [`as_str`](super::chunk::LogChunk::as_str) hands it to
+    /// `from_utf8_unchecked`.
+    ///
+    /// The line guarantees its own content is valid, but it is not the line
+    /// that chooses where a chunk cuts — the chunk takes whatever its
+    /// remaining room allows, and that offset knows nothing about character
+    /// boundaries. Here the first chunk fills to one byte short of a two byte
+    /// character, so a cut at the raw capacity would slice it in half.
+    ///
+    /// Note the joined history stays correct either way: the two halves
+    /// concatenate back to the same bytes. That is exactly why this asserts
+    /// per chunk — the damage is invisible from the joined output and only
+    /// shows in a renderer that reads one chunk, or in the `unsafe`.
+    #[tokio::test]
+    async fn every_chunk_is_valid_utf8_on_its_own() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+
+        // 255 ASCII bytes leave a single byte of room, and the next
+        // character needs two.
+        let linha = format!("{}{}", "a".repeat(LOG_CHUNK_SIZE - 1), "á".repeat(64));
+        buffer.write(format!("{linha}\n").as_bytes()).await;
+        settle().await;
+
+        for (i, bytes) in log.chunk_bytes().iter().enumerate() {
+            assert!(
+                std::str::from_utf8(bytes).is_ok(),
+                "chunk {i} is not valid UTF-8 on its own: {:x?}",
+                &bytes[bytes.len().saturating_sub(8)..]
+            );
+        }
+        assert_eq!(log.collect_lines(), [linha]);
+    }
+
     #[tokio::test]
     async fn read_splits_a_line_longer_than_a_chunk() {
         let log = Log::new(64);

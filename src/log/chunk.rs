@@ -10,7 +10,6 @@ use crate::log::{line::LogBufferLine, log::LogWriterId};
 /// chunks and only the last of them reports [`is_line`](LogChunk::is_line).
 pub const LOG_CHUNK_SIZE: usize = 256;
 
-
 /// Why a chunk stopped accepting bytes.
 ///
 /// Private on purpose: the outside asks
@@ -125,7 +124,6 @@ impl LogChunk {
         self.state == LogChunkState::EndLine
     }
 
-
     /// Place as much of `line` as fits, reporting how many bytes were taken.
     ///
     /// The text arrives already validated and already split — that work
@@ -149,19 +147,18 @@ impl LogChunk {
 
         let text = line.pending();
         let pending = text.len();
-        let mut taken = (LOG_CHUNK_SIZE - self.len).min(pending);
-        // Back off to a boundary: a chunk holding half a character would be
-        // undecodable on its own, and `as_str` promises it is not.
-        while taken > 0 && !text.is_char_boundary(taken) {
-            taken -= 1;
-        }
+        // The room decides the cut, and it knows nothing about characters, so
+        // it lands inside one regularly. Back off to a boundary: a chunk
+        // holding half a character would be undecodable on its own, and
+        // `as_str` promises it is not.
+        let taken = text.floor_char_boundary((LOG_CHUNK_SIZE - self.len).min(pending));
 
         self.buf[self.len..self.len + taken].copy_from_slice(&text.as_bytes()[..taken]);
         self.len += taken;
 
         if taken < pending {
-            // Room ran out with the line unfinished, whatever `complete` says
-            // about the line as a whole — what is stored here is a head.
+            // Room ran out with the line unfinished. Whatever the line says
+            // about itself, what is stored here is only a head.
             self.state = LogChunkState::End;
         } else if line.is_complete() {
             self.state = LogChunkState::EndLine;
@@ -169,7 +166,6 @@ impl LogChunk {
         line.consume(taken);
         taken
     }
-
 
     /// The content, as text.
     ///
@@ -210,4 +206,3 @@ impl LogChunk {
         self.len == 0
     }
 }
-

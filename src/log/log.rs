@@ -356,6 +356,21 @@ impl Log {
             .collect()
     }
 
+    /// Every chunk in the ring, as raw bytes.
+    ///
+    /// For checking the invariant [`as_str`](LogChunk::as_str) relies on:
+    /// each chunk has to be valid UTF-8 *on its own*, not merely once the
+    /// ring is concatenated.
+    pub(super) fn chunk_bytes(&self) -> Vec<Vec<u8>> {
+        self.inner.sync_queue();
+        self.inner
+            .chunks
+            .lock()
+            .iter()
+            .map(|chunk| chunk.as_bytes().to_vec())
+            .collect()
+    }
+
     /// The history as lines, each with the writer that produced it.
     ///
     /// Every chunk of a split line carries the same stamp — one writer filled

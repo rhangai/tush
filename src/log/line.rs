@@ -1,17 +1,22 @@
 //! One line under construction, assembled from whatever the pipe hands over.
 
+
 /// How much of a single line is assembled before it has to be handed over.
 ///
-/// A line longer than this cannot be held whole, so it leaves as a fragment
-/// and the rest follows — the same way a line too long for a chunk is split,
-/// only decided here, where the length is known, instead of being discovered
-/// part way through a chunk.
+/// Deliberately not tied to [`LOG_CHUNK_SIZE`](super::chunk::LOG_CHUNK_SIZE).
+/// Packing alone would not need it — a line larger than a chunk fits nowhere
+/// and has to be split whatever its length is, so
+/// [`is_complete`](LogBufferLine::is_complete) being false already says
+/// everything the placing decides on. Holding the line whole is worth more
+/// than that: while it is here it is one addressable thing, and anything that
+/// wants to look at a line as a line has to do it before it is cut up.
 ///
-/// One of these exists per reader task, not per log, so the size buys
-/// knowledge cheaply: measured output has a median around 45 bytes and a 99th
-/// percentile around 170, so a kibibyte holds essentially every real line
-/// whole, and the fragment path stays for the genuine outliers — a minified
-/// bundle, a `--verbose` compiler invocation.
+/// Sized from measured output — a median around 45 bytes and a 99th
+/// percentile around 170 — so a kibibyte holds essentially every real line
+/// whole and the fragment path stays for genuine outliers: a minified bundle,
+/// a `--verbose` compiler invocation.
+///
+/// One of these exists per reader task, not per log, so the room is cheap.
 const LOG_LINE_SIZE: usize = 1024;
 
 /// The longest a single UTF-8 character can be.
