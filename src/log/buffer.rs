@@ -1,4 +1,7 @@
-use std::io::{self, ErrorKind};
+use std::{
+    io::{self, ErrorKind},
+    mem::ManuallyDrop,
+};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -35,10 +38,13 @@ pub struct LogBuffer {
     /// The chunk being filled. Swapped for a recycled one on every push, so
     /// the same block is reused for the life of the task.
     ///
-    /// Optional only so that [`Drop`] can hand it back — a chunk cannot be
-    /// moved out of `&mut self`, and letting it fall would spend an arena
-    /// block for good on every run of a unit.
-    chunk: Option<LogChunk>,
+    /// Wrapped so that [`Drop`] can hand it back: a chunk cannot be moved
+    /// out of `&mut self` by ordinary means, and letting it fall would spend
+    /// an arena block for good on every run of a unit. `ManuallyDrop` keeps
+    /// the field reachable as a plain chunk — it derefs — where an `Option`
+    /// would put an unwrap at every use for a state that only exists for the
+    /// instant between the take and the end of the drop.
+    chunk: ManuallyDrop<LogChunk>,
     /// Landing area for the raw read, big enough that one syscall is worth
     /// making.
     buf: Box<[u8; LOG_BUFFER_SIZE]>,
@@ -59,7 +65,7 @@ impl LogBuffer {
     /// spent — either way there is always one.
     pub fn new(writer: LogWriterRef) -> Self {
         Self {
-            chunk: Some(writer.chunk()),
+            chunk: ManuallyDrop::new(writer.chunk()),
             writer,
             line: LogBufferLine::new(),
             buf: unsafe { Box::<[u8; LOG_BUFFER_SIZE]>::new_zeroed().assume_init() },
@@ -71,10 +77,7 @@ impl LogBuffer {
     /// that a block came back rather than a new one being taken.
     #[cfg(test)]
     fn block_index(&self) -> Option<u32> {
-        self.chunk
-            .as_ref()
-            .expect("the chunk is taken only on drop")
-            .block_index()
+        self.chunk.block_index()
     }
 
     /// Push bytes in directly, without a reader.
@@ -119,11 +122,10 @@ impl LogBuffer {
     /// read: a burst fills one several times over and packs, a trickle sends
     /// one line at a time and packs nothing, and neither has to be detected.
     async fn flush_chunk(&mut self) -> bool {
-        let chunk = self.chunk.as_mut().expect("the chunk is taken only on drop");
-        if chunk.is_empty() {
+        if self.chunk.is_empty() {
             return true;
         }
-        self.writer.push_chunk(chunk).await
+        self.writer.push_chunk(&mut self.chunk).await
     }
 
     /// Hand the finished line to the log, then clear it.
@@ -139,10 +141,9 @@ impl LogBuffer {
     /// caller that carried on would spin.
     async fn flush_line(&mut self) -> bool {
         loop {
-            let chunk = self.chunk.as_mut().expect("the chunk is taken only on drop");
-            chunk.push_line(&mut self.line);
-            if chunk.is_finished() {
-                let is_open = self.writer.push_chunk(chunk).await;
+            self.chunk.push_line(&mut self.line);
+            if self.chunk.is_finished() {
+                let is_open = self.writer.push_chunk(&mut self.chunk).await;
                 if !is_open {
                     return false;
                 }
@@ -272,9 +273,12 @@ impl LogBuffer {
 /// from under it, and only `Drop` covers both.
 impl Drop for LogBuffer {
     fn drop(&mut self) {
-        if let Some(chunk) = self.chunk.take() {
-            self.writer.recycle(chunk);
-        }
+        // SAFETY: the one and only take. `drop` runs once, nothing reads
+        // `chunk` after this, and `ManuallyDrop` means the field is not
+        // dropped again on the way out — so the chunk is moved exactly once
+        // and destroyed exactly once, by `recycle`.
+        let chunk = unsafe { ManuallyDrop::take(&mut self.chunk) };
+        self.writer.recycle(chunk);
     }
 }
 
