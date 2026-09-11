@@ -49,8 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let h1 = unit.start()?;
     // println!("{:?}", h1.state());
     h1.wait().await;
-    log.sync();
-    for line in log.iter() {
+    for line in log.iter_sync() {
         line.print();
     }
     Ok(())

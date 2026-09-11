@@ -514,12 +514,20 @@ impl LogReader {
 
     /// Walk the history a piece at a time, oldest first.
     ///
+    /// Fetches first, so a render loop is one call and never shows a frame
+    /// staler than it had to be. The name carries the `&mut` rather than
+    /// leaving it to be discovered — which is also why there is no bare
+    /// `iter` here: between two walks that differ in exactly one thing, the
+    /// pair is clearer than a default and an exception.
+    ///
+    /// [`iter_unsync`](LogReader::iter_unsync) is the other half.
+    ///
     /// Each step is a [`LogReaderRef`]: the text to put out, whether a line
     /// ends after it, and which chunk it came from. So the whole of a plain
     /// render is
     ///
     /// ```ignore
-    /// for piece in reader.iter() {
+    /// for piece in reader.iter_sync() {
     ///     piece.print();
     /// }
     /// ```
@@ -545,7 +553,25 @@ impl LogReader {
     /// A caller that wants split lines whole even then has to buffer per
     /// writer, which is more than a `print!` can do and more than most views
     /// need.
-    pub fn iter(&self) -> LogReaderIter<'_> {
+    pub fn iter_sync(&mut self) -> LogReaderIter<'_> {
+        self.sync();
+        self.iter_unsync()
+    }
+
+    /// Walk what the reader already holds, without going to the log.
+    ///
+    /// The same walk over the same pieces as
+    /// [`iter_sync`](LogReader::iter_sync); the only difference is that it
+    /// fetches nothing first, so it takes `&self` and any number of walks may
+    /// be alive at once.
+    ///
+    /// For a view rendering the copy it already has — repainting after a
+    /// resize, drawing the same frame twice — and for anything that must not
+    /// touch the log's lock at that moment.
+    ///
+    /// The `unsync` is about [`sync`](LogReader::sync) and nothing else: it
+    /// does not mean what an `unsync` module usually means elsewhere.
+    pub fn iter_unsync(&self) -> LogReaderIter<'_> {
         let (head, tail) = self.chunks.as_slices();
         LogReaderIter {
             head,
@@ -620,7 +646,7 @@ pub struct LogReaderRef<'a> {
     /// The text of this piece. Never owns anything: it borrows the reader's
     /// copy, which is why rendering allocates nothing.
     data: &'a str,
-    /// Whether a line ends after this piece — see [`LogReader::iter`] for
+    /// Whether a line ends after this piece — see [`LogReader::iter_sync`] for
     /// when it does not.
     newline: bool,
     /// Which chunk it came from, counted from the oldest the reader holds.
@@ -651,7 +677,7 @@ impl<'a> LogReaderRef<'a> {
 
     /// Put it out, breaking the line or not as it says.
     ///
-    /// The whole of a plain renderer: `for piece in reader.iter() {
+    /// The whole of a plain renderer: `for piece in reader.iter_sync() {
     /// piece.print() }` reproduces the output as the process wrote it, with
     /// nothing joined or allocated on the way.
     pub fn print(&self) {
@@ -733,7 +759,7 @@ mod test {
     /// What a renderer does, collected instead of printed.
     fn render(reader: &LogReader) -> String {
         let mut out = String::new();
-        for piece in reader.iter() {
+        for piece in reader.iter_unsync() {
             out.push_str(piece.as_str());
             if piece.newline() {
                 out.push('\n');
@@ -767,10 +793,10 @@ mod test {
         reader.sync();
 
         // More pieces than lines, and still the same text.
-        assert!(reader.iter().count() > 2);
+        assert!(reader.iter_unsync().count() > 2);
         assert_eq!(render(&reader), format!("{longa}\ndepois\n"));
         // Exactly one piece says "carry on".
-        assert_eq!(reader.iter().filter(|p| !p.newline()).count(), 1);
+        assert_eq!(reader.iter_unsync().filter(|p| !p.newline()).count(), 1);
     }
 
     /// With another process's chunk between the halves of a split line, a
@@ -819,7 +845,7 @@ mod test {
         reader.sync();
         assert!(!reader.is_empty(), "nothing reached the log");
         assert!(
-            reader.iter().last().is_some_and(|piece| piece.newline()),
+            reader.iter_unsync().last().is_some_and(|piece| piece.newline()),
             "the last piece left the line hanging"
         );
     }
@@ -837,7 +863,7 @@ mod test {
         reader.sync();
 
         let seen: Vec<_> = reader
-            .iter()
+            .iter_unsync()
             .map(|piece| (piece.index(), piece.as_str().to_string()))
             .collect();
         assert_eq!(
@@ -851,12 +877,30 @@ mod test {
         );
     }
 
+    /// `iter_unsync` shows only what has been fetched, so a reader that never
+    /// synced has nothing — which is the whole difference between the two.
     #[test]
-    fn iter_on_a_reader_that_never_synced_is_empty() {
+    fn iter_unsync_shows_only_what_was_already_fetched() {
         let log = Log::new(16);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write(b"algo\n");
-        assert_eq!(log.reader().iter().count(), 0);
+        assert_eq!(log.reader().iter_unsync().count(), 0);
+    }
+
+    /// And `iter_sync` fetches first, so it never needs syncing by hand.
+    #[test]
+    fn iter_sync_fetches_before_it_walks() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write(b"um\ndois\n");
+
+        let mut reader = log.reader();
+        assert_eq!(reader.iter_sync().count(), 2, "it walked without fetching");
+
+        // And it keeps up without being asked again.
+        buffer.write(b"tres\n");
+        assert_eq!(reader.iter_sync().count(), 3);
+        assert_eq!(render(&reader), "um\ndois\ntres\n");
     }
 
     #[test]
