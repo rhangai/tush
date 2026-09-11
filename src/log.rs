@@ -58,6 +58,7 @@
 
 mod buffer;
 mod chunk;
+mod line;
 mod log;
 
 #[allow(unused_imports)]
