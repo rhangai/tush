@@ -1,4 +1,7 @@
-use std::sync::{Arc, Weak};
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicU32, Ordering},
+};
 
 use crate::{
     log::{LogBuffer, chunk::LogChunk},
@@ -24,9 +27,21 @@ const CHUNK_QUEUE_SIZE: usize = 128;
 /// go of the log.
 pub struct LogWriterRef {
     inner: Weak<LogInner>,
+    /// Stamped onto every chunk this writer hands over. Fixed at creation:
+    /// one writer is one source of output for its whole life, which is what
+    /// makes the stamp worth anything.
+    id: LogWriterId,
 }
 
 impl LogWriterRef {
+    /// Which writer this is.
+    ///
+    /// The same id its chunks carry, so a caller holding the writer can find
+    /// that writer's output in the history.
+    pub fn id(&self) -> LogWriterId {
+        self.id
+    }
+
     /// Hand a finished chunk over to the log and take a recycled one back.
     ///
     /// Nothing is copied: the chunk swaps places with whichever slot the
@@ -80,6 +95,9 @@ impl LogWriterRef {
         let Ok(mut item) = inner.chunks_queue.push_ref() else {
             return Some(false);
         };
+        // Stamp before the hand-off: after the swap this chunk is the
+        // recycled one, and the stamp belongs to the content going in.
+        chunk.set_writer(self.id);
         item.swap(chunk);
         inner.notify_writer();
         Some(true)
@@ -110,6 +128,40 @@ impl LogWriterRef {
             }
             Ok(())
         })
+    }
+}
+
+/// Which writer produced a chunk.
+///
+/// A log takes from as many writers as a unit has processes, and their chunks
+/// land interleaved in one ring. The stamp is what lets them be told apart
+/// again afterwards — to label a line, to colour it, or to filter the history
+/// down to one process.
+///
+/// Ids are handed out by the log, densely from zero, so they double as an
+/// index into whatever a renderer keeps per writer.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct LogWriterId {
+    raw: u32,
+}
+
+impl LogWriterId {
+    /// The stamp a chunk carries before any writer has claimed it.
+    ///
+    /// A chunk in the ring always carries a real id — it is stamped on the
+    /// way in — so this only ever shows on one that has not been handed over
+    /// yet, or on one a recycler has just reset.
+    pub const UNSET: Self = Self::new(u32::MAX);
+
+    /// Mint the id numbered `raw`. The log is the only thing that should be
+    /// choosing these.
+    pub(super) const fn new(raw: u32) -> Self {
+        Self { raw }
+    }
+
+    /// The number behind the id, for indexing.
+    pub const fn index(self) -> usize {
+        self.raw as usize
     }
 }
 
@@ -147,6 +199,7 @@ impl Log {
     pub fn writer(&self) -> LogWriterRef {
         LogWriterRef {
             inner: Arc::downgrade(&self.inner),
+            id: self.inner.next_writer_id(),
         }
     }
 
@@ -189,6 +242,10 @@ struct LogInner {
     /// drains makes its reader wait rather than letting the queue grow
     /// without bound.
     chunks_queue: StaticThingBuf<LogChunk, CHUNK_QUEUE_SIZE, LogChunkRecycler>,
+    /// Hands out the next [`LogWriterId`]. Only ever incremented, so an id
+    /// is never reused even after a writer is gone — a stale stamp in the
+    /// ring keeps meaning the writer it always meant.
+    next_writer_id: AtomicU32,
     /// The task draining `chunks_queue` into `chunks`. Aborted on drop.
     sync_handle: JoinHandle<()>,
     /// How a writer tells that task there is something to drain. Held by an
@@ -239,6 +296,7 @@ impl LogInner {
             };
             LogInner {
                 chunks: Mutex::new(LocalRingBuffer::new_with(capacity, LogChunk::new)),
+                next_writer_id: AtomicU32::new(0),
                 chunks_queue: StaticThingBuf::with_recycle(LogChunkRecycler {}),
                 sync_handle,
                 notify,
@@ -275,6 +333,11 @@ impl LogInner {
     /// after a successful push. Cheap when the task is already awake, and a
     /// notification raised then is remembered, so a chunk pushed while the
     /// task was mid-drain still gets a pass of its own.
+    /// Claim the next writer id.
+    fn next_writer_id(&self) -> LogWriterId {
+        LogWriterId::new(self.next_writer_id.fetch_add(1, Ordering::Relaxed))
+    }
+
     fn notify_writer(&self) {
         self.notify.notify_one();
     }
@@ -287,18 +350,33 @@ impl Log {
     /// Joins the chunks a long line was split across, which is what a real
     /// renderer has to do and what [`debug`](Log::debug) does not.
     pub(super) fn collect_lines(&self) -> Vec<String> {
+        self.collect_attributed()
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect()
+    }
+
+    /// The history as lines, each with the writer that produced it.
+    ///
+    /// Every chunk of a split line carries the same stamp — one writer filled
+    /// all of them — so the joined line takes the stamp of its first chunk.
+    pub(super) fn collect_attributed(&self) -> Vec<(LogWriterId, String)> {
         self.inner.sync_queue();
         let mut lines = Vec::new();
         let mut current = String::new();
+        let mut writer = LogWriterId::UNSET;
         for chunk in self.inner.chunks.lock().iter() {
+            if current.is_empty() {
+                writer = chunk.writer();
+            }
             current.push_str(chunk.as_str());
             if chunk.is_line() {
-                lines.push(std::mem::take(&mut current));
+                lines.push((writer, std::mem::take(&mut current)));
             }
         }
         // A last line flushed without a newline of its own.
         if !current.is_empty() {
-            lines.push(current);
+            lines.push((writer, current));
         }
         lines
     }

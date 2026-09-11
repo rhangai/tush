@@ -64,4 +64,4 @@ mod log;
 pub use buffer::LogBuffer;
 
 #[allow(unused_imports)]
-pub use log::{Log, LogWriterRef};
+pub use log::{Log, LogWriterId, LogWriterRef};

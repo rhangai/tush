@@ -213,7 +213,7 @@ fn is_disconnected(error: &io::Error) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::log::{Log, chunk::LOG_CHUNK_SIZE};
+    use crate::log::{Log, LogWriterId, chunk::LOG_CHUNK_SIZE};
 
     /// Let the sync task move what was pushed into the ring.
     async fn settle() {
@@ -266,6 +266,65 @@ mod test {
         drop(log);
         let mut buffer = LogBuffer::new(writer);
         buffer.write(&b"linha\n".repeat(500)).await;
+    }
+
+    /// Each writer gets its own id, and it is dense from zero so a renderer
+    /// can index by it.
+    #[tokio::test]
+    async fn writers_are_numbered_from_zero() {
+        let log = Log::new(16);
+        let ids: Vec<_> = (0..3).map(|_| log.writer().id()).collect();
+        assert_eq!(
+            ids,
+            [
+                LogWriterId::new(0),
+                LogWriterId::new(1),
+                LogWriterId::new(2)
+            ]
+        );
+        assert_eq!(ids[2].index(), 2);
+    }
+
+    /// The point of the stamp: two processes writing into one log stay
+    /// tellable apart once their lines are interleaved in the ring.
+    #[tokio::test]
+    async fn interleaved_writers_keep_their_lines_apart() {
+        let log = Log::new(16);
+        let mut um = LogBuffer::new(log.writer());
+        let mut dois = LogBuffer::new(log.writer());
+
+        um.write(b"um-a\n").await;
+        dois.write(b"dois-a\n").await;
+        um.write(b"um-b\n").await;
+        dois.write(b"dois-b\n").await;
+        settle().await;
+
+        let a = LogWriterId::new(0);
+        let b = LogWriterId::new(1);
+        assert_eq!(
+            log.collect_attributed(),
+            [
+                (a, "um-a".to_string()),
+                (b, "dois-a".to_string()),
+                (a, "um-b".to_string()),
+                (b, "dois-b".to_string()),
+            ]
+        );
+    }
+
+    /// A line split across chunks is one writer's, all the way through.
+    #[tokio::test]
+    async fn a_split_line_carries_one_stamp() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa = "z".repeat(LOG_CHUNK_SIZE * 3);
+        buffer.write(format!("{longa}\n").as_bytes()).await;
+        settle().await;
+
+        assert_eq!(
+            log.collect_attributed(),
+            [(LogWriterId::new(0), longa)]
+        );
     }
 
     #[tokio::test]

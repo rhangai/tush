@@ -1,3 +1,5 @@
+use crate::log::log::LogWriterId;
+
 /// How many bytes of content one chunk holds.
 ///
 /// This is the granularity of the whole log: the ring remembers a number of
@@ -65,6 +67,10 @@ pub(super) struct LogChunk {
     buf: Box<[u8; LOG_CHUNK_SIZE]>,
     len: usize,
     state: LogChunkState,
+    /// Who wrote this. Stamped as the chunk is handed to the log, not as it
+    /// is filled, so it cannot drift out of step with the content: the writer
+    /// doing the handing over is by definition the one that wrote it.
+    writer: LogWriterId,
 }
 
 impl LogChunk {
@@ -77,6 +83,7 @@ impl LogChunk {
             buf: unsafe { Box::<[u8; LOG_CHUNK_SIZE]>::new_zeroed().assume_init() },
             len: 0,
             state: LogChunkState::Open,
+            writer: LogWriterId::UNSET,
         }
     }
 
@@ -100,6 +107,19 @@ impl LogChunk {
         // Without this a recycled chunk comes back already finished, and
         // every later `write` returns 0 for ever.
         self.state = LogChunkState::Open;
+        // A recycled chunk carries the last writer's stamp, which would be a
+        // lie the moment a different one filled it.
+        self.writer = LogWriterId::UNSET;
+    }
+
+    /// Who wrote this chunk.
+    pub fn writer(&self) -> LogWriterId {
+        self.writer
+    }
+
+    /// Claim the chunk for `writer`, as it is handed to the log.
+    pub(super) fn set_writer(&mut self, writer: LogWriterId) {
+        self.writer = writer;
     }
 
     /// Check if the chunk is finished, that means, or a new line was found
