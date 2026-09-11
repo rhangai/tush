@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 
 use crate::{
-    log::Log,
+    log::{Log, LogReader},
     runner::{RunnerHandle, RunnerState},
     unit::description::UnitDescription,
 };
@@ -112,6 +112,11 @@ impl Unit {
             .load()
             .as_ref()
             .map_or(RunnerState::Stopped, |s| s.state())
+    }
+
+    /// Create a new log reader to be used
+    pub fn log_reader(&self) -> LogReader {
+        self.log.reader()
     }
 }
 

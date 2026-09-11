@@ -512,6 +512,49 @@ impl LogReader {
         take
     }
 
+    /// Walk the history a piece at a time, oldest first.
+    ///
+    /// Each step is a [`LogReaderRef`]: the text to put out, whether a line
+    /// ends after it, and which chunk it came from. So the whole of a plain
+    /// render is
+    ///
+    /// ```ignore
+    /// for piece in reader.iter() {
+    ///     piece.print();
+    /// }
+    /// ```
+    ///
+    /// and nothing has to be joined, buffered or allocated to get there. A
+    /// line the chunk size cut in two arrives as two pieces, the first of
+    /// them saying "no newline", and the terminal puts it back together by
+    /// simply not breaking.
+    ///
+    /// # When a piece says no newline
+    ///
+    /// Only when the line really does carry on *in the very next piece*: the
+    /// chunk has to be one the room cut short, and the chunk after it has to
+    /// belong to the same writer.
+    ///
+    /// That second condition is the one that matters. A log takes from every
+    /// process of a unit, so another writer's chunk can land between the two
+    /// halves of a split line. Printing sequentially there is a choice
+    /// between two flawed outputs, and this picks the lesser: the split line
+    /// is broken where it should not be, rather than having a stranger's line
+    /// run into the middle of it and vanish as a line of its own.
+    ///
+    /// A caller that wants split lines whole even then has to buffer per
+    /// writer, which is more than a `print!` can do and more than most views
+    /// need.
+    pub fn iter(&self) -> LogReaderIter<'_> {
+        let (head, tail) = self.chunks.as_slices();
+        LogReaderIter {
+            head,
+            tail,
+            chunk: 0,
+            piece: 0,
+        }
+    }
+
     /// How many chunks the reader holds.
     pub fn len(&self) -> usize {
         self.chunks.len()
@@ -544,10 +587,120 @@ impl LogReader {
 
 }
 
+/// Walks a [`LogReader`]'s pieces, oldest first.
+///
+/// Holds the ring's two slices rather than its iterator because it has to
+/// look one chunk ahead to answer whether a line ends — and an iterator that
+/// can peek past its own position is more machinery than an index.
+pub struct LogReaderIter<'a> {
+    /// From the oldest chunk to the end of the ring's array.
+    head: &'a [LogReaderChunk],
+    /// Whatever wrapped past the end, or nothing if the contents do not.
+    tail: &'a [LogReaderChunk],
+    /// Which chunk, counting across `head` then `tail`.
+    chunk: usize,
+    /// Which piece of that chunk.
+    piece: usize,
+}
+
+impl<'a> LogReaderIter<'a> {
+    /// Chunk `n`, counting across both slices, or `None` past the end.
+    fn at(&self, n: usize) -> Option<&'a LogReaderChunk> {
+        self.head.get(n).or_else(|| self.tail.get(n - self.head.len()))
+    }
+}
+
+/// One step of a walk: some text, whether a line ends after it, and which
+/// chunk it came from.
+///
+/// A tuple would carry the first two, but a view wants the third — to group
+/// pieces, to anchor a scroll, to know which chunk a click landed on — and a
+/// three field tuple at every call site is worse than a name.
+pub struct LogReaderRef<'a> {
+    /// The text of this piece. Never owns anything: it borrows the reader's
+    /// copy, which is why rendering allocates nothing.
+    data: &'a str,
+    /// Whether a line ends after this piece — see [`LogReader::iter`] for
+    /// when it does not.
+    newline: bool,
+    /// Which chunk it came from, counted from the oldest the reader holds.
+    ///
+    /// A position in the window, not an identity: the window slides as older
+    /// chunks fall out, so the same chunk answers a smaller number after the
+    /// next sync. A view that needs a handle that survives that can build one
+    /// from [`seen`](LogReader::seen) — `seen - len + index` counts from the
+    /// beginning of the log instead, and never repeats.
+    index: usize,
+}
+
+impl<'a> LogReaderRef<'a> {
+    /// The text of this piece.
+    pub fn as_str(&self) -> &'a str {
+        self.data
+    }
+
+    /// Whether a line ends after it.
+    pub fn newline(&self) -> bool {
+        self.newline
+    }
+
+    /// Which chunk it came from, counted from the oldest held.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Put it out, breaking the line or not as it says.
+    ///
+    /// The whole of a plain renderer: `for piece in reader.iter() {
+    /// piece.print() }` reproduces the output as the process wrote it, with
+    /// nothing joined or allocated on the way.
+    pub fn print(&self) {
+        if self.newline {
+            println!("{}", self.data);
+        } else {
+            print!("{}", self.data);
+        }
+    }
+}
+
+impl<'a> Iterator for LogReaderIter<'a> {
+    type Item = LogReaderRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let chunk = self.at(self.chunk)?;
+            // A chunk with nothing left to give; move on. Pushed chunks are
+            // never empty, so this is a step rather than a loop in practice.
+            if self.piece >= chunk.count() {
+                self.chunk += 1;
+                self.piece = 0;
+                continue;
+            }
+
+            let text = chunk.get_str(self.piece)?;
+            let last = self.piece + 1 == chunk.count();
+            // The line carries on only if this chunk was cut short *and* the
+            // next chunk is the same writer's — see `LogReader::iter`.
+            let carries_on = last
+                && chunk.continues()
+                && self
+                    .at(self.chunk + 1)
+                    .is_some_and(|next| next.writer() == chunk.writer());
+
+            self.piece += 1;
+            return Some(LogReaderRef {
+                data: text,
+                newline: !carries_on,
+                index: self.chunk,
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::log::{LogBuffer, chunk::LOG_CHUNK_SIZE};
+    use crate::log::{LogBuffer, chunk::LOG_CHUNK_SIZE, line::LOG_LINE_SIZE};
 
     /// A log with `lines` lines already in it.
     ///
@@ -575,6 +728,135 @@ mod test {
             .filter(|chunk| !chunk.is_empty())
             .map(|chunk| format!("{}:{}", chunk.writer().index(), chunk.len()))
             .collect()
+    }
+
+    /// What a renderer does, collected instead of printed.
+    fn render(reader: &LogReader) -> String {
+        let mut out = String::new();
+        for piece in reader.iter() {
+            out.push_str(piece.as_str());
+            if piece.newline() {
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn iter_gives_back_the_lines_that_went_in() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write(b"um\ndois\ntres\n");
+
+        let mut reader = log.reader();
+        reader.sync();
+        assert_eq!(render(&reader), "um\ndois\ntres\n");
+    }
+
+    /// A line the chunk size cut in two arrives as two pieces, and the first
+    /// says not to break — so a `print!` puts it back together with nothing
+    /// buffered.
+    #[test]
+    fn iter_does_not_break_a_line_the_room_cut() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa = "L".repeat(LOG_CHUNK_SIZE + 40);
+        buffer.write(format!("{longa}\ndepois\n").as_bytes());
+
+        let mut reader = log.reader();
+        reader.sync();
+
+        // More pieces than lines, and still the same text.
+        assert!(reader.iter().count() > 2);
+        assert_eq!(render(&reader), format!("{longa}\ndepois\n"));
+        // Exactly one piece says "carry on".
+        assert_eq!(reader.iter().filter(|p| !p.newline()).count(), 1);
+    }
+
+    /// With another process's chunk between the halves of a split line, a
+    /// sequential render cannot have both. It breaks the split line rather
+    /// than letting the stranger's line run into the middle of it — the
+    /// second would lose a line, the first only wraps one.
+    #[test]
+    fn iter_breaks_a_split_line_rather_than_splicing_another_writers_into_it() {
+        let log = Log::new(16);
+        let mut longo = LogBuffer::new(log.writer());
+        let mut curto = LogBuffer::new(log.writer());
+
+        let grande = "L".repeat(LOG_CHUNK_SIZE + 40);
+        // Written in pieces so the other writer can land between them.
+        longo.write(grande.as_bytes());
+        curto.write(b"do outro\n");
+        longo.write(b"FIM\n");
+
+        let mut reader = log.reader();
+        reader.sync();
+
+        let saida = render(&reader);
+        assert!(
+            saida.contains("do outro\n"),
+            "the other writer's line was swallowed: {saida:?}"
+        );
+        assert!(
+            !saida.contains("Ldo outro"),
+            "another writer's line ran into the middle of a split one"
+        );
+    }
+
+    /// The last piece of the newest chunk has nothing after it to carry the
+    /// line on, so it ends one — a line still being written shows rather than
+    /// waiting for its newline.
+    ///
+    /// It takes more than the line buffer to get here: a shorter unterminated
+    /// line never leaves the buffer at all, so the log would have nothing.
+    #[test]
+    fn iter_closes_the_line_at_the_end_of_what_it_has() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write(&"m".repeat(LOG_LINE_SIZE + 8).into_bytes());
+
+        let mut reader = log.reader();
+        reader.sync();
+        assert!(!reader.is_empty(), "nothing reached the log");
+        assert!(
+            reader.iter().last().is_some_and(|piece| piece.newline()),
+            "the last piece left the line hanging"
+        );
+    }
+
+    /// The index says which chunk a piece came from, so a view can group them
+    /// — pieces of one chunk share it, and it only ever goes up.
+    #[test]
+    fn iter_reports_which_chunk_each_piece_came_from() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        // Four lines pack two to a chunk.
+        buffer.write(b"um\ndois\ntres\nquatro\n");
+
+        let mut reader = log.reader();
+        reader.sync();
+
+        let seen: Vec<_> = reader
+            .iter()
+            .map(|piece| (piece.index(), piece.as_str().to_string()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (0, "um".to_string()),
+                (0, "dois".to_string()),
+                (1, "tres".to_string()),
+                (1, "quatro".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn iter_on_a_reader_that_never_synced_is_empty() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write(b"algo\n");
+        assert_eq!(log.reader().iter().count(), 0);
     }
 
     #[test]

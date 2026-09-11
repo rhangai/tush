@@ -76,6 +76,27 @@ impl<'a> LogChunkData<'a> {
     }
 }
 
+/// Where piece `n` starts and ends in a chunk's buffer.
+///
+/// Free rather than a method because both kinds of chunk answer it the same
+/// way and from the same two fields — the one being filled and the copy a
+/// reader keeps. Duplicating it would leave two versions of the arithmetic
+/// that decides what `from_utf8_unchecked` is handed.
+///
+/// Pieces are packed back to back, so one starts where the last ended, and
+/// the end of the last is also the length of the whole.
+const fn piece_bounds(
+    ends: &[u16; LOG_CHUNK_MAX_LINES],
+    count: usize,
+    n: usize,
+) -> Option<(usize, usize)> {
+    if n >= count {
+        return None;
+    }
+    let start = if n == 0 { 0 } else { ends[n - 1] as usize };
+    Some((start, ends[n] as usize))
+}
+
 /// A slice of the history: a few lines of text, packed.
 ///
 /// Storage, and only storage. It holds text that is already valid and already
@@ -233,11 +254,7 @@ impl LogChunk {
     /// Pieces are packed back to back, so one starts where the last ended,
     /// and the final one runs to `len`.
     fn bounds(&self, n: usize) -> Option<(usize, usize)> {
-        if n >= self.count {
-            return None;
-        }
-        let start = if n == 0 { 0 } else { self.ends[n - 1] as usize };
-        Some((start, self.ends[n] as usize))
+        piece_bounds(&self.ends, self.count, n)
     }
 
     /// Piece `n`, with whether it ends a line.
@@ -487,5 +504,24 @@ impl LogReaderChunk {
     /// Who wrote it.
     pub fn writer(&self) -> LogWriterId {
         self.writer
+    }
+
+    /// Whether its last piece runs on into this writer's next chunk.
+    ///
+    /// Only the last can: everything before it was closed by the newline that
+    /// began the next.
+    pub fn continues(&self) -> bool {
+        self.trailing_open
+    }
+
+    /// The text of piece `n`.
+    pub fn get_str(&self, n: usize) -> Option<&str> {
+        let (start, end) = piece_bounds(&self.ends, self.count, n)?;
+        // SAFETY: these bytes were copied out of a `LogChunk`, which only
+        // ever stores whole validated characters and only ever cuts a piece
+        // on a character boundary. The copy brought the offsets along
+        // unchanged, so the same bounds still fall between the same
+        // characters.
+        Some(unsafe { std::str::from_utf8_unchecked(&self.buf[start..end]) })
     }
 }

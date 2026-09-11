@@ -45,9 +45,13 @@ use crate::unit::{Unit, UnitDescription};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let unit = Unit::new(UnitDescription::program());
+    let mut log = unit.log_reader();
     let h1 = unit.start()?;
-    println!("{:?}", h1.state());
+    // println!("{:?}", h1.state());
     h1.wait().await;
-    unit.debug();
+    log.sync();
+    for line in log.iter() {
+        line.print();
+    }
     Ok(())
 }
