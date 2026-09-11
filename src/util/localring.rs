@@ -65,23 +65,6 @@ impl<T> LocalRingBuffer<T> {
         }
     }
 
-    /// Pops the element and give a mutable reference to mutate it
-    ///
-    /// Takes from the front, so this is the oldest element. The slot is not
-    /// destroyed, only released: the reference is to storage the ring still
-    /// owns and will hand out again on a later
-    /// [`push`](LocalRingBuffer::push). Holding it keeps the ring borrowed,
-    /// so that reuse cannot happen underneath the caller.
-    pub fn pop(&mut self) -> Option<&mut T> {
-        if self.is_empty() {
-            return None;
-        }
-        let index = self.index_of(self.start_offset);
-        self.start_offset += 1;
-        self.normalize();
-        Some(&mut self.items[index])
-    }
-
     /// Push the element in the local buffer, if it is full, it moves the ring and return a reference to the next
     /// item
     ///
@@ -245,7 +228,6 @@ impl<T> ExactSizeIterator for LocalRingBufferIterMut<'_, T> {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::collections::VecDeque;
 
     /// Push a value by filling the slot the ring hands back.
     fn push(ring: &mut LocalRingBuffer<u32>, value: u32) {
@@ -339,42 +321,6 @@ mod test {
             after.iter().collect::<std::collections::HashSet<_>>(),
             "the strings were reallocated instead of refilled"
         );
-    }
-
-    #[test]
-    fn pop_takes_the_oldest() {
-        let mut ring = LocalRingBuffer::new(3);
-        for i in 1..=3 {
-            push(&mut ring, i);
-        }
-        assert_eq!(ring.pop().copied(), Some(1));
-        assert_eq!(ring.len(), 2);
-        assert_eq!(collect(&ring), [2, 3]);
-        assert_eq!(ring.pop().copied(), Some(2));
-        assert_eq!(ring.pop().copied(), Some(3));
-        assert_eq!(ring.pop().copied(), None);
-        assert!(ring.is_empty());
-    }
-
-    #[test]
-    fn pop_on_an_empty_ring_is_none() {
-        let mut ring: LocalRingBuffer<u32> = LocalRingBuffer::new(4);
-        assert!(ring.pop().is_none());
-    }
-
-    /// Emptying and refilling has to keep working after the offsets have
-    /// moved off zero.
-    #[test]
-    fn drains_and_refills() {
-        let mut ring = LocalRingBuffer::new(3);
-        for round in 0..4u32 {
-            for i in 0..3 {
-                push(&mut ring, round * 10 + i);
-            }
-            assert_eq!(collect(&ring), [round * 10, round * 10 + 1, round * 10 + 2]);
-            while ring.pop().is_some() {}
-            assert!(ring.is_empty());
-        }
     }
 
     /// Iteration is oldest first, including once the contents wrap around
@@ -501,44 +447,5 @@ mod test {
             );
         }
         assert_eq!(collect(&ring), [9997, 9998, 9999]);
-    }
-
-    /// Compare against a plain `VecDeque` driven with the same policy, over
-    /// a long mixed run of pushes and pops.
-    #[test]
-    fn matches_a_vecdeque_model() {
-        for capacity in 1..=6usize {
-            let mut ring = LocalRingBuffer::new(capacity);
-            let mut model: VecDeque<u32> = VecDeque::new();
-
-            // A small xorshift, so a failure is reproducible.
-            let mut state = 0x2545_f491_4f6c_dd1du64;
-            for value in 0..5_000u32 {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-
-                if state.is_multiple_of(3) {
-                    assert_eq!(
-                        ring.pop().copied(),
-                        model.pop_front(),
-                        "pop diverged at {value} with capacity {capacity}"
-                    );
-                } else {
-                    push(&mut ring, value);
-                    if model.len() == capacity {
-                        model.pop_front();
-                    }
-                    model.push_back(value);
-                }
-
-                assert_eq!(ring.len(), model.len(), "length diverged");
-                assert_eq!(
-                    collect(&ring),
-                    model.iter().copied().collect::<Vec<_>>(),
-                    "contents diverged at {value} with capacity {capacity}"
-                );
-            }
-        }
     }
 }

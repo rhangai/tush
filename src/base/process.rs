@@ -2,6 +2,7 @@ use std::num::NonZeroU8;
 use std::{process::Stdio, time::Duration};
 
 use anyhow::anyhow;
+use tokio::task::JoinHandle;
 use tokio::{
     process::{Child, Command},
     time::timeout,
@@ -71,6 +72,7 @@ impl Process {
     pub async fn wait(&mut self) -> anyhow::Result<ExitReason> {
         if let ProcessInner::Running { child, .. } = &mut self.inner {
             let wait_result = child.wait().await;
+            self.writer_wait().await;
             Ok(match wait_result {
                 Ok(status) if status.success() => ExitReason::Success,
                 Ok(status) => {
@@ -95,7 +97,19 @@ impl Process {
     /// First send a sigterm then waits for n milliseconds
     /// If the process did not shutdown, it sends a SIGKILL and terminates
     pub async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
-        self.kill_inner(true).await
+        let reason = self.kill_inner(true).await?;
+        self.writer_wait().await;
+        Ok(reason)
+    }
+
+    async fn writer_wait(&mut self) {
+        if let ProcessInner::Running {
+            writer_task: Some(writer_task),
+            ..
+        } = &mut self.inner
+        {
+            _ = writer_task.await;
+        };
     }
 
     /// Inner function to handle the shutdown logic
@@ -197,7 +211,11 @@ enum ProcessInner {
         writer: Option<LogWriterRef>,
     },
     /// Spawned. `pid` is `None` if the child already exited and was reaped.
-    Running { child: Child, pid: Option<u32> },
+    Running {
+        child: Child,
+        pid: Option<u32>,
+        writer_task: Option<JoinHandle<std::io::Result<()>>>,
+    },
 }
 
 impl ProcessInner {
@@ -216,21 +234,26 @@ impl ProcessInner {
                 writer,
             } => {
                 command.process_group(0);
-                let child = if let Some(writer) = writer {
+                let (child, writer_task) = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
                     let mut child = command.spawn()?;
                     let stdout = child
                         .stdout
                         .take()
                         .ok_or(anyhow!("stdout should be piped after Stdio::piped()"))?;
-                    writer.consume_spawn(stdout);
-                    child
+                    let writer_task = writer.consume_spawn(stdout);
+                    (child, Some(writer_task))
                 } else {
                     command.stdout(Stdio::null());
-                    command.spawn()?
+                    let child = command.spawn()?;
+                    (child, None)
                 };
                 let pid = child.id();
-                *self = ProcessInner::Running { child, pid };
+                *self = ProcessInner::Running {
+                    child,
+                    pid,
+                    writer_task,
+                };
                 Ok(())
             }
         }

@@ -26,6 +26,13 @@ impl LogBuffer {
         }
     }
 
+    pub async fn write(&mut self, buf: &[u8]) {
+        self.chunk.write(buf);
+        if self.chunk.is_finished() {
+            self.writer.push_chunk(&mut self.chunk).await;
+        }
+    }
+
     /// Read once and hand every line it completes to the log.
     ///
     /// - `Ok(true)` — call again.
@@ -88,14 +95,17 @@ impl LogBuffer {
             if !self.chunk.is_finished() {
                 break;
             }
-            self.writer.push_chunk(&mut self.chunk);
+            if !self.writer.push_chunk(&mut self.chunk).await {
+                self.buf_offset = 0;
+                return Ok(false);
+            };
         }
 
         if ended {
             // Nothing more is coming, so a last line with no newline would
             // otherwise sit here for ever.
             if !self.chunk.is_empty() {
-                self.writer.push_chunk(&mut self.chunk);
+                self.writer.push_chunk(&mut self.chunk).await;
             }
             self.buf_offset = 0;
             return Ok(false);

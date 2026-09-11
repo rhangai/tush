@@ -34,10 +34,6 @@ mod runner;
 mod unit;
 mod util;
 
-use std::time::Duration;
-
-use tokio::time::sleep;
-
 use crate::unit::{Unit, UnitDescription};
 
 /// Temporary entrypoint used to exercise the runtime while the CLI does not
