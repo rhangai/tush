@@ -24,23 +24,6 @@ pub const LOG_CHUNK_MAX_LINES: usize = 2;
 /// into a handful of leftover bytes, which would split that line for nothing.
 pub const LOG_CHUNK_LIMIT: usize = 192;
 
-/// Why a chunk stopped accepting lines.
-///
-/// Private on purpose: the outside asks
-/// [`is_finished`](LogChunk::is_finished), or looks at the pieces, and never
-/// has to name a state.
-#[derive(PartialEq, Eq)]
-enum LogChunkState {
-    /// Still accepting lines.
-    Open,
-    /// No further line fits — the quota ran out, or the content passed
-    /// [`LOG_CHUNK_LIMIT`].
-    Full,
-    /// Room ran out with a line still open, so that line goes on in the next
-    /// chunk.
-    Split,
-}
-
 /// One piece of a chunk's content.
 ///
 /// A chunk packs whole lines, but its last one may have been cut short by the
@@ -111,17 +94,27 @@ impl<'a> LogChunkData<'a> {
 /// `get_str` reach one by index.
 pub(super) struct LogChunk {
     buf: Box<[u8; LOG_CHUNK_SIZE]>,
-    len: usize,
-    /// Where every line but the last ends. The last one ends at `len`, which
-    /// is why there is one fewer slot here than the chunk holds lines.
-    ends: [u16; LOG_CHUNK_MAX_LINES - 1],
+    /// Where each piece ends. Pieces are packed back to back, so one starts
+    /// where the last ended, and the end of the last piece is also the length
+    /// of the whole chunk — which is why there is no separate `len`: it would
+    /// be `ends[count - 1]` written down twice.
+    ends: [u16; LOG_CHUNK_MAX_LINES],
     /// How many pieces the chunk holds, counting one still being extended.
     count: usize,
     /// Whether the last piece is still open — the line it belongs to has not
     /// been closed by a newline. The next piece pushed extends it rather than
     /// starting a line of its own.
+    ///
+    /// Together with `finished` this says everything there is to say about
+    /// how a chunk stopped: finished with nothing open means the quota or the
+    /// watermark stopped it and every line in here is whole; finished with
+    /// something open means the room ran out mid line and the next chunk
+    /// carries on. There is no third way for a chunk to end, which is why
+    /// there is no state enum — it would only be these two bools with two
+    /// combinations that cannot happen.
     trailing_open: bool,
-    state: LogChunkState,
+    /// Whether the chunk takes no more and is on its way to the log.
+    finished: bool,
     /// Who wrote this. Stamped as the chunk is handed to the log, not as it
     /// is filled, so it cannot drift out of step with the content: the writer
     /// doing the handing over is by definition the one that wrote it.
@@ -136,11 +129,10 @@ impl LogChunk {
     pub(super) fn new() -> Self {
         Self {
             buf: unsafe { Box::<[u8; LOG_CHUNK_SIZE]>::new_zeroed().assume_init() },
-            len: 0,
-            ends: [0; LOG_CHUNK_MAX_LINES - 1],
+            ends: [0; LOG_CHUNK_MAX_LINES],
             count: 0,
             trailing_open: false,
-            state: LogChunkState::Open,
+            finished: false,
             writer: LogWriterId::UNSET,
         }
     }
@@ -164,12 +156,11 @@ impl LogChunk {
     /// mean anything, and resetting it is enough to make the rest
     /// unreachable.
     pub fn clear(&mut self) {
-        self.len = 0;
         self.count = 0;
         self.trailing_open = false;
         // Without this a recycled chunk comes back already finished, and
         // every later push returns 0 for ever.
-        self.state = LogChunkState::Open;
+        self.finished = false;
         // A recycled chunk carries the last writer's stamp, which would be a
         // lie the moment a different one filled it.
         self.writer = LogWriterId::UNSET;
@@ -187,7 +178,7 @@ impl LogChunk {
 
     /// Whether the chunk takes no more: it is on its way to the log.
     pub fn is_finished(&self) -> bool {
-        self.state != LogChunkState::Open
+        self.finished
     }
 
     /// How many pieces the chunk holds.
@@ -201,7 +192,10 @@ impl LogChunk {
     /// newlines that split the lines were never stored, and every undecodable
     /// byte became three.
     pub fn len(&self) -> usize {
-        self.len
+        match self.count {
+            0 => 0,
+            count => self.ends[count - 1] as usize,
+        }
     }
 
     /// Whether the chunk holds nothing at all.
@@ -222,12 +216,7 @@ impl LogChunk {
         } else {
             self.ends[n - 1] as usize
         };
-        let end = if n + 1 == self.count {
-            self.len
-        } else {
-            self.ends[n] as usize
-        };
-        Some((start, end))
+        Some((start, self.ends[n] as usize))
     }
 
     /// Piece `n`, with whether it ends a line.
@@ -282,49 +271,43 @@ impl LogChunk {
             return 0;
         }
 
+        let len = self.len();
         let text = line.pending();
         let pending = text.len();
         // The room decides the cut, and it knows nothing about characters, so
         // it lands inside one regularly. Back off to a boundary: a piece
         // holding half a character would be undecodable on its own, and
         // `get_data` promises it is not.
-        let taken = text.floor_char_boundary((LOG_CHUNK_SIZE - self.len).min(pending));
+        let taken = text.floor_char_boundary((LOG_CHUNK_SIZE - len).min(pending));
 
         // There is text to place and no room for any of it. Finish here so
         // the caller hands this chunk on and offers the rest to the next.
         // An empty line places nothing either, but it is a line, so it has to
         // go through the rest of this.
         if taken == 0 && pending > 0 {
-            self.state = if self.trailing_open {
-                LogChunkState::Split
-            } else {
-                LogChunkState::Full
-            };
+            self.finished = true;
             return 0;
         }
 
-        // Text that does not continue an open piece opens one of its own, and
-        // that is where the piece before it is pinned down.
+        // Text that does not continue an open piece opens one of its own.
         if !self.trailing_open {
-            if self.count > 0 {
-                self.ends[self.count - 1] = self.len as u16;
-            }
             self.count += 1;
         }
 
-        self.buf[self.len..self.len + taken].copy_from_slice(&text.as_bytes()[..taken]);
-        self.len += taken;
+        self.buf[len..len + taken].copy_from_slice(&text.as_bytes()[..taken]);
+        // Extending the open piece moves its end; a new one gets its first.
+        self.ends[self.count - 1] = (len + taken) as u16;
         line.consume(taken);
 
         if taken < pending {
             // Room ran out with the line unfinished. Whatever the line says
             // about itself, what is stored here is only a head.
             self.trailing_open = true;
-            self.state = LogChunkState::Split;
+            self.finished = true;
         } else if line.is_complete() {
             self.trailing_open = false;
-            if self.count == LOG_CHUNK_MAX_LINES || self.len >= LOG_CHUNK_LIMIT {
-                self.state = LogChunkState::Full;
+            if self.count == LOG_CHUNK_MAX_LINES || self.len() >= LOG_CHUNK_LIMIT {
+                self.finished = true;
             }
         } else {
             // The whole fragment fit, but its line goes on.
@@ -364,3 +347,5 @@ impl<'a> Iterator for LogChunkDataIter<'a> {
 }
 
 impl ExactSizeIterator for LogChunkDataIter<'_> {}
+
+
