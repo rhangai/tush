@@ -38,18 +38,27 @@ pub const LOG_CHUNK_LIMIT: usize = 192;
 ///
 /// A chunk packs whole lines, but its last one may have been cut short by the
 /// room running out. So a piece either ends a line or it does not, and that
-/// is the only distinction a reader needs to put the history back together:
-/// join pieces until a [`Line`](LogChunkData::Line) closes one.
+/// is the distinction a reader needs to put the history back together.
 ///
-/// Note it says nothing about how a piece *starts*. The tail of a line split
-/// across chunks is the first piece of the next chunk and reads as a `Line`
-/// there, because it does end one. What marks the seam is the `Partial`
-/// before it.
+/// # Joining
+///
+/// Join pieces until a [`Line`](LogChunkData::Line) closes one — but only
+/// pieces of the same [`writer`](LogChunk::writer). A log takes from as many
+/// writers as a unit has processes, and a line split across chunks is
+/// continued by that writer's *next* chunk, which is not necessarily the next
+/// chunk in the ring: another process writing in between puts its own chunk
+/// there. Joining on position alone swallows that chunk into the middle of
+/// the split line and loses it.
+///
+/// Note a piece says nothing about how it *starts*. The tail of a split line
+/// reads as a `Line`, because it does end one. What marks the seam is the
+/// `Partial` before it, in the same writer's previous chunk.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LogChunkData<'a> {
     /// Text that ends a line.
     Line(&'a str),
-    /// Text that does not: the line goes on in the next chunk.
+    /// Text that does not: the line goes on in this writer's next chunk,
+    /// wherever in the ring that turns out to be.
     Partial(&'a str),
 }
 

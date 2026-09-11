@@ -17,7 +17,7 @@
 /// a `--verbose` compiler invocation.
 ///
 /// One of these exists per reader task, not per log, so the room is cheap.
-const LOG_LINE_SIZE: usize = 1024;
+pub(super) const LOG_LINE_SIZE: usize = 1024;
 
 /// The longest a single UTF-8 character can be.
 const UTF8_MAX_WIDTH: usize = 4;

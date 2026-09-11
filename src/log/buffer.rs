@@ -299,6 +299,7 @@ mod test {
     use crate::log::{
         Log, LogWriterId,
         chunk::{LOG_CHUNK_LIMIT, LOG_CHUNK_SIZE},
+        line::LOG_LINE_SIZE,
     };
 
     /// Let the sync task move what was pushed into the ring.
@@ -639,6 +640,53 @@ mod test {
             segundo.block_index(),
             bloco,
             "a returned block was not picked up again"
+        );
+    }
+
+    /// Two processes, one printing a line too long for a chunk, the other
+    /// writing between its pieces.
+    ///
+    /// A split line is continued by *that writer's* next chunk, which is not
+    /// the next chunk in the ring when something else got there first. A
+    /// reader joining on position alone swallowed the other process's line
+    /// into the middle of the long one and lost it — and blamed the wrong
+    /// writer for the result.
+    #[tokio::test]
+    async fn a_split_line_is_not_spliced_with_another_writers() {
+        let log = Log::new(16);
+        let mut longo = LogBuffer::new(log.writer());
+        let mut curto = LogBuffer::new(log.writer());
+
+        // Uma leitura entrega mais que o buffer de linha sem fechar a linha,
+        // entao ela sai como fragmento e o ultimo chunk fica Partial.
+        let parte1 = "L".repeat(LOG_LINE_SIZE + 64);
+        let mut src = parte1.as_bytes();
+        longo.read(&mut src).await.unwrap();
+
+        // O outro processo escreve no meio.
+        curto.write(b"do outro\n").await;
+
+        // E o longo termina a linha dele.
+        let mut src = &b"FIM\n"[..];
+        longo.read(&mut src).await.unwrap();
+        settle().await;
+
+        let linhas = log.collect_attributed();
+        let a = LogWriterId::new(0);
+        let b = LogWriterId::new(1);
+
+        // A linha do outro processo tem que sair inteira e dele.
+        assert!(
+            linhas.contains(&(b, "do outro".to_string())),
+            "a linha do segundo writer foi engolida: {:?}",
+            linhas.iter().map(|(w, t)| (w, t.len())).collect::<Vec<_>>()
+        );
+        // E a linha longa tem que ser so dela mesma.
+        let (writer, longa) = linhas.iter().find(|(_, t)| t.len() > 200).unwrap();
+        assert_eq!(*writer, a);
+        assert!(
+            longa.chars().all(|c| c == 'L') || longa.ends_with("FIM"),
+            "a linha longa levou texto de outro writer junto"
         );
     }
 
