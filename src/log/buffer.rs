@@ -90,6 +90,22 @@ impl LogBuffer {
                 return;
             }
         }
+        self.flush_chunk().await;
+    }
+
+    /// Hand over a chunk holding text, whether or not it filled up.
+    ///
+    /// Packing only pays while output arrives faster than it is read. A chunk
+    /// left waiting for company would hold a quiet process's last line out of
+    /// the log until it happened to say something else — which for a tailer
+    /// is the line that matters most. So a chunk goes at the end of every
+    /// read: a burst fills one several times over and packs, a trickle sends
+    /// one line at a time and packs nothing, and neither has to be detected.
+    async fn flush_chunk(&mut self) -> bool {
+        if self.chunk.is_empty() {
+            return true;
+        }
+        self.writer.push_chunk(&mut self.chunk).await
     }
 
     /// Hand the finished line to the log, then clear it.
@@ -206,12 +222,12 @@ impl LogBuffer {
                 self.flush_line().await;
             }
             // And a chunk still holding text has no later line to close it.
-            if !self.chunk.is_empty() {
-                self.writer.push_chunk(&mut self.chunk).await;
-            }
+            self.flush_chunk().await;
             self.buf_offset = 0;
             return Ok(false);
         }
+
+        self.flush_chunk().await;
 
         // Whatever the chunk would not take is the head of a character the
         // next read will finish — at most three bytes, and usually none at
@@ -244,7 +260,10 @@ fn is_disconnected(error: &io::Error) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::log::{Log, LogWriterId, chunk::LOG_CHUNK_SIZE};
+    use crate::log::{
+        Log, LogWriterId,
+        chunk::{LOG_CHUNK_LIMIT, LOG_CHUNK_SIZE},
+    };
 
     /// Let the sync task move what was pushed into the ring.
     async fn settle() {
@@ -431,6 +450,92 @@ mod test {
             );
         }
         assert_eq!(log.collect_lines(), [linha]);
+    }
+
+    /// The point of packing: lines that arrive together travel together, so
+    /// the buffer a short line used to have to itself now carries several.
+    #[tokio::test]
+    async fn lines_arriving_together_share_a_chunk() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write(b"um\ndois\ntres\nquatro\n").await;
+        settle().await;
+
+        // Two per chunk, and every piece ends a line.
+        assert_eq!(
+            log.chunk_pieces(),
+            [
+                vec![("um".to_string(), true), ("dois".to_string(), true)],
+                vec![("tres".to_string(), true), ("quatro".to_string(), true)],
+            ]
+        );
+        assert_eq!(log.collect_lines(), ["um", "dois", "tres", "quatro"]);
+    }
+
+    /// And the other half of that bargain: a line with nobody to share with
+    /// must not wait. A chunk held back for company would keep a quiet
+    /// process's last line out of the log until it spoke again.
+    #[tokio::test]
+    async fn a_line_arriving_alone_does_not_wait_for_company() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+
+        buffer.write(b"sozinha\n").await;
+        settle().await;
+        assert_eq!(log.collect_lines(), ["sozinha"]);
+        assert_eq!(log.chunk_pieces(), [vec![("sozinha".to_string(), true)]]);
+    }
+
+    /// Past the watermark the chunk starts no further line, even with a slot
+    /// still free — otherwise the next line would be split across two chunks
+    /// to use up a handful of leftover bytes.
+    #[tokio::test]
+    async fn a_chunk_past_the_watermark_takes_no_new_line() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa = "x".repeat(LOG_CHUNK_LIMIT + 8);
+
+        buffer.write(format!("{longa}\ncurta\n").as_bytes()).await;
+        settle().await;
+
+        assert_eq!(
+            log.chunk_pieces(),
+            [
+                vec![(longa, true)],
+                vec![("curta".to_string(), true)],
+            ]
+        );
+    }
+
+    /// A line cut by the room running out reads as `Partial`, and the piece
+    /// that finishes it reads as a `Line` — that pair is what a reader joins
+    /// on.
+    #[tokio::test]
+    async fn a_split_line_is_a_partial_then_a_line() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa = "y".repeat(LOG_CHUNK_SIZE + 40);
+
+        buffer.write(format!("{longa}\n").as_bytes()).await;
+        settle().await;
+
+        let pieces = log.chunk_pieces();
+        assert_eq!(pieces.len(), 2, "expected the line to span two chunks");
+        assert_eq!(pieces[0], [("y".repeat(LOG_CHUNK_SIZE), false)]);
+        assert_eq!(pieces[1], [("y".repeat(40), true)]);
+        assert_eq!(log.collect_lines(), [longa]);
+    }
+
+    /// An empty line stores nothing but still takes a slot, and still has to
+    /// come back.
+    #[tokio::test]
+    async fn empty_lines_are_kept() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write(b"\n\na\n").await;
+        settle().await;
+
+        assert_eq!(log.collect_lines(), ["", "", "a"]);
     }
 
     #[tokio::test]

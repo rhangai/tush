@@ -209,19 +209,29 @@ impl Log {
     /// anything still in the queue is included, then walks the ring oldest
     /// first.
     ///
-    /// Note it ignores [`is_line`], so a line long enough to have been split
-    /// across chunks prints as several lines. A real renderer has to join
-    /// them.
-    ///
-    /// [`is_line`]: LogChunk::is_line
+    /// Joins the pieces of a line that was split across chunks, which is the
+    /// same thing any real renderer has to do: walk the pieces and hold on to
+    /// each one until a [`Line`](super::chunk::LogChunkData::Line) closes it.
     pub fn debug(&self) {
         self.inner.sync_queue();
         let mut lines = 0;
-        for line in self.inner.chunks.lock().iter() {
-            println!("{}", line.as_str());
+        let mut current = String::new();
+        for chunk in self.inner.chunks.lock().iter() {
+            for data in chunk.iter_data() {
+                current.push_str(data.as_str());
+                if data.is_line() {
+                    println!("{current}");
+                    current.clear();
+                    lines += 1;
+                }
+            }
+        }
+        // A line the history was cut off in the middle of.
+        if !current.is_empty() {
+            println!("{current}");
             lines += 1;
         }
-        println!("Lines: {}", lines);
+        println!("Lines: {lines}");
     }
 }
 
@@ -356,6 +366,25 @@ impl Log {
             .collect()
     }
 
+    /// The pieces of every chunk: `(text, ends a line)`, grouped by chunk.
+    ///
+    /// Shows the packing itself rather than the history it adds up to, which
+    /// is the only way to tell whether lines shared a chunk.
+    pub(super) fn chunk_pieces(&self) -> Vec<Vec<(String, bool)>> {
+        self.inner.sync_queue();
+        self.inner
+            .chunks
+            .lock()
+            .iter()
+            .map(|chunk| {
+                chunk
+                    .iter_data()
+                    .map(|data| (data.as_str().to_string(), data.is_line()))
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Every chunk in the ring, as raw bytes.
     ///
     /// For checking the invariant [`as_str`](LogChunk::as_str) relies on:
@@ -363,12 +392,13 @@ impl Log {
     /// ring is concatenated.
     pub(super) fn chunk_bytes(&self) -> Vec<Vec<u8>> {
         self.inner.sync_queue();
-        self.inner
-            .chunks
-            .lock()
-            .iter()
-            .map(|chunk| chunk.as_bytes().to_vec())
-            .collect()
+        let mut pieces = Vec::new();
+        for chunk in self.inner.chunks.lock().iter() {
+            for n in 0..chunk.count() {
+                pieces.push(chunk.piece_bytes(n).unwrap().to_vec());
+            }
+        }
+        pieces
     }
 
     /// The history as lines, each with the writer that produced it.
@@ -381,12 +411,14 @@ impl Log {
         let mut current = String::new();
         let mut writer = LogWriterId::UNSET;
         for chunk in self.inner.chunks.lock().iter() {
-            if current.is_empty() {
-                writer = chunk.writer();
-            }
-            current.push_str(chunk.as_str());
-            if chunk.is_line() {
-                lines.push((writer, std::mem::take(&mut current)));
+            for data in chunk.iter_data() {
+                if current.is_empty() {
+                    writer = chunk.writer();
+                }
+                current.push_str(data.as_str());
+                if data.is_line() {
+                    lines.push((writer, std::mem::take(&mut current)));
+                }
             }
         }
         // A last line flushed without a newline of its own.
