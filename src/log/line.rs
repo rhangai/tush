@@ -84,26 +84,36 @@ enum LogBufferLineState {
 /// }
 /// ```
 pub(super) struct LogBufferLine {
-    buf: Box<[u8; LOG_LINE_SIZE]>,
     len: usize,
     /// How much of the text a chunk has already taken. Storage drains the
     /// line rather than copying out of it, so what is left to place is the
     /// line's own business and no caller has to keep a cursor.
     taken: usize,
     state: LogBufferLineState,
+    /// Held inline rather than behind a [`Box`]. There is exactly one of
+    /// these per reader task and it never moves once built, so the
+    /// indirection bought nothing — and cost a pointer load on the hottest
+    /// loop there is, one byte of output at a time. Inline it also shares a
+    /// cache line with the fields above.
+    ///
+    /// Last by declaration for the reader's sake. Where it actually lands is
+    /// the compiler's business — it puts the array right after `len` and
+    /// `taken`, so those and the start of the buffer share one cache line.
+    buf: [u8; LOG_LINE_SIZE],
 }
 
 impl LogBufferLine {
-    /// Build an empty line, allocating its buffer.
+    /// Build an empty line.
     ///
-    /// The only place the buffer is allocated: from here on it is reused for
-    /// every line the task ever reads.
+    /// The buffer is part of the line, so there is nothing to allocate and
+    /// nothing that can fail. It is reused for every line the task ever
+    /// reads.
     pub(super) fn new() -> Self {
         Self {
-            buf: unsafe { Box::<[u8; LOG_LINE_SIZE]>::new_zeroed().assume_init() },
             len: 0,
             taken: 0,
             state: LogBufferLineState::Open,
+            buf: [0u8; LOG_LINE_SIZE],
         }
     }
 
@@ -494,3 +504,4 @@ mod test {
         assert_eq!(line.as_str(), "cheia");
     }
 }
+
