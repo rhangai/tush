@@ -97,11 +97,9 @@ impl LogBuffer {
             if !self.chunk.is_empty() {
                 self.writer.push_chunk(&mut self.chunk);
             }
-            self.writer.sync();
             self.buf_offset = 0;
             return Ok(false);
         }
-        self.writer.sync();
 
         // Whatever the chunk would not take is the head of a character the
         // next read will finish — at most three bytes, and usually none at

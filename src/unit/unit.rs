@@ -28,10 +28,17 @@ impl Unit {
     /// Create a stopped unit with an empty log.
     pub fn new(description: UnitDescription) -> Self {
         Self {
-            log: Log::new(128),
+            log: Log::new(4096),
             description,
             handle: ArcSwapOption::const_empty(),
         }
+    }
+
+    /// Start running the process
+    ///
+    /// Uses the unit's own description.
+    pub fn debug(&self) {
+        self.log.debug();
     }
 
     /// Start running the process

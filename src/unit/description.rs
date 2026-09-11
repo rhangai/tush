@@ -77,11 +77,8 @@ trait UnitDescriptionBehavior {
 struct DescProgram {}
 impl UnitDescriptionBehavior for DescProgram {
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
-        let mut command = Command::new("bash");
-        command.args([
-            "-c",
-            "echo -n 'aaaaaaaaaaaaaaaaa'; sleep 2; echo 'bbbbbbbbbbbbbbb'; exit 2",
-        ]);
+        let mut command = Command::new("find");
+        command.args([".", "-type", "f"]);
         let proc = Process::new(command, writer);
         Ok(RunnerHandle::new(proc))
     }

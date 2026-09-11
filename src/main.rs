@@ -50,8 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let unit = Unit::new(UnitDescription::program());
     let h1 = unit.start()?;
     println!("{:?}", h1.state());
-    sleep(Duration::from_millis(1000)).await;
-    h1.abort();
     h1.wait().await;
+    unit.debug();
     Ok(())
 }
