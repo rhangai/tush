@@ -41,6 +41,9 @@ const WRITER_CHUNK_BLOCKS: usize = 64;
 /// on that: a [`Unit`](crate::unit::Unit) shuts its run down before letting
 /// go of the log.
 pub struct LogWriterRef {
+    /// The log to append to. Weak on purpose — see the type's own docs; the
+    /// blocks a reader is still filling stay alive through the chunk itself,
+    /// not through this.
     inner: Weak<LogInner>,
     /// Stamped onto every chunk this writer hands over. Fixed at creation:
     /// one writer is one source of output for its whole life, which is what
@@ -168,6 +171,10 @@ impl LogWriterRef {
 /// index into whatever a renderer keeps per writer.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct LogWriterId {
+    /// Dense from zero, so it doubles as an index into whatever a renderer
+    /// keeps per writer. `u32::MAX` is [`UNSET`](LogWriterId::UNSET) and
+    /// belongs to no writer, which is why an arena of that many writers
+    /// cannot exist.
     raw: u32,
 }
 
@@ -199,6 +206,9 @@ impl LogWriterId {
 /// full: the log holds `capacity * LOG_CHUNK_SIZE` bytes whether the lines
 /// turn out long or short.
 pub struct Log {
+    /// Everything the writers share. Strong here and weak in every writer, so
+    /// the log lives exactly as long as whatever owns it — a unit — and not a
+    /// moment longer because a reader task was slow to notice.
     inner: Arc<LogInner>,
 }
 

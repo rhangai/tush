@@ -32,8 +32,16 @@
 /// both land on the same slot. They are kept normalised below twice the
 /// capacity, so they never grow without bound and never wrap.
 pub struct LocalRingBuffer<T> {
+    /// Every slot, built at construction and never created or dropped again.
+    /// A slot outside the current window still holds whatever the element
+    /// that left it did — that is what makes a push allocation free.
     items: Box<[T]>,
+    /// Position of the oldest element. A position, not an index: it is turned
+    /// into one by [`index_of`](LocalRingBuffer::index_of).
     start_offset: usize,
+    /// Position one past the newest. The gap to `start_offset` is the length,
+    /// which is what tells a full ring from an empty one when both land on
+    /// the same slot.
     end_offset: usize,
 }
 
@@ -188,7 +196,9 @@ impl<'a, T> IntoIterator for &'a mut LocalRingBuffer<T> {
 }
 
 pub struct LocalRingBufferIter<'a, T> {
+    /// From the oldest element to the end of the array.
     head: std::slice::Iter<'a, T>,
+    /// Whatever wrapped past the end, or nothing if the contents do not.
     tail: std::slice::Iter<'a, T>,
 }
 
@@ -207,7 +217,9 @@ impl<'a, T> Iterator for LocalRingBufferIter<'a, T> {
 impl<T> ExactSizeIterator for LocalRingBufferIter<'_, T> {}
 
 pub struct LocalRingBufferIterMut<'a, T> {
+    /// From the oldest element to the end of the array.
     head: std::slice::IterMut<'a, T>,
+    /// Whatever wrapped past the end, or nothing if the contents do not.
     tail: std::slice::IterMut<'a, T>,
 }
 

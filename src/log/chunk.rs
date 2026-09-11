@@ -355,10 +355,18 @@ impl LogChunk {
 
 /// Walks a chunk's pieces, oldest first.
 pub struct LogChunkDataIter<'a> {
+    /// Borrowed, not copied: a piece hands out a slice of the chunk's buffer,
+    /// so the chunk has to outlive the walk.
     chunk: &'a LogChunk,
+    /// The next piece to yield. Ends when it reaches the chunk's count, so a
+    /// chunk filled further during the walk would be impossible — the borrow
+    /// rules that out.
     n: usize,
 }
 
+/// Exact, not merely bounded: a chunk's piece count is fixed once it has been
+/// handed over, and the borrow keeps it that way for the walk. So a caller can
+/// size a buffer from [`len`](ExactSizeIterator::len) and trust it.
 impl<'a> Iterator for LogChunkDataIter<'a> {
     type Item = LogChunkData<'a>;
 

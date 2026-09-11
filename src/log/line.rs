@@ -83,11 +83,16 @@ enum LogBufferLineState {
 /// }
 /// ```
 pub struct LogBufferLine {
+    /// How many bytes of text are in `buf`. Not how many were fed in: the
+    /// newline that closes a line is consumed without being stored, and each
+    /// undecodable byte becomes three.
     len: usize,
     /// How much of the text a chunk has already taken. Storage drains the
     /// line rather than copying out of it, so what is left to place is the
     /// line's own business and no caller has to keep a cursor.
     taken: usize,
+    /// Why it stopped taking bytes — which is also how the caller learns
+    /// whether what it holds is a whole line or the head of a longer one.
     state: LogBufferLineState,
     /// Held inline rather than behind a [`Box`]. There is exactly one of
     /// these per reader task and it never moves once built, so the
@@ -355,6 +360,9 @@ mod test {
         out
     }
 
+    /// [`drain`] with the input treated as a whole stream: what comes out is
+    /// every line the bytes contain, with nothing held back for a read that
+    /// is never going to come.
     fn lines(input: &[u8]) -> Vec<(String, bool)> {
         drain(input, true)
     }

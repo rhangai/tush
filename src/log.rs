@@ -21,7 +21,7 @@
 //!
 //! Each stage exists for one reason:
 //!
-//! - [`LogBuffer`] is per reader task. A read lands wherever the pipe breaks,
+//! - [`LogBufferAny`] is per reader task. A read lands wherever the pipe breaks,
 //!   regularly mid character, so it keeps the trailing bytes of an unfinished
 //!   character and prepends them to the next read. At most three bytes are
 //!   ever held back.
@@ -44,6 +44,18 @@
 //! What it did buy was shelter from a slow reader. That is bought instead by
 //! keeping the critical section to a single swap: nothing is decoded,
 //! allocated or printed while the lock is held, on either side.
+//!
+//! # Where the seam is
+//!
+//! Everything above the ring is assembling — splitting bytes into lines,
+//! packing lines into chunks, carrying a character across a read — and none
+//! of it needs a log to be worth testing. So [`LogBufferAny`] is generic over
+//! [`LogBufferWriter`], the three calls it actually makes on a log, and
+//! [`LogBuffer`] is that filled in with the real one.
+//!
+//! It is not a layer of indirection for its own sake: it is where the
+//! fiddliest code in the module stops needing an arena, a ring and a runtime
+//! to exercise.
 //!
 //! # Why swapping
 //!
@@ -68,7 +80,7 @@ mod line;
 mod log;
 
 #[allow(unused_imports)]
-pub use buffer::LogBuffer;
+pub use buffer::{LogBuffer, LogBufferAny, LogBufferWriter};
 
 #[allow(unused_imports)]
 pub use log::{Log, LogWriterId, LogWriterRef};

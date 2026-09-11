@@ -74,6 +74,8 @@ pub const ARENA_BLOCK_SIZE: usize = 256;
 /// Cloning is cheap and shares the same pool; the store lives until the arena
 /// and every handle it lent out are gone.
 pub struct Arena {
+    /// The store, shared with every block lent from it. Cloning the arena
+    /// shares the same one; the store goes when the last of them does.
     inner: Arc<ArenaInner>,
 }
 
@@ -168,6 +170,9 @@ impl Arena {
 /// `Box`, the block it sits in is not reusable once dropped — see the
 /// [module docs](self).
 pub struct ArenaBlock {
+    /// Whether these bytes live in an arena or on their own. Wrapped rather
+    /// than exposed so that where a block came from stays this module's
+    /// business — a holder should not be writing a `match` over it.
     inner: ArenaBlockInner,
 }
 
@@ -267,6 +272,10 @@ unsafe impl Send for ArenaBlock {}
 unsafe impl Sync for ArenaBlock {}
 
 struct ArenaInner {
+    /// Every block, in one allocation. `UnsafeCell` because two handles write
+    /// to two blocks of this slice at once through a shared reference — what
+    /// makes that sound is that no two handles ever name the same block, not
+    /// any synchronisation here.
     blocks: Box<[UnsafeCell<[u8; ARENA_BLOCK_SIZE]>]>,
     /// How many blocks have been handed out. Only ever moves forwards.
     offset: AtomicUsize,
