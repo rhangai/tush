@@ -94,7 +94,7 @@ impl Unit {
         Ok(handle)
     }
 
-    /// Stop the
+    /// Stop the current run.
     ///
     /// Aborts the current run, if any, and returns without waiting for it.
     /// The handle stays in place so its terminal state remains observable.
@@ -104,7 +104,7 @@ impl Unit {
         }
     }
 
-    /// State for the
+    /// State of the current run.
     ///
     /// [`Stopped`](RunnerState::Stopped) when the unit was never started.
     pub fn state(&self) -> RunnerState {
@@ -112,5 +112,34 @@ impl Unit {
             .load()
             .as_ref()
             .map_or(RunnerState::Stopped, |s| s.state())
+    }
+}
+
+/// Shut the current run down before the unit's log goes with it.
+///
+/// Without this a dropped unit released its [`Log`] while its process was
+/// still writing, and the process died only as a side effect: the reader task
+/// gave up, its end of the pipe closed, and the next write earned a
+/// `SIGPIPE`. That reaped the child, but by accident — the exit came back as
+/// a plain error, indistinguishable from the process having failed on its
+/// own, and a process that ignores `SIGPIPE` got an `EPIPE` to make its own
+/// mind up about.
+///
+/// Aborting here routes the same teardown through the path that already
+/// exists, so it is a `SIGTERM` with a grace period before the `SIGKILL`, and
+/// the run is reported as [`Killed`](RunnerState::Killed).
+///
+/// # What this does not do
+///
+/// It starts the shutdown; it cannot wait for it. `drop` is not async, and
+/// the supervising task owns the runner and outlives the unit, so the log is
+/// released while the process may still be on its way out — the `SIGPIPE`
+/// path above stays as a backstop, and so does the `SIGKILL` in
+/// [`Process`](crate::base::Process)'s own `Drop` if the runtime goes away
+/// before the task can run. For a teardown you can observe, call
+/// [`stop`](Unit::stop) and then wait on the handle before dropping the unit.
+impl Drop for Unit {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

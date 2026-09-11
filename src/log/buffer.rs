@@ -99,8 +99,16 @@ impl LogBuffer {
     /// Read once and hand every line it completes to the log.
     ///
     /// - `Ok(true)` — call again.
-    /// - `Ok(false)` — the stream is over; whatever was still held has been
-    ///   flushed.
+    /// - `Ok(false)` — stop calling. Either the stream ended, in which case
+    ///   whatever was still held has been flushed, or the log was dropped and
+    ///   there is nothing left to read into; the two are not distinguished,
+    ///   because the caller's move is the same for both.
+    ///
+    ///   In the second case the partly filled chunk is discarded rather than
+    ///   flushed, and the pipe is left undrained — dropping the reader closes
+    ///   it, so a process still writing gets a `SIGPIPE`. That is a backstop,
+    ///   not the way a run is meant to end; see
+    ///   [`LogWriterRef`](super::LogWriterRef).
     /// - `Err` — something went wrong that reading cannot make sense of,
     ///   for the caller to decide about. The error comes back untouched, so
     ///   its [`kind`](io::Error::kind) is still there to match on.

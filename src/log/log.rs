@@ -13,9 +13,15 @@ const CHUNK_QUEUE_SIZE: usize = 128;
 
 /// A handle for appending to a [`Log`] from a reader task.
 ///
-/// Weak on purpose: tasks still draining their pipes should not keep a log
-/// alive after whatever owned it is gone. Once it is, pushes are dropped
-/// and the reader carries on emptying its pipe.
+/// Weak on purpose: a task still draining its pipe should not keep a log
+/// alive after whatever owned it is gone.
+///
+/// Once it is, there is nowhere left to put a chunk, and the reader stops
+/// rather than reading on into a void — see
+/// [`read`](super::LogBuffer::read). That closes its end of the pipe, so a
+/// process still writing gets a `SIGPIPE`. Deliberate teardown does not rely
+/// on that: a [`Unit`](crate::unit::Unit) shuts its run down before letting
+/// go of the log.
 pub struct LogWriterRef {
     inner: Weak<LogInner>,
 }
