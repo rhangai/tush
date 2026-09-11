@@ -81,6 +81,10 @@ enum LogBufferLineState {
 pub(super) struct LogBufferLine {
     buf: Box<[u8; LOG_LINE_SIZE]>,
     len: usize,
+    /// How much of the text a chunk has already taken. Storage drains the
+    /// line rather than copying out of it, so what is left to place is the
+    /// line's own business and no caller has to keep a cursor.
+    taken: usize,
     state: LogBufferLineState,
 }
 
@@ -93,6 +97,7 @@ impl LogBufferLine {
         Self {
             buf: unsafe { Box::<[u8; LOG_LINE_SIZE]>::new_zeroed().assume_init() },
             len: 0,
+            taken: 0,
             state: LogBufferLineState::Open,
         }
     }
@@ -104,7 +109,27 @@ impl LogBufferLine {
     /// for ever.
     pub(super) fn clear(&mut self) {
         self.len = 0;
+        self.taken = 0;
         self.state = LogBufferLineState::Open;
+    }
+
+    /// The text not yet taken by a chunk.
+    pub(super) fn pending(&self) -> &str {
+        &self.as_str()[self.taken..]
+    }
+
+    /// Mark `n` more bytes as taken.
+    ///
+    /// Called by the chunk that copied them. `n` always lands on a character
+    /// boundary, because a chunk never takes half of one.
+    pub(super) fn consume(&mut self, n: usize) {
+        self.taken += n;
+        debug_assert!(self.taken <= self.len, "consumed past the end of the line");
+    }
+
+    /// Whether every byte has been placed.
+    pub(super) fn is_drained(&self) -> bool {
+        self.taken == self.len
     }
 
     /// Whether there is something to hand over — a whole line, or as much of

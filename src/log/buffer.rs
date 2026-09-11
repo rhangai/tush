@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::log::log::LogWriterRef;
 
-use super::chunk::LogChunk;
+use super::{chunk::LogChunk, line::LogBufferLine};
 
 /// How much one [`read`](LogBuffer::read) can take from the pipe at a time.
 ///
@@ -29,6 +29,9 @@ const LOG_BUFFER_SIZE: usize = 4096;
 pub struct LogBuffer {
     /// Where finished chunks go. Weak, so this outliving its log is normal.
     writer: LogWriterRef,
+    /// The line being assembled. One per buffer, because a partly built line
+    /// belongs to the pipe it is being read from and to nothing else.
+    line: LogBufferLine,
     /// The chunk being filled. Swapped for a recycled one on every push, so
     /// the same allocation is reused for the life of the task.
     chunk: LogChunk,
@@ -50,6 +53,7 @@ impl LogBuffer {
     pub fn new(writer: LogWriterRef) -> Self {
         Self {
             writer,
+            line: LogBufferLine::new(),
             chunk: LogChunk::new(),
             buf: unsafe { Box::<[u8; LOG_BUFFER_SIZE]>::new_zeroed().assume_init() },
             buf_offset: 0,
@@ -66,34 +70,54 @@ impl LogBuffer {
     /// An unfinished line stays in the current chunk for the next call to
     /// continue, so writing `"sta"` then `"rting\n"` logs one line. What does
     /// *not* carry over is a partial character: one call is one whole
-    /// message, so `write_eof` is what the chunk is fed with and a trailing
-    /// `\xc3` is stored as a replacement character rather than held back for
-    /// a call that may never come. Split text on a character boundary, or use
+    /// message, so the line is fed as end of input and a trailing `\xc3`
+    /// becomes a replacement character rather than being held back for a call
+    /// that may never come. Split text on a character boundary, or use
     /// [`read`](LogBuffer::read), which does carry a partial character across
     /// reads.
     ///
-    /// Feeding it as end-of-input is also what keeps the loop moving: plain
-    /// [`write`](LogChunk::write) would hold a partial tail back and take
-    /// none of it, leaving `buf` the same length on every pass — and with no
-    /// `await` on that path, the spin would wedge the whole runtime thread
-    /// rather than just this task.
+    /// Feeding it that way is also what keeps the loop moving: plain
+    /// [`write`](LogBufferLine::write) would hold a partial tail back and
+    /// take none of it, leaving `buf` the same length on every pass — and
+    /// with no `await` on that path, the spin would wedge the whole runtime
+    /// thread rather than just this task.
     ///
     /// Returns early, dropping the rest, once the log is gone.
     pub async fn write(&mut self, mut buf: &[u8]) {
         while !buf.is_empty() {
-            let written = self.chunk.write_eof(buf);
+            buf = &buf[self.line.write_eof(buf)..];
+            if self.line.is_ready() && !self.flush_line().await {
+                return;
+            }
+        }
+    }
+
+    /// Hand the finished line to the log, then clear it.
+    ///
+    /// A line can outgrow a chunk, so this loops: each pass places what fits,
+    /// and a chunk that filled up goes to the log and comes back empty for
+    /// the rest. Only the pass that places the last of the text marks the
+    /// chunk a finished line, which is what keeps a split line readable as
+    /// one afterwards.
+    ///
+    /// Returns `false` once the log is gone. There is nowhere left to put
+    /// anything then, and a push that fails that way never yields, so a
+    /// caller that carried on would spin.
+    async fn flush_line(&mut self) -> bool {
+        loop {
+            self.chunk.push_line(&mut self.line);
             if self.chunk.is_finished() {
-                // The log is gone, so the chunk was never swapped and is
-                // still marked finished. Carrying on would spin the same
-                // way: a finished chunk takes nothing, and a push that
-                // fails this way never yields.
                 let is_open = self.writer.push_chunk(&mut self.chunk).await;
                 if !is_open {
-                    return;
+                    return false;
                 }
             }
-            buf = &buf[written..];
+            if self.line.is_drained() {
+                break;
+            }
         }
+        self.line.clear();
+        true
     }
 
     /// Read once and hand every line it completes to the log.
@@ -157,24 +181,31 @@ impl LogBuffer {
         // goes to the log and comes back cleared, so the loop can carry on
         // with the same one.
         let mut start = 0;
-        loop {
+        while start < filled {
             start += if ended {
-                self.chunk.write_eof(&self.buf[start..filled])
+                self.line.write_eof(&self.buf[start..filled])
             } else {
-                self.chunk.write(&self.buf[start..filled])
+                self.line.write(&self.buf[start..filled])
             };
-            if !self.chunk.is_finished() {
+            if !self.line.is_ready() {
+                // Either the read is spent, or what is left is the head of a
+                // character the next one finishes. Both mean stop here.
                 break;
             }
-            if !self.writer.push_chunk(&mut self.chunk).await {
+            if !self.flush_line().await {
                 self.buf_offset = 0;
                 return Ok(false);
-            };
+            }
         }
 
         if ended {
             // Nothing more is coming, so a last line with no newline would
             // otherwise sit here for ever.
+            self.line.seal();
+            if !self.line.is_empty() {
+                self.flush_line().await;
+            }
+            // And a chunk still holding text has no later line to close it.
             if !self.chunk.is_empty() {
                 self.writer.push_chunk(&mut self.chunk).await;
             }
@@ -325,6 +356,46 @@ mod test {
             log.collect_attributed(),
             [(LogWriterId::new(0), longa)]
         );
+    }
+
+    /// A line too long even for the line buffer leaves it in fragments, and
+    /// each fragment is then spread over chunks. Both boundaries are crossed
+    /// at once, and the line still has to come back whole.
+    #[tokio::test]
+    async fn a_line_longer_than_the_line_buffer_survives_both_splits() {
+        let log = Log::new(256);
+        let mut buffer = LogBuffer::new(log.writer());
+        // Not a multiple of either size, so no boundary lines up.
+        let longa = "abcdefghij".repeat(937);
+        assert!(longa.len() > LOG_CHUNK_SIZE * 4, "should cross many chunks");
+
+        buffer.write(format!("{longa}\ndepois\n").as_bytes()).await;
+        settle().await;
+
+        assert_eq!(
+            log.collect_attributed(),
+            [
+                (LogWriterId::new(0), longa),
+                (LogWriterId::new(0), "depois".to_string()),
+            ]
+        );
+    }
+
+    /// The same through `read`, where the line is also cut by wherever the
+    /// reads happen to land.
+    #[tokio::test]
+    async fn a_very_long_line_survives_arbitrary_read_boundaries() {
+        let log = Log::new(256);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa = "0123456789áé".repeat(311);
+        let texto = format!("{longa}\ncurta\n");
+
+        let bytes = texto.as_bytes();
+        let mut src = bytes;
+        while buffer.read(&mut src).await.unwrap() {}
+        settle().await;
+
+        assert_eq!(log.collect_lines(), [longa, "curta".to_string()]);
     }
 
     #[tokio::test]

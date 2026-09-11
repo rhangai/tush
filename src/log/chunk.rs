@@ -1,4 +1,4 @@
-use crate::log::log::LogWriterId;
+use crate::log::{line::LogBufferLine, log::LogWriterId};
 
 /// How many bytes of content one chunk holds.
 ///
@@ -10,15 +10,6 @@ use crate::log::log::LogWriterId;
 /// chunks and only the last of them reports [`is_line`](LogChunk::is_line).
 pub const LOG_CHUNK_SIZE: usize = 256;
 
-/// The longest a single UTF-8 character can be.
-const UTF8_MAX_WIDTH: usize = 4;
-
-/// What a byte that cannot be decoded is stored as.
-///
-/// Three bytes wide, so replacing one bad byte *grows* the content — which
-/// is why the room left over has to cover the widest thing a step can
-/// write, not just one byte.
-const REPLACEMENT: &[u8] = "\u{fffd}".as_bytes();
 
 /// Why a chunk stopped accepting bytes.
 ///
@@ -35,34 +26,34 @@ enum LogChunkState {
     End,
 }
 
-/// Internal log chunk, contains a pointer to the data and performs operations on bytes
+/// A slice of the history: text, and whether it ends a line.
 ///
-/// # Feeding it
+/// Storage, and only storage. It holds text that is already valid and already
+/// split into lines — [`LogBufferLine`] does that work — so nothing here
+/// decodes, scans or parses. What it owns is a fixed buffer that is allocated
+/// once and reused for the life of the log.
 ///
-/// [`write`](LogChunk::write) takes raw bytes and reports how many it
-/// consumed, leaving the caller to advance its reader by that much and
-/// re-offer the rest. It stops on a newline, when it runs out of room, or
-/// when the input ends mid-character.
+/// # Filling it
 ///
-/// That last case is the only one where `write` can return 0 without the
-/// chunk being finished, and it happens only when the whole input is the
-/// start of a character that could still turn out valid — at most three
-/// bytes. There is no way around it: given `\xc3` alone, there is no telling
-/// whether the next byte makes it `é` or leaves it garbage. Guessing would
-/// mangle every accented character that lands on a read boundary. Four or
-/// more bytes that do not decode are unambiguously broken, and become
-/// replacement characters instead.
-///
-/// So the caller's loop is:
+/// [`push_line`](LogChunk::push_line) takes as much of a line as fits and
+/// consumes that much from it. A line that does not fit leaves the chunk
+/// finished and itself part drained, for the next chunk to carry on with:
 ///
 /// ```ignore
-/// consumed += chunk.write(&buf[consumed..filled]);
-/// if chunk.is_finished() {
-///     writer.push_chunk(&mut chunk);  // swaps in a recycled chunk
-/// } else {
-///     // read more; whatever is left is a partial character
+/// loop {
+///     chunk.push_line(&mut line);
+///     if chunk.is_finished() {
+///         writer.push_chunk(&mut chunk);  // swaps in a recycled chunk
+///     }
+///     if line.is_drained() {
+///         break;
+///     }
 /// }
 /// ```
+///
+/// A chunk that took a whole line reports [`is_line`](LogChunk::is_line); one
+/// that filled up part way through does not, which is how a reader knows the
+/// next chunk continues this one.
 pub(super) struct LogChunk {
     buf: Box<[u8; LOG_CHUNK_SIZE]>,
     len: usize,
@@ -134,99 +125,51 @@ impl LogChunk {
         self.state == LogChunkState::EndLine
     }
 
-    /// Whether another character still fits.
-    ///
-    /// Holding back the width of the widest character is what keeps the
-    /// write loop to a single space test: from here, anything one step can
-    /// store — an ASCII byte, a four byte character, a three byte
-    /// replacement — is guaranteed to fit.
-    fn has_room(&self) -> bool {
-        self.len <= LOG_CHUNK_SIZE - UTF8_MAX_WIDTH
-    }
 
-    /// Consumes n bytes from the buffer, returns how many bytes was consumed
-    /// so the parent can handle
+    /// Place as much of `line` as fits, reporting how many bytes were taken.
     ///
-    /// If it finds a '\n', also mark as completed
+    /// The text arrives already validated and already split — that work
+    /// belongs to [`LogBufferLine`], which is why this only copies. What it
+    /// takes it also consumes, so a line too long for one chunk is simply
+    /// offered to the next until it is drained — no caller keeps a cursor.
     ///
-    /// The count is bytes taken from `buf`, which is not the same as the
-    /// growth in content: a newline is consumed but not stored, and one bad
-    /// byte is consumed but stores three.
-    pub fn write(&mut self, buf: &[u8]) -> usize {
-        self.write_inner(buf, true)
-    }
-
-    /// [`write`](LogChunk::write) for the last bytes of a stream.
+    /// What the chunk decides is where the text lands:
     ///
-    /// Nothing more is coming, so a trailing partial character can never be
-    /// completed and becomes replacement characters rather than being held
-    /// back. Without this the caller would be stuck re-offering those bytes
-    /// to a chunk that keeps returning 0.
-    pub fn write_eof(&mut self, buf: &[u8]) -> usize {
-        self.write_inner(buf, false)
-    }
-
-    /// Shared body; `more_coming` says whether a partial tail may be held.
-    fn write_inner(&mut self, buf: &[u8], more_coming: bool) -> usize {
+    /// - it all fits and the line is whole — the chunk is a finished line;
+    /// - it all fits and the line is not — the chunk stays open for the rest;
+    /// - it does not all fit — the chunk takes what it can and finishes, and
+    ///   the caller offers the remainder to the next one.
+    ///
+    /// Taking a prefix means stopping on a character boundary, never inside
+    /// one, so every chunk on its own is still valid text.
+    pub fn push_line(&mut self, line: &mut LogBufferLine) -> usize {
         if self.is_finished() {
             return 0;
         }
 
-        let mut taken = 0;
-        while taken < buf.len() {
-            let byte = buf[taken];
-
-            // A newline stores nothing, so it is taken even with no room
-            // left — otherwise a maximally long line would be followed by
-            // a spurious empty one.
-            if byte == b'\n' {
-                self.state = LogChunkState::EndLine;
-                return taken + 1;
-            }
-            if !self.has_room() {
-                self.state = LogChunkState::End;
-                return taken;
-            }
-
-            // ASCII is nearly all of it, and needs no decoding.
-            if byte < 0x80 {
-                self.buf[self.len] = byte;
-                self.len += 1;
-                taken += 1;
-                continue;
-            }
-
-            let rest = &buf[taken..];
-            let width = utf8_width(byte);
-
-            // Not all there yet. Hold it back only while it could still
-            // become a real character; past four bytes it cannot.
-            if more_coming && width > rest.len() && rest.len() < UTF8_MAX_WIDTH && is_partial(rest)
-            {
-                return taken;
-            }
-
-            if width > 0 && width <= rest.len() && std::str::from_utf8(&rest[..width]).is_ok() {
-                self.buf[self.len..self.len + width].copy_from_slice(&rest[..width]);
-                self.len += width;
-                taken += width;
-                continue;
-            }
-
-            // Undecodable. Store a replacement and step over one byte, so a
-            // broken sequence can still resynchronise on the next character.
-            self.buf[self.len..self.len + REPLACEMENT.len()].copy_from_slice(REPLACEMENT);
-            self.len += REPLACEMENT.len();
-            taken += 1;
+        let text = line.pending();
+        let pending = text.len();
+        let mut taken = (LOG_CHUNK_SIZE - self.len).min(pending);
+        // Back off to a boundary: a chunk holding half a character would be
+        // undecodable on its own, and `as_str` promises it is not.
+        while taken > 0 && !text.is_char_boundary(taken) {
+            taken -= 1;
         }
 
-        // The input ran out just as the room did. Settling it here spares
-        // the caller a further `write` that could only come back as 0.
-        if !self.has_room() {
+        self.buf[self.len..self.len + taken].copy_from_slice(&text.as_bytes()[..taken]);
+        self.len += taken;
+
+        if taken < pending {
+            // Room ran out with the line unfinished, whatever `complete` says
+            // about the line as a whole — what is stored here is a head.
             self.state = LogChunkState::End;
+        } else if line.is_complete() {
+            self.state = LogChunkState::EndLine;
         }
+        line.consume(taken);
         taken
     }
+
 
     /// The content, as text.
     ///
@@ -268,28 +211,3 @@ impl LogChunk {
     }
 }
 
-/// How many bytes the character led by `byte` needs, or 0 if it cannot lead
-/// one.
-///
-/// Only the lead byte is read, so a few illegal encodings slip through —
-/// overlong forms, surrogates, anything past U+10FFFF. The full sequence is
-/// validated before it is stored.
-const fn utf8_width(byte: u8) -> usize {
-    match byte {
-        0x00..=0x7f => 1,
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf4 => 4,
-        _ => 0,
-    }
-}
-
-/// Whether `bytes` is a valid but unfinished character, so more input could
-/// still complete it.
-fn is_partial(bytes: &[u8]) -> bool {
-    match std::str::from_utf8(bytes) {
-        // Valid as far as it goes, and cut short rather than wrong.
-        Err(error) => error.valid_up_to() == 0 && error.error_len().is_none(),
-        Ok(_) => false,
-    }
-}
