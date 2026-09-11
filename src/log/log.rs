@@ -5,7 +5,10 @@ use std::sync::{
 
 use crate::{
     log::{LogBuffer, chunk::LogChunk},
-    util::localring::LocalRingBuffer,
+    util::{
+        arena::{Arena, ArenaBlock},
+        localring::LocalRingBuffer,
+    },
 };
 use parking_lot::Mutex;
 use thingbuf::{Recycle, StaticThingBuf};
@@ -13,6 +16,16 @@ use tokio::{io::AsyncRead, sync::Notify, task::JoinHandle};
 
 /// Size of the queue chunk
 const CHUNK_QUEUE_SIZE: usize = 128;
+
+/// Blocks set aside for the chunk each reader task fills before handing it
+/// over.
+///
+/// The ring and the queue are fixed, so their share of the arena is exact.
+/// This is the part that is not: one block per [`LogBuffer`] alive, and a
+/// unit makes a new one for every run — but because a reader gives its chunk
+/// back when it finishes, this bounds how many readers a log can have *at
+/// once*, not how many it can have over its life.
+const WRITER_CHUNK_BLOCKS: usize = 64;
 
 /// A handle for appending to a [`Log`] from a reader task.
 ///
@@ -40,6 +53,44 @@ impl LogWriterRef {
     /// that writer's output in the history.
     pub fn id(&self) -> LogWriterId {
         self.id
+    }
+
+    /// Take a chunk for a reader to fill.
+    ///
+    /// A reader's chunk is the one part of the arena that churns: the ring
+    /// and the queue are built once and live as long as the log, while a new
+    /// reader appears for every run of a unit. So one that has been given
+    /// back is reused before the arena is asked for another — otherwise a
+    /// unit restarted often enough would drain a pool that never refills.
+    ///
+    /// Past [`WRITER_CHUNK_BLOCKS`] readers at once the pool has nothing
+    /// left, and the chunk comes from the heap instead. It behaves the same;
+    /// it just sits apart from the others. Better a reader that records
+    /// without the locality than one that cannot record at all.
+    pub(super) fn chunk(&self) -> LogChunk {
+        let Some(inner) = self.inner.upgrade() else {
+            // The log is gone, so this reader has nowhere to put anything and
+            // will stop at its first push. It still needs somewhere to write
+            // until it finds that out.
+            return LogChunk::new(ArenaBlock::heap());
+        };
+        if let Some(chunk) = inner.chunks_free.lock().pop() {
+            return chunk;
+        }
+        LogChunk::new(inner.arena.alloc_or_heap())
+    }
+
+    /// Give a reader's chunk back for the next one to use.
+    ///
+    /// Cleared on the way in, so nothing of the run that finished can show up
+    /// in the run that follows. A log already gone takes nothing — the arena
+    /// goes with it, so there is nothing to save.
+    pub(super) fn recycle(&self, mut chunk: LogChunk) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        chunk.clear();
+        inner.chunks_free.lock().push(chunk);
     }
 
     /// Hand a finished chunk over to the log and take a recycled one back.
@@ -245,6 +296,10 @@ impl Log {
 /// is one uncontended swap, contention on the mutex stays between the sync
 /// task and the display, and the ring keeps a single writer.
 struct LogInner {
+    /// Every chunk's bytes, in one allocation. The ring, the queue and each
+    /// reader's working chunk all draw from here, which is what lets a chunk
+    /// move between them by swapping an index.
+    arena: Arena,
     /// The history: the last `capacity` chunks, oldest first. The mutex is
     /// the only lock in the module, and the sync task is its only writer.
     chunks: Mutex<LocalRingBuffer<LogChunk>>,
@@ -256,6 +311,11 @@ struct LogInner {
     /// is never reused even after a writer is gone — a stale stamp in the
     /// ring keeps meaning the writer it always meant.
     next_writer_id: AtomicU32,
+    /// Chunks handed back by readers that have finished, waiting for the
+    /// next reader. Small — it never holds more than the number of readers
+    /// that have ever run at once — and touched only when a reader starts or
+    /// stops, so a plain lock costs nothing here.
+    chunks_free: Mutex<Vec<LogChunk>>,
     /// The task draining `chunks_queue` into `chunks`. Aborted on drop.
     sync_handle: JoinHandle<()>,
     /// How a writer tells that task there is something to drain. Held by an
@@ -290,6 +350,9 @@ impl LogInner {
     /// If `capacity` is zero, or if called outside a tokio runtime.
     fn new(capacity: usize) -> Arc<Self> {
         let notify = Arc::new(Notify::new());
+        // One allocation for every chunk the log can hold at once: the ring,
+        // the queue that feeds it, and the working chunk of each reader.
+        let arena = Arena::new(capacity + CHUNK_QUEUE_SIZE + WRITER_CHUNK_BLOCKS);
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let sync_handle = {
                 let notify = notify.clone();
@@ -305,9 +368,18 @@ impl LogInner {
                 })
             };
             LogInner {
-                chunks: Mutex::new(LocalRingBuffer::new_with(capacity, LogChunk::new)),
+                chunks: Mutex::new(LocalRingBuffer::new_with(capacity, || {
+                    let block = arena
+                        .alloc()
+                        .expect("the arena was sized to hold the whole ring");
+                    LogChunk::new(block)
+                })),
+                arena: arena.clone(),
+                chunks_free: Mutex::new(Vec::new()),
                 next_writer_id: AtomicU32::new(0),
-                chunks_queue: StaticThingBuf::with_recycle(LogChunkRecycler {}),
+                chunks_queue: StaticThingBuf::with_recycle(LogChunkRecycler {
+                    arena: arena.clone(),
+                }),
                 sync_handle,
                 notify,
             }
@@ -429,7 +501,7 @@ impl Log {
     }
 }
 
-/// Keeps the queue's chunks reusable.
+/// Keeps the queue's chunks reusable, and builds them on first use.
 ///
 /// The queue holds chunks, not references to them, and a slot's occupant
 /// outlives the value that was popped from it — so a chunk handed back to a
@@ -441,10 +513,17 @@ impl Log {
 /// [`new_element`](Recycle::new_element) is only reached the first time each
 /// slot is used; after that every chunk in the system is one that already
 /// exists.
-struct LogChunkRecycler {}
+struct LogChunkRecycler {
+    arena: Arena,
+}
+
 impl Recycle<LogChunk> for LogChunkRecycler {
     fn new_element(&self) -> LogChunk {
-        LogChunk::new()
+        let block = self
+            .arena
+            .alloc()
+            .expect("the arena was sized to hold the whole queue");
+        LogChunk::new(block)
     }
 
     fn recycle(&self, element: &mut LogChunk) {

@@ -33,8 +33,12 @@ pub struct LogBuffer {
     /// belongs to the pipe it is being read from and to nothing else.
     line: LogBufferLine,
     /// The chunk being filled. Swapped for a recycled one on every push, so
-    /// the same allocation is reused for the life of the task.
-    chunk: LogChunk,
+    /// the same block is reused for the life of the task.
+    ///
+    /// Optional only so that [`Drop`] can hand it back — a chunk cannot be
+    /// moved out of `&mut self`, and letting it fall would spend an arena
+    /// block for good on every run of a unit.
+    chunk: Option<LogChunk>,
     /// Landing area for the raw read, big enough that one syscall is worth
     /// making.
     buf: Box<[u8; LOG_BUFFER_SIZE]>,
@@ -48,16 +52,29 @@ pub struct LogBuffer {
 impl LogBuffer {
     /// Start reading into `writer`'s log.
     ///
-    /// Allocates both buffers up front; after this a reader task allocates
-    /// nothing, no matter how much output it carries.
+    /// Takes the chunk this reader will fill from the log's arena, so after
+    /// this the task allocates nothing however much output it carries.
+    ///
+    /// The chunk comes from the log's pool, or from the heap if the pool is
+    /// spent — either way there is always one.
     pub fn new(writer: LogWriterRef) -> Self {
         Self {
+            chunk: Some(writer.chunk()),
             writer,
             line: LogBufferLine::new(),
-            chunk: LogChunk::new(),
             buf: unsafe { Box::<[u8; LOG_BUFFER_SIZE]>::new_zeroed().assume_init() },
             buf_offset: 0,
         }
+    }
+
+    /// Which arena block this reader's chunk sits on, for tests that care
+    /// that a block came back rather than a new one being taken.
+    #[cfg(test)]
+    fn block_index(&self) -> Option<u32> {
+        self.chunk
+            .as_ref()
+            .expect("the chunk is taken only on drop")
+            .block_index()
     }
 
     /// Push bytes in directly, without a reader.
@@ -102,10 +119,11 @@ impl LogBuffer {
     /// read: a burst fills one several times over and packs, a trickle sends
     /// one line at a time and packs nothing, and neither has to be detected.
     async fn flush_chunk(&mut self) -> bool {
-        if self.chunk.is_empty() {
+        let chunk = self.chunk.as_mut().expect("the chunk is taken only on drop");
+        if chunk.is_empty() {
             return true;
         }
-        self.writer.push_chunk(&mut self.chunk).await
+        self.writer.push_chunk(chunk).await
     }
 
     /// Hand the finished line to the log, then clear it.
@@ -121,9 +139,10 @@ impl LogBuffer {
     /// caller that carried on would spin.
     async fn flush_line(&mut self) -> bool {
         loop {
-            self.chunk.push_line(&mut self.line);
-            if self.chunk.is_finished() {
-                let is_open = self.writer.push_chunk(&mut self.chunk).await;
+            let chunk = self.chunk.as_mut().expect("the chunk is taken only on drop");
+            chunk.push_line(&mut self.line);
+            if chunk.is_finished() {
+                let is_open = self.writer.push_chunk(chunk).await;
                 if !is_open {
                     return false;
                 }
@@ -239,6 +258,23 @@ impl LogBuffer {
             self.buf.copy_within(start..filled, 0);
         }
         Ok(true)
+    }
+}
+
+/// Hand the reader's chunk back when the task that owned it is done.
+///
+/// A block spent here is spent for good — the arena hands out and does not
+/// take back — and a unit makes a new reader for every run, so without this a
+/// log restarted often enough would run out of blocks and stop recording.
+///
+/// Drop rather than an explicit call on purpose: it has to happen whether the
+/// reader ended because the pipe closed or because the task was cancelled out
+/// from under it, and only `Drop` covers both.
+impl Drop for LogBuffer {
+    fn drop(&mut self) {
+        if let Some(chunk) = self.chunk.take() {
+            self.writer.recycle(chunk);
+        }
     }
 }
 
@@ -536,6 +572,74 @@ mod test {
         settle().await;
 
         assert_eq!(log.collect_lines(), ["", "", "a"]);
+    }
+
+    /// A unit makes a new reader for every run, and the arena hands blocks
+    /// out without taking them back — so a reader that kept its block would
+    /// cost one per restart. The heap fallback means it would still work, but
+    /// silently: every run after the first few dozen would sit off on its
+    /// own, and the whole point of the arena would quietly drain away.
+    ///
+    /// Giving the chunk back on drop is what keeps the cost per restart at
+    /// zero, so this asserts the blocks stay pooled rather than merely that
+    /// the log kept working.
+    #[tokio::test]
+    async fn restarts_do_not_drain_the_arena() {
+        let log = Log::new(16);
+        for run in 1..=1_000 {
+            let mut buffer = LogBuffer::new(log.writer());
+            assert!(
+                buffer.block_index().is_some(),
+                "run {run} fell back to the heap: the pool drained"
+            );
+            buffer.write(b"linha\n").await;
+            // The reader finishes and its buffer falls, as on a restart.
+        }
+        settle().await;
+        assert_eq!(log.collect_lines().len(), 16, "the ring should be full");
+    }
+
+    /// A line the writer never finished dies with its reader, and the reader
+    /// that follows starts on a clean chunk.
+    ///
+    /// The unterminated text is held by the line, not the chunk — a line with
+    /// no newline is never ready, so it is never placed — which is why it
+    /// goes rather than turning up in the middle of the next run's output.
+    #[tokio::test]
+    async fn an_unfinished_line_does_not_survive_its_reader() {
+        let log = Log::new(16);
+
+        let mut primeiro = LogBuffer::new(log.writer());
+        primeiro.write(b"inacabada").await;
+        drop(primeiro);
+
+        let mut segundo = LogBuffer::new(log.writer());
+        segundo.write(b"nova\n").await;
+        settle().await;
+
+        assert_eq!(
+            log.collect_lines(),
+            ["nova"],
+            "one run's leftovers turned up in the next"
+        );
+    }
+
+    /// The chunk really is reused rather than a fresh block being taken —
+    /// which is the whole reason the pool exists.
+    #[tokio::test]
+    async fn a_reader_reuses_the_block_the_last_one_gave_back() {
+        let log = Log::new(4);
+
+        let primeiro = LogBuffer::new(log.writer());
+        let bloco = primeiro.block_index();
+        drop(primeiro);
+
+        let segundo = LogBuffer::new(log.writer());
+        assert_eq!(
+            segundo.block_index(),
+            bloco,
+            "a returned block was not picked up again"
+        );
     }
 
     #[tokio::test]

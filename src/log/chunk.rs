@@ -1,4 +1,14 @@
-use crate::log::{line::LogBufferLine, log::LogWriterId};
+use crate::{
+    log::{line::LogBufferLine, log::LogWriterId},
+    util::arena::{ARENA_BLOCK_SIZE, ArenaBlock},
+};
+
+/// A chunk's buffer is one arena block, so the two sizes are the same number
+/// written in two places. This is where they are made to agree.
+const _: () = assert!(
+    LOG_CHUNK_SIZE == ARENA_BLOCK_SIZE,
+    "LOG_CHUNK_SIZE and ARENA_BLOCK_SIZE must match"
+);
 
 /// How many bytes of content one chunk holds.
 ///
@@ -93,7 +103,10 @@ impl<'a> LogChunkData<'a> {
 /// [`iter_data`](LogChunk::iter_data) walks the pieces; `get_data` and
 /// `get_str` reach one by index.
 pub(super) struct LogChunk {
-    buf: Box<[u8; LOG_CHUNK_SIZE]>,
+    /// One block of the log's arena. Every chunk in a log draws from the same
+    /// pool, which is what lets them be swapped about: a swap exchanges which
+    /// block each side points at, and no bytes move.
+    buf: ArenaBlock,
     /// Where each piece ends. Pieces are packed back to back, so one starts
     /// where the last ended, and the end of the last piece is also the length
     /// of the whole chunk — which is why there is no separate `len`: it would
@@ -122,13 +135,16 @@ pub(super) struct LogChunk {
 }
 
 impl LogChunk {
-    /// Build an empty chunk, allocating its buffer.
+    /// Build an empty chunk on `block`.
     ///
-    /// The only place a chunk's buffer is ever allocated: from here on it is
-    /// recycled, never freed and never grown.
-    pub(super) fn new() -> Self {
+    /// Taking the block rather than an arena leaves the caller to say where
+    /// it should come from: the ring and the queue are sized up front and ask
+    /// for a pooled one, while a reader's chunk is not and can fall back to
+    /// the heap. See [`Arena::alloc`](crate::util::arena::Arena::alloc) and
+    /// [`alloc_or_heap`](crate::util::arena::Arena::alloc_or_heap).
+    pub(super) fn new(block: ArenaBlock) -> Self {
         Self {
-            buf: unsafe { Box::<[u8; LOG_CHUNK_SIZE]>::new_zeroed().assume_init() },
+            buf: block,
             ends: [0; LOG_CHUNK_MAX_LINES],
             count: 0,
             trailing_open: false,
@@ -314,6 +330,13 @@ impl LogChunk {
             self.trailing_open = true;
         }
         taken
+    }
+
+    /// Which arena block this chunk sits on, or `None` if it came from the
+    /// heap because the pool was spent.
+    #[cfg(test)]
+    pub(super) fn block_index(&self) -> Option<u32> {
+        self.buf.index()
     }
 
     /// The raw bytes of piece `n`, for tests that have to check the very

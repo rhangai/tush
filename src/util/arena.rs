@@ -116,15 +116,33 @@ impl Arena {
         }
     }
 
-    /// Take the next block, or `None` if the arena is spent.
+    /// Take the next block from the pool, or `None` if it is spent.
     ///
-    /// Running out is an ordinary answer, not a failure: an arena is sized
-    /// for what its owner intends to hold, and a caller asking for more is
-    /// asking a question the arena can answer honestly.
+    /// For the part of a structure that is sized up front: asking for more
+    /// than was reserved is a mistake about the sizing, and this is how the
+    /// arena says so instead of papering over it.
     pub fn alloc(&self) -> Option<ArenaBlock> {
         Some(ArenaBlock {
-            arena: self.inner.clone(),
-            index: self.inner.claim()?,
+            inner: ArenaBlockInner::Pooled {
+                arena: self.inner.clone(),
+                index: self.inner.claim()?,
+            },
+        })
+    }
+
+    /// Take the next block, falling back to the heap once the pool is spent.
+    ///
+    /// For the part that is not sized up front. The block behaves the same
+    /// either way; what it loses is the company of the others — it sits
+    /// wherever the allocator put it instead of alongside them.
+    ///
+    /// Deliberately not what [`alloc`](Arena::alloc) does. A structure whose
+    /// fixed parts quietly spilled onto the heap would lose the locality the
+    /// arena is for and never say a word about it, so those parts ask for a
+    /// pooled block and are told when there is none.
+    pub fn alloc_or_heap(&self) -> ArenaBlock {
+        self.alloc().unwrap_or_else(|| ArenaBlock {
+            inner: ArenaBlockInner::Owned(Box::new([0u8; ARENA_BLOCK_SIZE])),
         })
     }
 
@@ -150,26 +168,63 @@ impl Arena {
 /// `Box`, the block it sits in is not reusable once dropped — see the
 /// [module docs](self).
 pub struct ArenaBlock {
-    arena: Arc<ArenaInner>,
-    index: u32,
+    inner: ArenaBlockInner,
+}
+
+/// Where a block's bytes actually live.
+///
+/// Both shapes are the same size — the pooled one is a pointer and an index,
+/// twelve bytes that round up to sixteen, and the tag rides in the padding
+/// that rounding leaves behind. So carrying the choice costs nothing over
+/// carrying only the pooled form, and what it buys is that running the pool
+/// dry is a slower block rather than no block.
+enum ArenaBlockInner {
+    /// A block of an arena, shared with every other block of that arena.
+    Pooled { arena: Arc<ArenaInner>, index: u32 },
+    /// A block of its own, from the allocator, once the pool was spent.
+    Owned(Box<[u8; ARENA_BLOCK_SIZE]>),
 }
 
 impl ArenaBlock {
-    /// Which block this is.
+    /// A block of its own, from the allocator, belonging to no arena.
+    ///
+    /// For a caller that has no arena to hand — one whose pool has already
+    /// gone, say. It behaves like any other block and swaps with them freely.
+    pub fn heap() -> Self {
+        Self {
+            inner: ArenaBlockInner::Owned(Box::new([0u8; ARENA_BLOCK_SIZE])),
+        }
+    }
+
+    /// Which block of its arena this is, or `None` if it came from the heap.
     ///
     /// Only meaningful against the arena it came from. Useful for showing
     /// that a swap moved the index and not the bytes.
-    pub fn index(&self) -> u32 {
-        self.index
+    pub fn index(&self) -> Option<u32> {
+        match &self.inner {
+            ArenaBlockInner::Pooled { index, .. } => Some(*index),
+            ArenaBlockInner::Owned(_) => None,
+        }
     }
 
-    /// Whether both handles came from the same arena.
+    /// Whether the pool had room for this block, or the allocator had to.
+    pub fn is_pooled(&self) -> bool {
+        matches!(self.inner, ArenaBlockInner::Pooled { .. })
+    }
+
+    /// Whether both blocks came from the same arena.
     ///
-    /// Two handles from different arenas can still be swapped — each takes
-    /// the other's arena with it — but a caller that does not mean to mix
-    /// pools can check.
+    /// Two blocks from different arenas can still be swapped — each takes the
+    /// other's arena with it — but a caller that does not mean to mix pools
+    /// can check. Two heap blocks share no arena, so this is false for them.
     pub fn same_arena(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.arena, &other.arena)
+        match (&self.inner, &other.inner) {
+            (
+                ArenaBlockInner::Pooled { arena: a, .. },
+                ArenaBlockInner::Pooled { arena: b, .. },
+            ) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
     }
 }
 
@@ -177,17 +232,29 @@ impl Deref for ArenaBlock {
     type Target = [u8; ARENA_BLOCK_SIZE];
 
     fn deref(&self) -> &[u8; ARENA_BLOCK_SIZE] {
-        // SAFETY: no other handle can name this block — the offset only ever
-        // moves forwards — and every byte was zeroed when the store was made.
-        unsafe { &*self.arena.blocks[self.index as usize].get() }
+        match &self.inner {
+            // SAFETY: no other handle can name this block — the offset only
+            // ever moves forwards — and every byte was zeroed when the store
+            // was made.
+            ArenaBlockInner::Pooled { arena, index } => unsafe {
+                &*arena.blocks[*index as usize].get()
+            },
+            ArenaBlockInner::Owned(block) => block,
+        }
     }
 }
 
 impl DerefMut for ArenaBlock {
     fn deref_mut(&mut self) -> &mut [u8; ARENA_BLOCK_SIZE] {
-        // SAFETY: as for `deref`, and `&mut self` rules out another reference
-        // through this handle. No other handle can name the block at all.
-        unsafe { &mut *self.arena.blocks[self.index as usize].get() }
+        match &mut self.inner {
+            // SAFETY: as for `deref`, and `&mut self` rules out another
+            // reference through this handle. No other handle can name the
+            // block at all.
+            ArenaBlockInner::Pooled { arena, index } => unsafe {
+                &mut *arena.blocks[*index as usize].get()
+            },
+            ArenaBlockInner::Owned(block) => block,
+        }
     }
 }
 
@@ -262,6 +329,55 @@ mod test {
         assert!(arena.alloc().is_none(), "a spent block was lent again");
     }
 
+    /// Past the pool the allocator takes over, so a caller that cannot be
+    /// sized up front still gets a block.
+    #[test]
+    fn falls_back_to_the_heap_once_the_pool_is_spent() {
+        let arena = Arena::new(2);
+        let pooled: Vec<_> = (0..2).map(|_| arena.alloc_or_heap()).collect();
+        assert!(pooled.iter().all(|b| b.is_pooled()));
+        assert!(arena.is_exhausted());
+
+        let mut spare = arena.alloc_or_heap();
+        assert!(!spare.is_pooled(), "the pool was spent, this must be its own");
+        assert_eq!(spare.index(), None);
+
+        // And it is a block like any other.
+        assert_eq!(&spare[..], &[0u8; ARENA_BLOCK_SIZE][..]);
+        spare.fill(5);
+        assert!(spare.iter().all(|&b| b == 5));
+        // It did not tread on a pooled one.
+        assert!(pooled[0].iter().all(|&b| b == 0));
+    }
+
+    /// A heap block and a pooled one swap like any two, which is what lets
+    /// the fallback be invisible to whatever holds them.
+    #[test]
+    fn a_heap_block_swaps_with_a_pooled_one() {
+        let arena = Arena::new(1);
+        let mut pooled = arena.alloc_or_heap();
+        let mut heap = arena.alloc_or_heap();
+        assert!(pooled.is_pooled() && !heap.is_pooled());
+        pooled.fill(1);
+        heap.fill(2);
+
+        std::mem::swap(&mut pooled, &mut heap);
+
+        assert!(!pooled.is_pooled() && heap.is_pooled());
+        assert_eq!((pooled[0], heap[0]), (2, 1));
+    }
+
+    /// The choice rides in padding the pooled form already had, so carrying
+    /// it costs nothing.
+    #[test]
+    fn the_fallback_is_free() {
+        assert_eq!(
+            std::mem::size_of::<ArenaBlock>(),
+            std::mem::size_of::<Arc<ArenaInner>>() + std::mem::size_of::<usize>(),
+            "ArenaBlock grew past a pointer and an index"
+        );
+    }
+
     #[test]
     #[should_panic(expected = "non-zero capacity")]
     fn zero_capacity_is_rejected() {
@@ -272,7 +388,7 @@ mod test {
     #[test]
     fn blocks_are_handed_out_in_order() {
         let arena = Arena::new(4);
-        let indices: Vec<u32> = (0..4).map(|_| arena.alloc().unwrap().index()).collect();
+        let indices: Vec<u32> = (0..4).map(|_| arena.alloc().unwrap().index().unwrap()).collect();
         assert_eq!(indices, [0, 1, 2, 3]);
     }
 
@@ -320,13 +436,13 @@ mod test {
         let mut b = arena.alloc().unwrap();
         a.fill(1);
         b.fill(2);
-        let (index_a, index_b) = (a.index(), b.index());
+        let (index_a, index_b) = (a.index().unwrap(), b.index().unwrap());
         let (addr_a, addr_b) = (a.as_ptr(), b.as_ptr());
 
         std::mem::swap(&mut a, &mut b);
 
         assert_eq!(
-            (a.index(), b.index()),
+            (a.index().unwrap(), b.index().unwrap()),
             (index_b, index_a),
             "indices did not swap"
         );
@@ -390,7 +506,7 @@ mod test {
                     let arena = arena.clone();
                     scope.spawn(move || {
                         (0..8)
-                            .map(|_| arena.alloc().unwrap().index())
+                            .map(|_| arena.alloc().unwrap().index().unwrap())
                             .collect::<Vec<_>>()
                     })
                 })
