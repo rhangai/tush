@@ -12,7 +12,7 @@ use super::chunk::LogChunk;
 /// this sizes a syscall, that sizes a unit of storage. Bigger means fewer
 /// reads for a chatty process, and one read simply fills as many chunks as it
 /// turns out to cover. There is one of these per reader task, not per log.
-const LOG_BUFFER_SIZE: usize = 8192;
+const LOG_BUFFER_SIZE: usize = 4096;
 
 /// The reading end of one pipe, owned by the task draining it.
 ///
@@ -63,15 +63,34 @@ impl LogBuffer {
     /// traffic. Splits on newlines and hands over every chunk it fills, the
     /// same as [`read`](LogBuffer::read) does.
     ///
-    /// Unlike `read` it keeps nothing back between calls, so `buf` must end
-    /// on a character boundary. A trailing partial character has no next read
-    /// to complete it and the chunk will not accept it, so it must not be
-    /// passed here.
+    /// An unfinished line stays in the current chunk for the next call to
+    /// continue, so writing `"sta"` then `"rting\n"` logs one line. What does
+    /// *not* carry over is a partial character: one call is one whole
+    /// message, so `write_eof` is what the chunk is fed with and a trailing
+    /// `\xc3` is stored as a replacement character rather than held back for
+    /// a call that may never come. Split text on a character boundary, or use
+    /// [`read`](LogBuffer::read), which does carry a partial character across
+    /// reads.
+    ///
+    /// Feeding it as end-of-input is also what keeps the loop moving: plain
+    /// [`write`](LogChunk::write) would hold a partial tail back and take
+    /// none of it, leaving `buf` the same length on every pass — and with no
+    /// `await` on that path, the spin would wedge the whole runtime thread
+    /// rather than just this task.
+    ///
+    /// Returns early, dropping the rest, once the log is gone.
     pub async fn write(&mut self, mut buf: &[u8]) {
         while !buf.is_empty() {
-            let written = self.chunk.write(buf);
+            let written = self.chunk.write_eof(buf);
             if self.chunk.is_finished() {
-                self.writer.push_chunk(&mut self.chunk).await;
+                // The log is gone, so the chunk was never swapped and is
+                // still marked finished. Carrying on would spin the same
+                // way: a finished chunk takes nothing, and a push that
+                // fails this way never yields.
+                let is_open = self.writer.push_chunk(&mut self.chunk).await;
+                if !is_open {
+                    return;
+                }
             }
             buf = &buf[written..];
         }
@@ -181,4 +200,91 @@ fn is_disconnected(error: &io::Error) -> bool {
             | ErrorKind::ConnectionReset
             | ErrorKind::ConnectionAborted
     )
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::log::{Log, chunk::LOG_CHUNK_SIZE};
+
+    /// Let the sync task move what was pushed into the ring.
+    async fn settle() {
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn write_keeps_every_line_in_the_buffer() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        // Regression: the loop used to advance by a count it never read, so
+        // everything after the first newline was dropped.
+        buffer.write(b"um\ndois\ntres\n").await;
+        settle().await;
+        assert_eq!(log.collect_lines(), ["um", "dois", "tres"]);
+    }
+
+    #[tokio::test]
+    async fn write_carries_an_unfinished_line_between_calls() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write(b"sta").await;
+        buffer.write(b"rting\nup\n").await;
+        settle().await;
+        assert_eq!(log.collect_lines(), ["starting", "up"]);
+    }
+
+    /// A partial character at the end of a `write` has no next call to
+    /// complete it. It has to become a replacement character — holding it
+    /// back took no bytes and spun the loop for ever, with no `await` on the
+    /// path to even let the runtime interrupt it.
+    #[tokio::test]
+    async fn write_terminates_on_a_partial_character() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("olá".as_bytes()).await;
+        buffer.write(b"ol\xc3").await;
+        buffer.write(b"\n").await;
+        settle().await;
+        assert_eq!(log.collect_lines(), ["oláol\u{fffd}"]);
+    }
+
+    /// The other spin: with the log gone the chunk is never swapped, so it
+    /// stays finished, takes nothing, and the failed push never yields.
+    #[tokio::test]
+    async fn write_terminates_once_the_log_is_dropped() {
+        let log = Log::new(16);
+        let writer = log.writer();
+        drop(log);
+        let mut buffer = LogBuffer::new(writer);
+        buffer.write(&b"linha\n".repeat(500)).await;
+    }
+
+    #[tokio::test]
+    async fn read_splits_a_line_longer_than_a_chunk() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        let long = "a".repeat(LOG_CHUNK_SIZE * 3);
+        let src = format!("{long}\ncurta\n").into_bytes();
+        let mut src = &src[..];
+        while buffer.read(&mut src).await.unwrap() {}
+        settle().await;
+        assert_eq!(log.collect_lines(), [long, "curta".to_string()]);
+    }
+
+    /// A character straddling the boundary between two reads must survive.
+    #[tokio::test]
+    async fn read_rejoins_a_character_split_across_reads() {
+        let log = Log::new(16);
+        let mut buffer = LogBuffer::new(log.writer());
+        let text = "coração\n".as_bytes();
+        // Hand it over one byte at a time: every multi-byte character is
+        // guaranteed to be cut.
+        for i in 0..text.len() {
+            let mut one = &text[i..i + 1];
+            buffer.read(&mut one).await.unwrap();
+        }
+        settle().await;
+        assert_eq!(log.collect_lines(), ["coração"]);
+    }
 }

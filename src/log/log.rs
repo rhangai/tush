@@ -8,6 +8,9 @@ use parking_lot::Mutex;
 use thingbuf::{Recycle, StaticThingBuf};
 use tokio::{io::AsyncRead, sync::Notify, task::JoinHandle};
 
+/// Size of the queue chunk
+const CHUNK_QUEUE_SIZE: usize = 128;
+
 /// A handle for appending to a [`Log`] from a reader task.
 ///
 /// Weak on purpose: tasks still draining their pipes should not keep a log
@@ -179,7 +182,7 @@ struct LogInner {
     /// The hand-off. Bounded, so a process shouting faster than the sync task
     /// drains makes its reader wait rather than letting the queue grow
     /// without bound.
-    chunks_queue: StaticThingBuf<LogChunk, 128, LogChunkRecycler>,
+    chunks_queue: StaticThingBuf<LogChunk, CHUNK_QUEUE_SIZE, LogChunkRecycler>,
     /// The task draining `chunks_queue` into `chunks`. Aborted on drop.
     sync_handle: JoinHandle<()>,
     /// How a writer tells that task there is something to drain. Held by an
@@ -196,7 +199,6 @@ struct LogInner {
 /// was headed for.
 impl Drop for LogInner {
     fn drop(&mut self) {
-        self.notify.notify_one();
         self.sync_handle.abort();
     }
 }
@@ -269,6 +271,30 @@ impl LogInner {
     /// task was mid-drain still gets a pass of its own.
     fn notify_writer(&self) {
         self.notify.notify_one();
+    }
+}
+
+#[cfg(test)]
+impl Log {
+    /// The history as lines, for assertions.
+    ///
+    /// Joins the chunks a long line was split across, which is what a real
+    /// renderer has to do and what [`debug`](Log::debug) does not.
+    pub(super) fn collect_lines(&self) -> Vec<String> {
+        self.inner.sync_queue();
+        let mut lines = Vec::new();
+        let mut current = String::new();
+        for chunk in self.inner.chunks.lock().iter() {
+            current.push_str(chunk.as_str());
+            if chunk.is_line() {
+                lines.push(std::mem::take(&mut current));
+            }
+        }
+        // A last line flushed without a newline of its own.
+        if !current.is_empty() {
+            lines.push(current);
+        }
+        lines
     }
 }
 
