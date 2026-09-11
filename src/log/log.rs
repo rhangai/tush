@@ -5,7 +5,7 @@ use crate::{
     util::localring::LocalRingBuffer,
 };
 use parking_lot::Mutex;
-use thingbuf::{Recycle, ThingBuf};
+use thingbuf::{Recycle, StaticThingBuf, ThingBuf};
 use tokio::{io::AsyncRead, sync::Notify, task::JoinHandle};
 
 /// A handle for appending to a [`Log`] from a reader task.
@@ -142,7 +142,7 @@ impl Log {
 
 struct LogInner {
     chunks: Mutex<LocalRingBuffer<LogChunk>>,
-    chunks_queue: ThingBuf<LogChunk, LogChunkRecycler>,
+    chunks_queue: StaticThingBuf<LogChunk, 128, LogChunkRecycler>,
     sync_handle: JoinHandle<()>,
     notify: Arc<Notify>,
 }
@@ -173,7 +173,7 @@ impl LogInner {
             };
             LogInner {
                 chunks: Mutex::new(LocalRingBuffer::new_with(capacity, LogChunk::new)),
-                chunks_queue: ThingBuf::with_recycle(128, LogChunkRecycler {}),
+                chunks_queue: StaticThingBuf::with_recycle(LogChunkRecycler {}),
                 sync_handle,
                 notify,
             }
