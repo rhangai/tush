@@ -383,3 +383,109 @@ impl<'a> Iterator for LogChunkDataIter<'a> {
 }
 
 impl ExactSizeIterator for LogChunkDataIter<'_> {}
+
+/// A chunk as a reader keeps it: the bytes and what they mean, nothing more.
+///
+/// A [`LogChunk`] carries machinery for being *filled* — where the next line
+/// goes, whether it still takes one, which line is still open for extending.
+/// A reader never fills anything. It receives chunks already finished and only
+/// needs to be able to read them back, so this keeps the part that describes
+/// the content and drops the part that describes the writing.
+///
+/// The saving is not really the byte or two of state. It is that a reader's
+/// copy cannot be half written, cannot be extended, and cannot be asked
+/// whether it is finished — questions that have no meaning on this side and
+/// would have to be answered anyway if the same type were used for both.
+///
+/// # Copied, not swapped, and held inline
+///
+/// The log's ring has to keep its chunks: another reader may not have seen
+/// them yet, and there may be several. So a reader takes a copy.
+///
+/// And because nothing ever moves a reader's chunk — it is filled in place,
+/// in the slot it already occupies — the bytes sit here rather than behind a
+/// pointer. A reader's ring is one `Box<[LogReaderChunk]>`, so that is the
+/// whole reader in a single allocation, laid out in order, with nothing to
+/// dereference on the way to a byte.
+///
+/// This is why there is no arena on this side. An arena earns its keep where
+/// blocks circulate between parties — the log's ring, its writers, its free
+/// pool — and have to be interchangeable and individually owned. A reader
+/// owns every byte it will ever use, for as long as it lives, and lends none
+/// of it to anyone. The refcount, the index and the heap fallback would all
+/// be paying for a problem it does not have.
+pub struct LogReaderChunk {
+    /// The bytes, inline. Only the first `len` of them mean anything.
+    buf: [u8; LOG_CHUNK_SIZE],
+    /// Where each piece ends, exactly as the chunk it was copied from had
+    /// them. The last piece ends at `len`.
+    ends: [u16; LOG_CHUNK_MAX_LINES],
+    /// How many pieces this holds. Zero for a chunk nothing has been copied
+    /// into yet, which is how every slot of a reader's ring starts.
+    count: usize,
+    /// How many bytes of `buf` are content. Kept rather than derived from
+    /// `ends` because a reader has no writing path to keep the two in step,
+    /// so one of them would be a trap.
+    len: usize,
+    /// Whether the last piece runs on into this writer's next chunk.
+    trailing_open: bool,
+    /// Who wrote it. Carried across the copy because joining a split line
+    /// needs it: another process's chunk can sit between two pieces of the
+    /// same line.
+    writer: LogWriterId,
+}
+
+impl LogReaderChunk {
+    /// Build an empty one.
+    ///
+    /// Empty means `count` zero, not meaningful bytes — nothing is read past
+    /// `len`, so a slot waiting to be filled has nothing worth setting.
+    pub(super) fn new() -> Self {
+        Self {
+            buf: [0; LOG_CHUNK_SIZE],
+            ends: [0; LOG_CHUNK_MAX_LINES],
+            count: 0,
+            len: 0,
+            trailing_open: false,
+            writer: LogWriterId::UNSET,
+        }
+    }
+
+    /// Take everything `chunk` holds.
+    ///
+    /// Overwrites whatever was here, so a recycled slot needs no clearing
+    /// first: only `len` bytes are ever read back, and this sets it.
+    ///
+    /// Copies just the content, not the whole block — a chunk two lines deep
+    /// is a hundred bytes of a two hundred and fifty six byte buffer, and
+    /// copying the rest would be copying the padding.
+    pub(super) fn copy_from(&mut self, chunk: &LogChunk) {
+        let len = chunk.len();
+        self.buf[..len].copy_from_slice(&chunk.buf[..len]);
+        self.ends = chunk.ends;
+        self.count = chunk.count;
+        self.len = len;
+        self.trailing_open = chunk.trailing_open;
+        self.writer = chunk.writer;
+    }
+
+    /// How many pieces it holds.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// How many bytes of content, across all its pieces.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether it holds nothing — a slot of a reader's ring not yet reached.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Who wrote it.
+    pub fn writer(&self) -> LogWriterId {
+        self.writer
+    }
+}

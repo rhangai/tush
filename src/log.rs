@@ -17,6 +17,9 @@
 //!        │  finished chunks, by swap — never copied
 //!        ▼
 //!   LocalRingBuffer<LogChunk>     the last `capacity` chunks
+//!        │  copied, and only what is new
+//!        ▼
+//!   LogReader      one per view, its own copy of the same window
 //! ```
 //!
 //! Each stage exists for one reason:
@@ -31,6 +34,10 @@
 //! - The ring is the history proper, guarded by a mutex. A writer takes it,
 //!   swaps its finished chunk for the one the ring was about to overwrite,
 //!   and lets go — everything else it does happens outside.
+//! - [`LogReader`] is per view. Reading from the ring means holding the lock
+//!   every writer needs, so a view keeps a copy and goes to the log only for
+//!   what has arrived since — which is usually a handful of chunks, and often
+//!   none at all.
 //!
 //! # Why there is no queue between them
 //!
@@ -44,6 +51,21 @@
 //! What it did buy was shelter from a slow reader. That is bought instead by
 //! keeping the critical section to a single swap: nothing is decoded,
 //! allocated or printed while the lock is held, on either side.
+//!
+//! # Reading without getting in the way
+//!
+//! A reader holds as many chunks as the log does, which makes the whole
+//! relationship one sentence: **caught up, a reader holds exactly what the
+//! log holds**. Behind by no more than the ring is long, the sync fetches
+//! what is missing; behind by more, what it missed is gone from the log too,
+//! so it takes the ring whole and mirrors it again.
+//!
+//! So there is no hole to represent anywhere, and nothing counts what was
+//! lost. Dropping the oldest chunks is a ring doing its job, not an event —
+//! it happens constantly, reader or no reader.
+//!
+//! Finding out that nothing has changed costs one atomic load and no lock,
+//! which is what makes a view polling five quiet units almost free.
 //!
 //! # Where the seam is
 //!
@@ -83,4 +105,4 @@ mod log;
 pub use buffer::{LogBuffer, LogBufferAny, LogBufferWriter};
 
 #[allow(unused_imports)]
-pub use log::{Log, LogWriterId, LogWriterRef};
+pub use log::{Log, LogReader, LogWriterId, LogWriterRef};
