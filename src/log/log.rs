@@ -4,7 +4,10 @@ use std::sync::{
 };
 
 use crate::{
-    log::{LogBuffer, chunk::LogChunk},
+    log::{
+        LogBuffer,
+        chunk::{LogChunk, LogChunkData},
+    },
     util::{
         arena::{Arena, ArenaBlock},
         localring::LocalRingBuffer,
@@ -233,59 +236,29 @@ impl Log {
         }
     }
 
-    /// Print the whole history to stdout.
+    /// Print the history to stdout, oldest first.
     ///
-    /// Scaffolding for the CLI that does not exist yet. Syncs first so
-    /// anything still in the queue is included, then walks the ring oldest
-    /// first.
+    /// Scaffolding until there is a CLI, and it goes when there is. It holds
+    /// the lock for the whole print, which nothing that runs often may do —
+    /// stalling every writer of the unit for the length of a terminal write
+    /// is only acceptable because this is a debugging aid.
     ///
-    /// Joins the pieces of a line that was split across chunks, which is the
-    /// same thing any real renderer has to do: walk the pieces and hold on to
-    /// each one until a [`Line`](super::chunk::LogChunkData::Line) closes it.
+    /// Prints pieces, not lines: a line split across chunks comes out in
+    /// parts, each but the last marked. Joining them needs the writer each
+    /// piece belongs to, since another process's chunk can sit between two
+    /// pieces of the same line — a reader's job, not this one's.
     pub fn debug(&self) {
-        let lines = self.lines();
-        for (_, line) in &lines {
-            println!("{line}");
-        }
-        println!("Lines: {}", lines.len());
-    }
-
-    /// The history as whole lines, each with the writer that produced it.
-    ///
-    /// Joins the pieces of a line split across chunks — per writer, since
-    /// another process's chunk can sit between two pieces of the same line;
-    /// see [`LogChunkData`](super::chunk::LogChunkData).
-    ///
-    /// Copies out, so the lock is held for the walk and nothing else. A
-    /// renderer must not hold it while painting: writers are kept off it by
-    /// the queue, but the task draining that queue is not.
-    pub(super) fn lines(&self) -> Vec<(LogWriterId, String)> {
-
-        let mut lines = Vec::new();
-        // One entry per writer with a line still open. A handful at most —
-        // one per process of the unit — so a scan beats a map.
-        let mut pending: Vec<(LogWriterId, String)> = Vec::new();
-
-        for chunk in self.inner.chunks.lock().iter() {
-            let writer = chunk.writer();
-            let slot = match pending.iter().position(|(id, _)| *id == writer) {
-                Some(at) => at,
-                None => {
-                    pending.push((writer, String::new()));
-                    pending.len() - 1
-                }
-            };
+        let chunks = self.inner.chunks.lock();
+        for chunk in chunks.iter() {
             for data in chunk.iter_data() {
-                pending[slot].1.push_str(data.as_str());
-                if data.is_line() {
-                    lines.push((writer, std::mem::take(&mut pending[slot].1)));
+                match data {
+                    // A piece that runs on marks itself, so a line the room
+                    // cut in two does not read as two lines that were.
+                    LogChunkData::Partial(text) => println!("{text} ⏎"),
+                    LogChunkData::Line(text) => println!("{text}"),
                 }
             }
         }
-
-        // Lines the ring cut off in the middle of.
-        lines.extend(pending.into_iter().filter(|(_, text)| !text.is_empty()));
-        lines
     }
 }
 
@@ -354,53 +327,3 @@ impl LogInner {
         LogWriterId::new(self.next_writer_id.fetch_add(1, Ordering::Relaxed))
     }
 }
-
-#[cfg(test)]
-impl Log {
-    /// The history as lines, for assertions.
-    ///
-    /// Joins the chunks a long line was split across, which is what a real
-    /// renderer has to do and what [`debug`](Log::debug) does not.
-    pub(super) fn collect_lines(&self) -> Vec<String> {
-        self.lines().into_iter().map(|(_, line)| line).collect()
-    }
-
-    /// The pieces of every chunk: `(text, ends a line)`, grouped by chunk.
-    ///
-    /// Shows the packing itself rather than the history it adds up to, which
-    /// is the only way to tell whether lines shared a chunk.
-    pub(super) fn chunk_pieces(&self) -> Vec<Vec<(String, bool)>> {
-        self.inner
-            .chunks
-            .lock()
-            .iter()
-            .map(|chunk| {
-                chunk
-                    .iter_data()
-                    .map(|data| (data.as_str().to_string(), data.is_line()))
-                    .collect()
-            })
-            .collect()
-    }
-
-    /// Every chunk in the ring, as raw bytes.
-    ///
-    /// For checking the invariant [`as_str`](LogChunk::as_str) relies on:
-    /// each chunk has to be valid UTF-8 *on its own*, not merely once the
-    /// ring is concatenated.
-    pub(super) fn chunk_bytes(&self) -> Vec<Vec<u8>> {
-        let mut pieces = Vec::new();
-        for chunk in self.inner.chunks.lock().iter() {
-            for n in 0..chunk.count() {
-                pieces.push(chunk.piece_bytes(n).unwrap().to_vec());
-            }
-        }
-        pieces
-    }
-
-    /// The history as lines, each with the writer that produced it.
-    pub(super) fn collect_attributed(&self) -> Vec<(LogWriterId, String)> {
-        self.lines()
-    }
-}
-

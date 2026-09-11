@@ -1,6 +1,5 @@
 //! One line under construction, assembled from whatever the pipe hands over.
 
-
 /// How much of a single line is assembled before it has to be handed over.
 ///
 /// Deliberately not tied to [`LOG_CHUNK_SIZE`](super::chunk::LOG_CHUNK_SIZE).
@@ -83,7 +82,7 @@ enum LogBufferLineState {
 ///     // read more; whatever is left is a partial character
 /// }
 /// ```
-pub(super) struct LogBufferLine {
+pub struct LogBufferLine {
     len: usize,
     /// How much of the text a chunk has already taken. Storage drains the
     /// line rather than copying out of it, so what is left to place is the
@@ -420,7 +419,10 @@ mod test {
         assert_eq!(out.last().unwrap().0, "curta");
 
         // Nothing is lost or invented in the splitting.
-        let rebuilt: String = out[..out.len() - 1].iter().map(|(t, _)| t.as_str()).collect();
+        let rebuilt: String = out[..out.len() - 1]
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect();
         assert_eq!(rebuilt, longa);
     }
 
@@ -475,10 +477,7 @@ mod test {
         assert_eq!(out, ["coração", "àéîõü", "plain"]);
         assert_eq!(
             out,
-            lines(input)
-                .into_iter()
-                .map(|(t, _)| t)
-                .collect::<Vec<_>>()
+            lines(input).into_iter().map(|(t, _)| t).collect::<Vec<_>>()
         );
     }
 
@@ -504,4 +503,3 @@ mod test {
         assert_eq!(line.as_str(), "cheia");
     }
 }
-

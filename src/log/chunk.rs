@@ -111,7 +111,7 @@ impl<'a> LogChunkData<'a> {
 ///
 /// [`iter_data`](LogChunk::iter_data) walks the pieces; `get_data` and
 /// `get_str` reach one by index.
-pub(super) struct LogChunk {
+pub struct LogChunk {
     /// One block of the log's arena. Every chunk in a log draws from the same
     /// pool, which is what lets them be swapped about: a swap exchanges which
     /// block each side points at, and no bytes move.
@@ -236,11 +236,7 @@ impl LogChunk {
         if n >= self.count {
             return None;
         }
-        let start = if n == 0 {
-            0
-        } else {
-            self.ends[n - 1] as usize
-        };
+        let start = if n == 0 { 0 } else { self.ends[n - 1] as usize };
         Some((start, self.ends[n] as usize))
     }
 
@@ -379,5 +375,3 @@ impl<'a> Iterator for LogChunkDataIter<'a> {
 }
 
 impl ExactSizeIterator for LogChunkDataIter<'_> {}
-
-

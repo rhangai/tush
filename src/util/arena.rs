@@ -339,7 +339,10 @@ mod test {
         assert!(arena.is_exhausted());
 
         let mut spare = arena.alloc_or_heap();
-        assert!(!spare.is_pooled(), "the pool was spent, this must be its own");
+        assert!(
+            !spare.is_pooled(),
+            "the pool was spent, this must be its own"
+        );
         assert_eq!(spare.index(), None);
 
         // And it is a block like any other.
@@ -388,7 +391,9 @@ mod test {
     #[test]
     fn blocks_are_handed_out_in_order() {
         let arena = Arena::new(4);
-        let indices: Vec<u32> = (0..4).map(|_| arena.alloc().unwrap().index().unwrap()).collect();
+        let indices: Vec<u32> = (0..4)
+            .map(|_| arena.alloc().unwrap().index().unwrap())
+            .collect();
         assert_eq!(indices, [0, 1, 2, 3]);
     }
 
