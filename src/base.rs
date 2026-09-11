@@ -5,10 +5,11 @@
 //!
 //! - [`Process`] spawns an OS child in its own process group and pumps its
 //!   stdout, line by line, into a log.
-//! - [`Log`] is the multi-reader ring buffer holding the most recent output
-//!   lines, handed out to writers as a [`LogWriterRef`] and to readers as a
-//!   [`LogBuffer`] snapshot.
 //! - [`ExitReason`] describes how a process finished.
+//!
+//! The output history itself lives in [`log`](crate::log): a `Process` is
+//! given a [`LogWriterRef`](crate::log::LogWriterRef) and pumps its stdout
+//! into whichever [`Log`](crate::log::Log) that handle points at.
 
 mod exit_reason;
 mod process;

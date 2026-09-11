@@ -1,4 +1,12 @@
-pub const LOG_CHUNK_SIZE: usize = 4096;
+/// How many bytes of content one chunk holds.
+///
+/// This is the granularity of the whole log: the ring remembers a number of
+/// *chunks*, not a number of lines, so the size sets how much of a long line
+/// survives in one piece and how much memory a log of a given capacity costs
+/// (`capacity * LOG_CHUNK_SIZE`). Small enough that a mostly-short-lines log
+/// wastes little, which means lines past this length are split across several
+/// chunks and only the last of them reports [`is_line`](LogChunk::is_line).
+pub const LOG_CHUNK_SIZE: usize = 256;
 
 /// The longest a single UTF-8 character can be.
 const UTF8_MAX_WIDTH: usize = 4;
@@ -21,7 +29,7 @@ enum LogChunkState {
     Open,
     /// A newline closed the line.
     EndLine,
-    /// Just ended
+    /// The chunk ran out of room, so the line continues in the next one.
     End,
 }
 
@@ -60,6 +68,10 @@ pub(super) struct LogChunk {
 }
 
 impl LogChunk {
+    /// Build an empty chunk, allocating its buffer.
+    ///
+    /// The only place a chunk's buffer is ever allocated: from here on it is
+    /// recycled, never freed and never grown.
     pub(super) fn new() -> Self {
         Self {
             buf: unsafe { Box::<[u8; LOG_CHUNK_SIZE]>::new_zeroed().assume_init() },
@@ -68,10 +80,21 @@ impl LogChunk {
         }
     }
 
+    /// Exchange this chunk with `other`, buffers and all.
+    ///
+    /// How a chunk travels: handing one to the log is a swap with a recycled
+    /// slot, so both sides keep an allocation and nothing is copied. The
+    /// state and length travel with the buffer, which is what lets a stored
+    /// chunk still answer [`is_line`](LogChunk::is_line) long after the
+    /// writer moved on.
     pub fn swap(&mut self, other: &mut LogChunk) {
         std::mem::swap(self, other);
     }
 
+    /// Empty the chunk and reopen it for writing, keeping its buffer.
+    ///
+    /// This is what makes a chunk reusable, and it is the whole job of the
+    /// queue's recycler, which calls it as each slot is claimed.
     pub fn clear(&mut self) {
         self.len = 0;
         // Without this a recycled chunk comes back already finished, and
@@ -185,20 +208,41 @@ impl LogChunk {
         taken
     }
 
+    /// The content, as text.
+    ///
+    /// Free: the bytes were validated on the way in, so there is nothing left
+    /// to decode or check here. That is the reason `write` bothers to
+    /// validate at all rather than storing raw bytes and decoding on read —
+    /// a log is written once and displayed on every repaint.
     pub fn as_str(&self) -> &str {
-        // SAFETY: Since len is only incremented when a valid utf8 is consumed
-        // there is no need to worry about this conversion
+        // SAFETY: `len` only ever advances by a run of bytes that was just
+        // checked: an ASCII byte, a sequence `std::str::from_utf8` accepted,
+        // or `REPLACEMENT`. A concatenation of valid UTF-8 is valid UTF-8,
+        // and `clear` resets `len` to 0, so `buf[..len]` is always valid.
         unsafe { std::str::from_utf8_unchecked(&self.buf[..self.len]) }
     }
 
+    /// The content, as bytes — the same thing
+    /// [`as_str`](LogChunk::as_str) returns, for a caller writing it straight
+    /// out to a terminal without looking at it.
     pub fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]
     }
 
+    /// How many bytes of content the chunk holds.
+    ///
+    /// Bytes, not characters, and not the number of bytes fed in: a newline
+    /// was consumed without being stored, and every undecodable byte became
+    /// three.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Whether the chunk holds nothing.
+    ///
+    /// An empty chunk is never handed to the log — it would show up as a
+    /// blank line that the process never printed — so this is what the end of
+    /// a stream is tested with before flushing whatever was left.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

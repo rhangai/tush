@@ -2,7 +2,7 @@
 //!
 //! Where a [`RunnerHandle`](crate::runner::RunnerHandle) supervises one run, a
 //! [`Unit`] is the identity that survives across runs. It owns the
-//! [`Log`](crate::base::Log) — so the output history is not lost on restart —
+//! [`Log`](crate::log::Log) — so the output history is not lost on restart —
 //! and it holds whichever handle is current.
 //!
 //! A [`UnitDescription`] is the recipe: what to spawn, and how. Keeping it

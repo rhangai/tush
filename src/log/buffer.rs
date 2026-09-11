@@ -2,21 +2,51 @@ use std::io::{self, ErrorKind};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::log::{chunk::LOG_CHUNK_SIZE, log::LogWriterRef};
+use crate::log::log::LogWriterRef;
 
 use super::chunk::LogChunk;
 
-const LOG_BUFFER_SIZE: usize = LOG_CHUNK_SIZE * 2;
+/// How much one [`read`](LogBuffer::read) can take from the pipe at a time.
+///
+/// Deliberately unrelated to [`LOG_CHUNK_SIZE`](super::chunk::LOG_CHUNK_SIZE):
+/// this sizes a syscall, that sizes a unit of storage. Bigger means fewer
+/// reads for a chatty process, and one read simply fills as many chunks as it
+/// turns out to cover. There is one of these per reader task, not per log.
+const LOG_BUFFER_SIZE: usize = 8192;
 
-/// Log buffer, for single task operations
+/// The reading end of one pipe, owned by the task draining it.
+///
+/// Sits between a child's stdout and a [`Log`](super::Log), and exists for
+/// the two things a raw read cannot do by itself: a read lands wherever the
+/// pipe happened to break, so it may stop in the middle of a character, and
+/// it may cover many lines at once. This holds the leftover bytes of an
+/// unfinished character between calls and feeds whole characters to a chunk,
+/// handing each chunk over as it finishes.
+///
+/// One per reader task. Nothing here is shared, which is why there is no
+/// locking on this side at all — the hand-off to the log is the only place
+/// two tasks meet.
 pub struct LogBuffer {
+    /// Where finished chunks go. Weak, so this outliving its log is normal.
     writer: LogWriterRef,
+    /// The chunk being filled. Swapped for a recycled one on every push, so
+    /// the same allocation is reused for the life of the task.
     chunk: LogChunk,
+    /// Landing area for the raw read, big enough that one syscall is worth
+    /// making.
     buf: Box<[u8; LOG_BUFFER_SIZE]>,
+    /// How many bytes at the front of `buf` are the head of a character the
+    /// last read cut in half. Never more than three; usually zero, since any
+    /// input ending on a character boundary — all of ASCII — leaves nothing
+    /// behind. The next read is placed after them.
     buf_offset: usize,
 }
 
 impl LogBuffer {
+    /// Start reading into `writer`'s log.
+    ///
+    /// Allocates both buffers up front; after this a reader task allocates
+    /// nothing, no matter how much output it carries.
     pub fn new(writer: LogWriterRef) -> Self {
         Self {
             writer,
@@ -26,10 +56,24 @@ impl LogBuffer {
         }
     }
 
-    pub async fn write(&mut self, buf: &[u8]) {
-        self.chunk.write(buf);
-        if self.chunk.is_finished() {
-            self.writer.push_chunk(&mut self.chunk).await;
+    /// Push bytes in directly, without a reader.
+    ///
+    /// For output that is already in memory and already whole — a
+    /// supervisor's own notices ("starting", "exited with 1"), not pipe
+    /// traffic. Splits on newlines and hands over every chunk it fills, the
+    /// same as [`read`](LogBuffer::read) does.
+    ///
+    /// Unlike `read` it keeps nothing back between calls, so `buf` must end
+    /// on a character boundary. A trailing partial character has no next read
+    /// to complete it and the chunk will not accept it, so it must not be
+    /// passed here.
+    pub async fn write(&mut self, mut buf: &[u8]) {
+        while !buf.is_empty() {
+            let written = self.chunk.write(buf);
+            if self.chunk.is_finished() {
+                self.writer.push_chunk(&mut self.chunk).await;
+            }
+            buf = &buf[written..];
         }
     }
 

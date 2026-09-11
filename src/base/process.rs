@@ -15,7 +15,7 @@ use crate::log::LogWriterRef;
 /// `SIGKILL`, in milliseconds.
 const SHUTDOWN_TIMER: u64 = 10_000;
 
-/// A child process whose stdout is captured into a [`Log`](crate::base::Log).
+/// A child process whose stdout is captured into a [`Log`](crate::log::Log).
 ///
 /// A `Process` is created unspawned ([`Process::new`]) and only touches the OS
 /// on [`Process::start`], which lets a description be built long before it is

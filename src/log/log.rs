@@ -5,7 +5,7 @@ use crate::{
     util::localring::LocalRingBuffer,
 };
 use parking_lot::Mutex;
-use thingbuf::{Recycle, StaticThingBuf, ThingBuf};
+use thingbuf::{Recycle, StaticThingBuf};
 use tokio::{io::AsyncRead, sync::Notify, task::JoinHandle};
 
 /// A handle for appending to a [`Log`] from a reader task.
@@ -49,21 +49,23 @@ impl LogWriterRef {
         }
     }
 
-    /// Hand a finished chunk over to the log and take a recycled one back.
+    /// One attempt at the hand-off, reporting which of three things happened.
     ///
-    /// Nothing is copied: the chunk swaps places with whichever slot the
-    /// ring was about to overwrite, so `chunk` comes back owning the buffer
-    /// that slot used to hold. That is the whole point of the ring holding
-    /// pre-built chunks — a log at capacity never allocates again.
+    /// - `Some(true)` — the chunk is in the queue and a recycled one has
+    ///   taken its place.
+    /// - `Some(false)` — the queue is full. Nothing moved and the chunk is
+    ///   untouched, so the caller can simply try again once the sync task has
+    ///   had a chance to drain.
+    /// - `None` — the log is gone, and no amount of retrying will bring it
+    ///   back.
     ///
-    /// The chunk is cleared before it comes back, so the caller can go
-    /// straight on writing. Forgetting that step would leave it marked
-    /// finished, and every later write would return 0 for ever, which is
-    /// why it happens here rather than at the call site.
+    /// Split out from [`push_chunk`](Self::push_chunk) so the retry loop
+    /// holds no `Arc` across its `await`: the upgrade happens and is dropped
+    /// inside this call, which keeps a reader task from being the thing that
+    /// keeps a dead log alive.
     ///
-    /// A log that has already been dropped takes nothing, but the chunk is
-    /// still reset: a reader whose log went away should keep draining its
-    /// pipe, not seize up.
+    /// The swap is where the recycling happens — see [`LogChunkRecycler`]
+    /// for why the chunk comes back cleared.
     fn push_chunk_inner(&mut self, chunk: &mut LogChunk) -> Option<bool> {
         let inner = self.inner.upgrade()?;
         let Ok(mut item) = inner.chunks_queue.push_ref() else {
@@ -74,7 +76,17 @@ impl LogWriterRef {
         Some(true)
     }
 
-    /// Consume toda a
+    /// Drain `read` into the log until it ends, on a task of its own.
+    ///
+    /// Takes the writer by value: a pipe has one reader, and this is it. The
+    /// task owns the [`LogBuffer`] and so the partial character carried
+    /// between reads, which is why the pump cannot be split across tasks.
+    ///
+    /// It ends on end of stream — including the disconnect that is how a
+    /// child's output normally stops — and returns `Err` only for a read
+    /// error that is genuinely unexpected. The handle is usually left
+    /// detached, since a process's exit status is the interesting news, not
+    /// its reader's.
     pub fn consume_spawn<R>(self, mut read: R) -> JoinHandle<std::io::Result<()>>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -129,6 +141,17 @@ impl Log {
         }
     }
 
+    /// Print the whole history to stdout.
+    ///
+    /// Scaffolding for the CLI that does not exist yet. Syncs first so
+    /// anything still in the queue is included, then walks the ring oldest
+    /// first.
+    ///
+    /// Note it ignores [`is_line`], so a line long enough to have been split
+    /// across chunks prints as several lines. A real renderer has to join
+    /// them.
+    ///
+    /// [`is_line`]: LogChunk::is_line
     pub fn debug(&self) {
         self.inner.sync_queue();
         let mut lines = 0;
@@ -140,21 +163,56 @@ impl Log {
     }
 }
 
+/// The shared half of a [`Log`], held by an `Arc` the writers only ever see
+/// weakly.
+///
+/// Two stages on purpose. Writers could take the mutex directly, but they are
+/// reader tasks on hot pipes and the mutex is also held by whatever is
+/// painting the screen; instead they push into a lock free queue and a single
+/// background task moves chunks from there into the ring. So a writer's cost
+/// is one uncontended swap, contention on the mutex stays between the sync
+/// task and the display, and the ring keeps a single writer.
 struct LogInner {
+    /// The history: the last `capacity` chunks, oldest first. The mutex is
+    /// the only lock in the module, and the sync task is its only writer.
     chunks: Mutex<LocalRingBuffer<LogChunk>>,
+    /// The hand-off. Bounded, so a process shouting faster than the sync task
+    /// drains makes its reader wait rather than letting the queue grow
+    /// without bound.
     chunks_queue: StaticThingBuf<LogChunk, 128, LogChunkRecycler>,
+    /// The task draining `chunks_queue` into `chunks`. Aborted on drop.
     sync_handle: JoinHandle<()>,
+    /// How a writer tells that task there is something to drain. Held by an
+    /// `Arc` rather than reached through the weak reference because the task
+    /// has to be able to wait on it without keeping the log alive.
     notify: Arc<Notify>,
 }
 
+/// Stop the sync task when the log goes.
+///
+/// Nothing is flushed here, and nothing can be: this runs once the last
+/// strong reference is gone, so the task's own weak upgrade would already
+/// fail. Whatever was still in the queue is dropped along with the ring it
+/// was headed for.
 impl Drop for LogInner {
     fn drop(&mut self) {
-        self.sync_handle.abort();
         self.notify.notify_one();
+        self.sync_handle.abort();
     }
 }
 
 impl LogInner {
+    /// Build the shared state and start its sync task.
+    ///
+    /// Cyclic because the task must reach the very thing being constructed,
+    /// and only weakly — a task holding an `Arc` would keep the log alive for
+    /// ever and nothing would ever be dropped. It is safe to spawn before the
+    /// `Arc` is finished because the task waits on the notification first,
+    /// and nothing can notify before a writer exists.
+    ///
+    /// # Panics
+    ///
+    /// If `capacity` is zero, or if called outside a tokio runtime.
     fn new(capacity: usize) -> Arc<Self> {
         let notify = Arc::new(Notify::new());
         Arc::new_cyclic(|weak: &Weak<Self>| {
@@ -180,7 +238,19 @@ impl LogInner {
         })
     }
 
-    /// Sync the queue in the lock
+    /// Move everything waiting in the queue into the ring.
+    ///
+    /// The only place the mutex is taken for writing. Drains in one pass
+    /// rather than one wake per chunk, so a burst of output costs a single
+    /// acquisition, and checks the queue before reaching for the lock at all
+    /// — spurious wakeups are normal, since a writer notifies on every push
+    /// whether or not the task was already awake.
+    ///
+    /// Each move is a swap, so the ring's displaced chunk goes back into the
+    /// queue slot and is cleared when that slot is next claimed.
+    ///
+    /// Callable from anywhere: the display side runs it too, to be sure it is
+    /// not showing a stale history.
     fn sync_queue(&self) {
         if self.chunks_queue.is_empty() {
             return;
@@ -191,12 +261,29 @@ impl LogInner {
         }
     }
 
+    /// Wake the sync task.
+    ///
+    /// Named for the caller, not the target — this is what a writer calls
+    /// after a successful push. Cheap when the task is already awake, and a
+    /// notification raised then is remembered, so a chunk pushed while the
+    /// task was mid-drain still gets a pass of its own.
     fn notify_writer(&self) {
         self.notify.notify_one();
     }
 }
 
-/// Recycler
+/// Keeps the queue's chunks reusable.
+///
+/// The queue holds chunks, not references to them, and a slot's occupant
+/// outlives the value that was popped from it — so a chunk handed back to a
+/// writer is whatever the ring displaced, still full of an old line. This is
+/// where that is undone: the queue calls it when a slot is claimed for a
+/// push, so a writer always receives an empty, open chunk and never has to
+/// remember to reset one.
+///
+/// [`new_element`](Recycle::new_element) is only reached the first time each
+/// slot is used; after that every chunk in the system is one that already
+/// exists.
 struct LogChunkRecycler {}
 impl Recycle<LogChunk> for LogChunkRecycler {
     fn new_element(&self) -> LogChunk {

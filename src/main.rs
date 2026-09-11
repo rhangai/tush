@@ -8,15 +8,16 @@
 //! # Module layout
 //!
 //! - [`base`] — the low level pieces: child [`Process`](base::Process)
-//!   handling, the [`Log`](base::Log) ring buffer and the
-//!   [`ExitReason`](base::ExitReason) of a finished process.
+//!   handling and the [`ExitReason`](base::ExitReason) of a finished process.
+//! - [`mod@log`] — capture of a process's output into the bounded
+//!   [`Log`](log::Log) history.
 //! - [`runner`] — the async supervision layer: the [`Runner`](runner::Runner)
 //!   trait, its [`RunnerHandle`](runner::RunnerHandle) and the
 //!   [`RunnerState`](runner::RunnerState) machine.
 //! - [`mod@unit`] — the user facing concept: a [`Unit`] is a named,
 //!   restartable entry described by a [`UnitDescription`].
-//! - [`util`] — shared data structures, currently the string ring buffer used
-//!   by the logs.
+//! - [`util`] — shared data structures, currently the recycling ring buffer
+//!   the logs keep their chunks in.
 //!
 //! # Layering
 //!
