@@ -38,46 +38,32 @@ mod base;
 mod config;
 mod log;
 mod runner;
+mod ui;
 mod unit;
 mod util;
 
-use anyhow::anyhow;
+use std::sync::Arc;
 
-use crate::{app::App, config::Config, unit::UnitEvent};
+use crate::{
+    app::App,
+    config::Config,
+    ui::{Ui, UiApp},
+};
 
-/// Temporary entrypoint used to exercise the runtime while the CLI does not
-/// exist yet.
+/// Temporary entrypoint: the `tush ui` mode, with the config path still
+/// hardcoded because there is no CLI to read one from yet.
 ///
-/// It starts a unit, replaces its running behavior twice and prints the
-/// observed states so the restart handshake can be inspected by hand.
+/// This is the mode that owns what it runs — the session is built here, so
+/// quitting the screen has to take the processes with it. The UI returning is
+/// only the screen being given back; [`shutdown`](crate::unit::UnitMap::shutdown)
+/// is what makes the children actually gone, and it is deliberately awaited
+/// rather than left to `Drop`, which cannot.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_path("tmp/example.yaml")?;
-    let app = App::new(&config)?;
+    let app = Arc::new(App::new(&config)?);
 
-    const NAME: &str = "server";
-    let mut log = app.units().log_reader(NAME).ok_or(anyhow!("Invalid"))?;
-    let h = app.units().start(NAME)?;
-    h.wait().await;
-    if let Some(handle) = app.dispatch(NAME, UnitEvent::Default)? {
-        handle.wait().await;
-        log.sync();
-    };
-    if let Some(handle) = app.dispatch(NAME, UnitEvent::Default)? {
-        handle.wait().await;
-        log.sync();
-    };
-    for line in log.iter_sync() {
-        line.print();
-    }
-    println!("{:?}", app.units().state(NAME));
-    // let map = UnitMap::new();
-    // let mut log = map.add("key", UnitBehavior::program()).unwrap();
-    // let h1 = map.start("key").unwrap();
-    // // println!("{:?}", h1.state());
-    // h1.wait().await;
-    // for line in log.iter_sync() {
-    //     line.print();
-    // }
-    Ok(())
+    let result = Ui::run(UiApp::new(app.clone())).await;
+    app.units().shutdown().await;
+    result
 }
