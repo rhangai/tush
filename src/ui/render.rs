@@ -8,7 +8,10 @@ use ratatui::{
 
 use crate::{
     runner::RunnerState,
-    ui::{client::UiClient, ui::Ui},
+    ui::{
+        client::{UiClient, UiUnit},
+        ui::Ui,
+    },
 };
 
 /// How wide the status column is, in columns.
@@ -17,14 +20,36 @@ use crate::{
 /// down either one. Wide enough for the longest label plus an exit code.
 const STATUS_WIDTH: usize = 10;
 
-/// Draw one frame: the list of units, and a line at the bottom.
+/// How wide the units column is, in columns.
+///
+/// A fixed width rather than a share of the terminal, because what has to fit
+/// is the status column plus a name — neither of which grows when the window
+/// does. A proportional split would spend half a wide terminal on whitespace
+/// that the log could have used.
+///
+/// It is also what makes the list stay put: a name lands in the same place
+/// whatever else is on screen, so the cursor is not somewhere new after a
+/// resize.
+const UNITS_WIDTH: u16 = 32;
+
+/// Draw one frame: the units on the left, their log on the right, and a line
+/// at the bottom.
 pub fn draw<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>) {
-    let [main, footer] =
+    let [body, footer] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+    let [units_area, log_area] =
+        Layout::horizontal([Constraint::Length(UNITS_WIDTH), Constraint::Fill(1)]).areas(body);
 
     frame.render_widget(key_hints(), footer);
 
+    // Both halves of what a frame is drawn from, taken together: the title on
+    // the right names the row the cursor is on, so the two panes have to be
+    // reading the same selection as each other.
     let (units, list_state) = ui.frame();
+    let selected = list_state.selected().and_then(|index| units.get(index));
+
+    frame.render_widget(log_pane(selected), log_area);
+
     let items: Vec<ListItem> = units
         .iter()
         .map(|unit| item(&unit.state, &unit.key))
@@ -33,7 +58,25 @@ pub fn draw<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>) {
         .block(Block::bordered().title(" units "))
         .highlight_symbol("▌")
         .highlight_style(Style::new().add_modifier(Modifier::BOLD));
-    frame.render_stateful_widget(list, main, list_state);
+    frame.render_stateful_widget(list, units_area, list_state);
+}
+
+/// The right hand pane, where the selected unit's output will go.
+///
+/// Empty so far — what fills it is a
+/// [`LogReader`](crate::log::LogReader) walk, and a [`UiClient`] has no way
+/// to hand one over yet. The frame is here first because the layout is the
+/// part the rest has to fit into: a pane that appears later would move the
+/// list sideways the moment it did.
+///
+/// Titled with the unit rather than with the word "log", so the pane says
+/// which output it is about before it has any. A list with nothing selected
+/// has no unit to name, which only happens when there are no units at all.
+fn log_pane(unit: Option<&UiUnit>) -> Block<'static> {
+    match unit {
+        Some(unit) => Block::bordered().title(format!(" {} ", unit.key)),
+        None => Block::bordered().title(" log "),
+    }
 }
 
 /// One row: the status, then the name.
