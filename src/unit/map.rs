@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 
 use crate::{
     log::LogReader,
@@ -83,12 +84,12 @@ impl UnitMap {
     }
 
     /// What the unit under `key` is called on screen.
-    pub fn name(&self, key: &str) -> Result<String> {
+    pub fn name(&self, key: &str) -> Result<ArcStr> {
         self.with(key, Unit::name)
     }
 
     /// Which of its modes the unit under `key` is currently on, if it has any.
-    pub fn mode(&self, key: &str) -> Result<Option<String>> {
+    pub fn mode(&self, key: &str) -> Result<Option<ArcStr>> {
         self.with(key, Unit::mode)
     }
 
@@ -161,8 +162,7 @@ mod test {
     fn map(keys: &[&str]) -> Arc<UnitMap> {
         let mut behaviors: HashMap<String, UnitBehavior> = HashMap::new();
         for key in keys {
-            let name: String = key.to_owned().into();
-            behaviors.insert(name.clone(), UnitBehavior::noop(name));
+            behaviors.insert((*key).to_owned(), UnitBehavior::noop(*key));
         }
         UnitMap::new(behaviors)
     }

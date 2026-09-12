@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
+use arcstr::ArcStr;
 use enum_dispatch::enum_dispatch;
 use tokio::process::Command;
 
@@ -37,13 +38,21 @@ use crate::{
 /// `Watch`. Which is the point of keeping it on the wrapper rather than on
 /// the unit: a mode is a behavior, so a mode has a name the same way.
 pub struct UnitBehavior {
-    name: String,
+    /// What it is called.
+    ///
+    /// An [`ArcStr`] rather than a [`String`] because of where it is asked
+    /// for: a view refreshing several times a second reads the current mode's
+    /// name out of here on every frame, and the behavior is behind a lock, so
+    /// nothing may borrow out of it. With a `String` that is an allocation
+    /// and a copy per unit per frame, for text that never changes; with this
+    /// it is a refcount.
+    name: ArcStr,
     inner: UnitBehaviorInner,
 }
 
 impl UnitBehavior {
     /// One command, as its argv: the program, then its arguments.
-    pub fn run(name: String, command: Vec<String>) -> Self {
+    pub fn run(name: impl Into<ArcStr>, command: Vec<String>) -> Self {
         Self::run_many(name, vec![command])
     }
 
@@ -52,7 +61,7 @@ impl UnitBehavior {
     ///
     /// One unit still, with one log and one state — the sequence is a
     /// [`RunnerSerial`], which is itself a single runner.
-    pub fn run_many(name: String, commands: Vec<Vec<String>>) -> Self {
+    pub fn run_many(name: impl Into<ArcStr>, commands: Vec<Vec<String>>) -> Self {
         Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
     }
 
@@ -65,7 +74,7 @@ impl UnitBehavior {
     /// Today it always runs the first. Choosing between them is a
     /// [`dispatch`](UnitBehavior::dispatch) away, and that is what the `&mut
     /// self` there is for.
-    pub fn modes(name: String, modes: Vec<UnitBehavior>) -> Self {
+    pub fn modes(name: impl Into<ArcStr>, modes: Vec<UnitBehavior>) -> Self {
         Self::wrap(
             name,
             UnitBehaviorInner::Modes(BehaviorModes { index: 0, modes }),
@@ -73,17 +82,20 @@ impl UnitBehavior {
     }
 
     /// A behavior that does nothing and succeeds immediately.
-    pub fn noop(name: String) -> Self {
+    pub fn noop(name: impl Into<ArcStr>) -> Self {
         Self::wrap(name, UnitBehaviorInner::Noop(BehaviorNoop {}))
     }
 
     /// What this behavior is called: the proc, or the mode.
-    pub fn name(&self) -> &str {
-        &self.name
+    ///
+    /// By value, because it is cheap to hand over and the callers that want
+    /// it want it out from under the lock the behavior sits behind.
+    pub fn name(&self) -> ArcStr {
+        self.name.clone()
     }
 
     /// Put a kind behind the wrapper the rest of the crate sees.
-    fn wrap(name: impl Into<String>, inner: UnitBehaviorInner) -> Self {
+    fn wrap(name: impl Into<ArcStr>, inner: UnitBehaviorInner) -> Self {
         Self {
             name: name.into(),
             inner,
@@ -96,7 +108,7 @@ impl UnitBehavior {
     /// `None` for a behavior that runs only one way, which is most of them.
     /// The distinction is the point: there is nothing to show for a proc that
     /// has no modes, and a made up label for it would be noise on every row.
-    pub fn mode(&self) -> Option<&str> {
+    pub fn mode(&self) -> Option<ArcStr> {
         self.inner.mode()
     }
 
@@ -145,7 +157,7 @@ trait UnitBehaviorKind {
         None
     }
     /// Which of its modes is current, for the kinds that have any.
-    fn mode(&self) -> Option<&str> {
+    fn mode(&self) -> Option<ArcStr> {
         None
     }
 
@@ -229,7 +241,7 @@ struct BehaviorModes {
 }
 
 impl UnitBehaviorKind for BehaviorModes {
-    fn mode(&self) -> Option<&str> {
+    fn mode(&self) -> Option<ArcStr> {
         Some(self.modes.get(self.index)?.name())
     }
 
@@ -279,15 +291,15 @@ mod test {
     }
 
     fn run() -> UnitBehavior {
-        UnitBehavior::run("proc".into(), vec!["true".into()])
+        UnitBehavior::run("proc", vec!["true".into()])
     }
 
     fn modes() -> UnitBehavior {
         UnitBehavior::modes(
-            "proc".into(),
+            "proc",
             vec![
-                UnitBehavior::run("Build".into(), vec!["true".into()]),
-                UnitBehavior::run("Watch".into(), vec!["true".into()]),
+                UnitBehavior::run("Build", vec!["true".into()]),
+                UnitBehavior::run("Watch", vec!["true".into()]),
             ],
         )
     }
@@ -331,13 +343,17 @@ mod test {
     #[test]
     fn the_first_press_runs_the_mode_it_was_already_on() {
         let mut behavior = modes();
-        assert_eq!(behavior.mode(), Some("Build"));
+        assert_eq!(behavior.mode().as_deref(), Some("Build"));
 
         assert!(matches!(
             dispatch(&mut behavior, RunnerState::Stopped),
             Some(UnitAction::Start)
         ));
-        assert_eq!(behavior.mode(), Some("Build"), "it stepped past the first");
+        assert_eq!(
+            behavior.mode().as_deref(),
+            Some("Build"),
+            "it stepped past the first"
+        );
     }
 
     /// After that every press moves on, whether the run is still going or
@@ -348,9 +364,13 @@ mod test {
         dispatch(&mut behavior, RunnerState::Stopped);
 
         dispatch(&mut behavior, RunnerState::Running);
-        assert_eq!(behavior.mode(), Some("Watch"));
+        assert_eq!(behavior.mode().as_deref(), Some("Watch"));
         dispatch(&mut behavior, RunnerState::ExitSuccess);
-        assert_eq!(behavior.mode(), Some("Build"), "it should wrap round");
+        assert_eq!(
+            behavior.mode().as_deref(),
+            Some("Build"),
+            "it should wrap round"
+        );
     }
 
     /// Only `Stopped` means never run, so a unit that ran and finished cycles
@@ -360,14 +380,14 @@ mod test {
     fn a_finished_run_is_not_a_first_press() {
         let mut behavior = modes();
         dispatch(&mut behavior, RunnerState::Killed(None));
-        assert_eq!(behavior.mode(), Some("Watch"));
+        assert_eq!(behavior.mode().as_deref(), Some("Watch"));
     }
 
     /// A proc that declared no way to run has nothing an event could ask of
     /// it, in any state.
     #[test]
     fn a_noop_answers_nothing() {
-        let mut behavior = UnitBehavior::noop("proc".into());
+        let mut behavior = UnitBehavior::noop("proc");
         for state in [
             RunnerState::Stopped,
             RunnerState::Running,

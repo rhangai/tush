@@ -1,3 +1,5 @@
+use arcstr::ArcStr;
+
 use crate::{log::LogRegion, runner::RunnerState, unit::UnitEvent};
 
 /// One unit, as the screen needs it: what it is called, and where its run was
@@ -19,13 +21,17 @@ pub struct UiUnit {
     /// (`name:`), falling back to the key when it does not. Folding the two
     /// together would mean either showing an identifier where a title was
     /// meant, or addressing a unit by something a person was free to change.
-    pub name: String,
+    ///
+    /// An [`ArcStr`], like everything that comes out of a unit's behavior:
+    /// the text never changes, and refreshing this several times a second
+    /// should not mean copying it several times a second.
+    pub name: ArcStr,
     /// Which of its modes it is on, for a unit that has modes.
     ///
     /// `None` is not "no mode" but "no modes at all", which is most units —
     /// and it has to stay tellable from a mode, because a row shows nothing
     /// here rather than inventing a label for a proc that runs one way.
-    pub mode: Option<String>,
+    pub mode: Option<ArcStr>,
     /// Where its run was at the last sync.
     pub state: RunnerState,
 }

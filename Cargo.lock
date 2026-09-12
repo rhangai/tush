@@ -51,6 +51,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
+
+[[package]]
 name = "atomic"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1909,6 +1915,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "arcstr",
  "crossterm",
  "enum_dispatch",
  "figment",

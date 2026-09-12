@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
+use arcstr::ArcStr;
 use parking_lot::Mutex;
 
 use crate::{
@@ -45,19 +46,20 @@ impl Unit {
     /// What it is called on screen.
     ///
     /// Owned, because the behavior is behind a lock and nothing may borrow
-    /// out of it. It is read once per unit when a view is built, not per
-    /// frame — a proc does not get renamed.
-    pub fn name(&self) -> String {
-        self.behavior.lock().name().to_owned()
+    /// out of it — but owned cheaply: an [`ArcStr`] hands over a refcount
+    /// rather than a copy, which is what lets these two be read as often as a
+    /// view likes.
+    pub fn name(&self) -> ArcStr {
+        self.behavior.lock().name()
     }
 
     /// Which of its modes is current, or `None` if it has none.
     ///
-    /// Owned for the same reason as [`name`](Unit::name), but read every time
-    /// a view refreshes: this is the one that changes, each time a
-    /// [`dispatch`](Unit::dispatch) moves the behavior on to the next mode.
-    pub fn mode(&self) -> Option<String> {
-        self.behavior.lock().mode().map(str::to_owned)
+    /// Read every time a view refreshes: this is the one that changes, each
+    /// time a [`dispatch`](Unit::dispatch) moves the behavior on to the next
+    /// mode.
+    pub fn mode(&self) -> Option<ArcStr> {
+        self.behavior.lock().mode()
     }
 
     /// Hand an event to the behavior, and take the action it asks for.

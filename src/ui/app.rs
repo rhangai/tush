@@ -78,7 +78,7 @@ impl UiApp {
         let mut list: Vec<UiUnit> = units
             .keys()
             .map(|key| UiUnit {
-                name: units.name(key).unwrap_or_else(|_| key.to_owned()),
+                name: units.name(key).unwrap_or_else(|_| key.into()),
                 key: key.to_owned(),
                 mode: None,
                 state: RunnerState::Stopped,
