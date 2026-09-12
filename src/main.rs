@@ -43,11 +43,7 @@ mod util;
 
 use anyhow::anyhow;
 
-use crate::{
-    app::App,
-    config::Config,
-    unit::{Unit, UnitAction, UnitBehavior, UnitEvent, UnitMap},
-};
+use crate::{app::App, config::Config, unit::UnitEvent};
 
 /// Temporary entrypoint used to exercise the runtime while the CLI does not
 /// exist yet.
@@ -57,7 +53,7 @@ use crate::{
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_path("tmp/example.yaml")?;
-    let app = App::new(config)?;
+    let app = App::new(&config)?;
 
     const NAME: &str = "server";
     let mut log = app.units().log_reader(NAME).ok_or(anyhow!("Invalid"))?;
