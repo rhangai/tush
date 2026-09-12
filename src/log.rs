@@ -105,4 +105,4 @@ mod log;
 pub use buffer::{LogBuffer, LogBufferAny, LogBufferWriter};
 
 #[allow(unused_imports)]
-pub use log::{Log, LogReader, LogReaderIter, LogReaderRef, LogWriterId, LogWriterRef};
+pub use log::{Log, LogReader, LogReaderIter, LogReaderRef, LogRegion, LogWriterId, LogWriterRef};

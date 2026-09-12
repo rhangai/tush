@@ -16,6 +16,7 @@ use crate::{
 };
 use parking_lot::Mutex;
 use tokio::{io::AsyncRead, task::JoinHandle};
+use unicode_width::UnicodeWidthChar;
 
 /// Size of the queue chunk
 const CHUNK_QUEUE_SIZE: usize = 128;
@@ -620,6 +621,79 @@ impl LogReader {
         }
     }
 
+    /// Copy a rectangle of the history into `out`, one line per entry.
+    ///
+    /// A rectangle because that is what a pane is, and it is bounded in both
+    /// directions: `lines` of them, `columns` wide. So what this costs is the
+    /// size of what will be drawn and not the size of what is held — a
+    /// window of `2..20` by `0..512` is eighteen strings of at most five
+    /// hundred odd characters, whatever the log behind it looks like. That is
+    /// the difference between this and
+    /// [`iter_unsync`](LogReader::iter_unsync), which walks everything.
+    ///
+    /// Both are half open and both are counted from the edge the log grows
+    /// from: `lines` back from the newest line, the same as
+    /// [`tail_range`](LogReaderIter::tail_range) and through it, so there is
+    /// one place that decides where a line begins. What comes back is oldest
+    /// first, ready to draw down the pane.
+    ///
+    /// # Fewer lines than asked for
+    ///
+    /// A log with three lines asked for twenty gives three, and a `lines`
+    /// range beginning past everything held gives none. `out.len()` is how
+    /// many there were, which is also how a caller scrolling up finds the
+    /// top.
+    ///
+    /// # What comes back
+    ///
+    /// `out` is filled from the start and truncated to what was written, so
+    /// the same `Vec` handed back on every call reuses the strings it already
+    /// has rather than allocating a pane's worth each time.
+    pub fn copy_region(&self, region: LogRegion, out: &mut Vec<String>) {
+        let mut lines = 0;
+        // How far into the line the pieces so far have reached, in columns.
+        // Kept across pieces because a line the chunk size split arrives as
+        // several, and the window is over the line rather than over any one
+        // of them.
+        let mut column = 0;
+        let mut open = false;
+
+        // No ceiling on the walk: it stops as soon as it has counted back
+        // `lines.end` line ends, and in the degenerate case where there are
+        // not that many it is bounded by the reader, which is a walk over
+        // memory and not a copy of it.
+        for piece in self
+            .iter_unsync()
+            .tail_range(region.lines.clone(), usize::MAX)
+        {
+            if !open {
+                if lines < out.len() {
+                    out[lines].clear();
+                } else {
+                    out.push(String::new());
+                }
+                open = true;
+            }
+            clip_into(
+                &mut out[lines],
+                piece.as_str(),
+                &mut column,
+                &region.columns,
+            );
+            if piece.newline() {
+                lines += 1;
+                column = 0;
+                open = false;
+            }
+        }
+        // A run the region cut short is still a line, and showing its head
+        // beats dropping it.
+        if open {
+            lines += 1;
+        }
+        out.truncate(lines);
+    }
+
     /// How many chunks the reader holds.
     pub fn len(&self) -> usize {
         self.chunks.len()
@@ -648,6 +722,55 @@ impl LogReader {
     #[cfg(test)]
     fn chunks(&self) -> &LocalRingBuffer<LogReaderChunk> {
         &self.chunks
+    }
+}
+
+/// A rectangle of a log: which lines, and which columns of them.
+///
+/// What [`copy_region`](LogReader::copy_region) takes, and shaped like the
+/// pane it is for — a window that moves in two directions over text bigger
+/// than it in both, and bounded in both so that holding one costs the pane
+/// and not the log.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LogRegion {
+    /// Which lines, counted back from the newest: `0` is the last line, `1`
+    /// the one before it. `2..20` is the eighteen lines above the last two.
+    ///
+    /// Relative to the end because that is the addressing the log answers —
+    /// it counts chunks pushed, not lines written, so there is no absolute
+    /// line number to name. What it costs is that with output still arriving
+    /// the same range names different lines each time, so a pane held still
+    /// over a running process drifts.
+    pub lines: Range<usize>,
+    /// Which columns of each line.
+    ///
+    /// Columns, not bytes: this is a window onto a terminal, and a byte
+    /// offset would cut characters in half. A character straddling either
+    /// edge is left out rather than halved.
+    pub columns: Range<usize>,
+}
+
+/// Append the part of `text` that falls inside `columns`.
+///
+/// `column` is how far into the line the pieces before this one already
+/// reached, and is advanced past all of `text` whether or not any of it was
+/// taken — the window is over the line, and a piece entirely to the left of
+/// it still moves the position along.
+fn clip_into(out: &mut String, text: &str, column: &mut usize, columns: &Range<usize>) {
+    for character in text.chars() {
+        let start = *column;
+        *column += character.width().unwrap_or(0);
+        if start >= columns.end {
+            // Past the right hand edge, and so is everything after it. The
+            // position is left where it is because nothing will read it
+            // again: no later piece of this line can be inside the window.
+            return;
+        }
+        // A character straddling an edge is dropped: half of one is not
+        // something a terminal can draw.
+        if start >= columns.start && *column <= columns.end {
+            out.push(character);
+        }
     }
 }
 
@@ -1287,6 +1410,157 @@ mod test {
             out.push(line);
         }
         out
+    }
+
+    /// The lines of a region, copied into a fresh buffer.
+    fn region(reader: &LogReader, lines: Range<usize>) -> Vec<String> {
+        columns(reader, lines, 0..usize::MAX)
+    }
+
+    /// The lines of a region, windowed to `columns`.
+    fn columns(reader: &LogReader, lines: Range<usize>, columns: Range<usize>) -> Vec<String> {
+        let mut out = Vec::new();
+        reader.copy_region(LogRegion { lines, columns }, &mut out);
+        out
+    }
+
+    /// The lines are counted back from the newest, and come out oldest first
+    /// — the order a pane draws them in.
+    #[test]
+    fn copy_region_takes_the_lines_it_is_given() {
+        let log = log_with(64, 10);
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(region(&reader, 0..3), ["linha 7", "linha 8", "linha 9"]);
+        assert_eq!(region(&reader, 2..4), ["linha 6", "linha 7"]);
+        assert_eq!(region(&reader, 2..20).len(), 8, "it stops at what there is");
+    }
+
+    /// The same window the walk it is built on gives, so the two cannot
+    /// disagree about where a line begins.
+    #[test]
+    fn copy_region_is_the_tail_walk_with_the_columns_taken_off() {
+        let log = log_with(64, 10);
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(region(&reader, 1..5), window(&reader, 1..5, usize::MAX));
+    }
+
+    /// The window is over the line, in columns, and reaching past either end
+    /// of the text simply gets what is there.
+    #[test]
+    fn copy_region_windows_the_columns() {
+        let log = log_with(64, 2);
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(columns(&reader, 0..2, 0..5), ["linha", "linha"]);
+        assert_eq!(columns(&reader, 0..2, 6..11), ["0", "1"]);
+        assert_eq!(columns(&reader, 0..2, 99..104), ["", ""]);
+    }
+
+    /// Columns, not bytes — a byte offset would cut characters in half, and a
+    /// character straddling an edge is left out rather than halved.
+    #[test]
+    fn the_column_window_counts_columns() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("coração\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(columns(&reader, 0..1, 0..4), ["cora"]);
+        assert_eq!(columns(&reader, 0..1, 4..7), ["ção"]);
+    }
+
+    /// A line the chunk size split arrives as several pieces, so the column
+    /// window has to be over the line rather than over each piece of it.
+    #[test]
+    fn the_column_window_spans_a_split_line() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa: String = (0..LOG_CHUNK_SIZE * 2)
+            .map(|n| char::from(b'a' + (n % 26) as u8))
+            .collect();
+        buffer.write(format!("{longa}\n").as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        // Far past the first chunk, so only a later piece can answer it.
+        let from = LOG_CHUNK_SIZE + 10;
+        assert_eq!(
+            columns(&reader, 0..1, from..from + 4),
+            [&longa[from..from + 4]]
+        );
+    }
+
+    /// A rectangle is bounded in both directions, which is the whole reason
+    /// for asking in one: this is what a pane costs, whatever is behind it.
+    #[test]
+    fn a_region_costs_its_own_size_and_not_the_logs() {
+        let log = Log::new(4096);
+        let mut buffer = LogBuffer::new(log.writer());
+        let wide = "z".repeat(4000);
+        let text: String = (0..500).map(|_| format!("{wide}\n")).collect();
+        buffer.write(text.as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        let mut out = Vec::new();
+        reader.copy_region(
+            LogRegion {
+                lines: 2..20,
+                columns: 0..512,
+            },
+            &mut out,
+        );
+        assert_eq!(out.len(), 18);
+        let bytes: usize = out.iter().map(String::len).sum();
+        assert!(bytes <= 18 * 512, "a pane's worth, not a log's: {bytes}");
+    }
+
+    /// A range beginning past everything held gives nothing rather than
+    /// clamping back onto the oldest lines.
+    #[test]
+    fn a_region_past_the_oldest_line_is_empty() {
+        let log = log_with(64, 4);
+        let mut reader = log.reader();
+        reader.sync();
+        assert!(region(&reader, 10..20).is_empty());
+    }
+
+    /// The buffer is filled from the start and truncated, so a caller that
+    /// keeps it does not pay for a pane's worth of strings on every call.
+    #[test]
+    fn copy_region_refills_the_buffer_it_is_given() {
+        let log = log_with(64, 10);
+        let mut reader = log.reader();
+        reader.sync();
+
+        let mut out = Vec::new();
+        reader.copy_region(
+            LogRegion {
+                lines: 0..6,
+                columns: 0..usize::MAX,
+            },
+            &mut out,
+        );
+        assert_eq!(out.len(), 6);
+
+        reader.copy_region(
+            LogRegion {
+                lines: 0..2,
+                columns: 0..usize::MAX,
+            },
+            &mut out,
+        );
+        assert_eq!(
+            out,
+            ["linha 8", "linha 9"],
+            "the old lines are gone, not appended"
+        );
     }
 
     /// A reader holding `lines` numbered lines, all of them still in the ring.
