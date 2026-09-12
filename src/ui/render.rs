@@ -1,16 +1,16 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, HighlightSpacing, List, ListItem},
+    widgets::{Block, HighlightSpacing, List, ListItem, Paragraph},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     runner::RunnerState,
     ui::{
-        client::{UiClient, UiUnit},
+        client::{UiClient, UiLog, UiUnit},
         ui::Ui,
     },
 };
@@ -55,13 +55,7 @@ pub fn draw<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>) {
 
     frame.render_widget(key_hints(), footer);
 
-    // Both halves of what a frame is drawn from, taken together: the title on
-    // the right names the row the cursor is on, so the two panes have to be
-    // reading the same selection as each other.
-    let (units, list_state) = ui.frame();
-    let selected = list_state.selected().and_then(|index| units.get(index));
-
-    frame.render_widget(log_pane(selected), log_area);
+    draw_log(frame, ui, log_area);
 
     // Two borders and the cursor's own column; what is left is what a row has
     // to lay itself out inside, which is why the rows are built here rather
@@ -70,6 +64,7 @@ pub fn draw<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>) {
         .saturating_sub(2)
         .saturating_sub(CURSOR.width());
 
+    let (units, list_state) = ui.frame();
     let items: Vec<ListItem> = units.iter().map(|unit| item(unit, row_width)).collect();
     let list = List::new(items)
         .block(Block::bordered())
@@ -81,22 +76,59 @@ pub fn draw<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>) {
     frame.render_stateful_widget(list, units_area, list_state);
 }
 
-/// The right hand pane, where the selected unit's output will go.
-///
-/// Empty so far — what fills it is a
-/// [`LogReader`](crate::log::LogReader) walk, and a [`UiClient`] has no way
-/// to hand one over yet. The frame is here first because the layout is the
-/// part the rest has to fit into: a pane that appears later would move the
-/// list sideways the moment it did.
+/// The right hand pane: the selected unit's output.
 ///
 /// Titled with the unit rather than with the word "log", so the pane says
 /// which output it is about before it has any. A list with nothing selected
 /// has no unit to name, which only happens when there are no units at all.
-fn log_pane(unit: Option<&UiUnit>) -> Block<'static> {
-    match unit {
-        Some(unit) => Block::bordered().title(format!(" {} ", unit.key)),
-        None => Block::bordered().title(" log "),
-    }
+///
+/// # Measuring before drawing
+///
+/// A pane's size is not known until the layout that makes it, and the region
+/// it needs was asked for a frame earlier. So the size is recorded here for
+/// the next request — a frame of lag that the margin in the region absorbs.
+fn draw_log<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>, area: Rect) {
+    let title = match ui.selected() {
+        Some(unit) => format!(" {} ", unit.name),
+        None => " log ".to_owned(),
+    };
+    let block = Block::bordered().title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    ui.set_log_size(inner.height as usize, inner.width as usize);
+
+    let scroll = ui.log_scroll();
+    let Some(log) = ui.log() else {
+        return;
+    };
+    let lines: Vec<Line> = visible(&log, scroll, inner.height as usize)
+        .iter()
+        .map(|text| Line::raw(text.as_str()))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The part of a fetched region the pane is actually showing.
+///
+/// The region is wider than the pane on both sides — that is the margin the
+/// view scrolls within without asking again — so the visible rows are a slice
+/// out of the middle of it, and finding them is arithmetic on distances from
+/// the end of the log.
+///
+/// The lines run oldest first and the last is at distance
+/// `region.lines.start`, so the line at distance `d` sits `d -
+/// region.lines.start` from the end of the slice. The pane wants distances
+/// from `scroll` upwards, so that is where its last row is.
+///
+/// Everything saturates because the region that came back need not be the one
+/// asked for: a client behind a scroll hands back what it has, and the pane
+/// draws the overlap rather than nothing.
+fn visible<'a>(log: &'a UiLog<'a>, scroll: usize, rows: usize) -> &'a [String] {
+    let from_end = scroll.saturating_sub(log.region.lines.start);
+    let end = log.lines.len().saturating_sub(from_end);
+    let start = end.saturating_sub(rows);
+    &log.lines[start..end]
 }
 
 /// One row, over two lines: the name, and under it everything that qualifies
@@ -234,5 +266,68 @@ fn status(state: &RunnerState) -> (String, Color) {
             Color::Red,
         ),
         RunnerState::Killed(_) => ("killed".to_owned(), Color::Magenta),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::log::LogRegion;
+
+    /// A fetched region of `held` lines, the oldest of them at distance
+    /// `start + held - 1` from the end of the log.
+    fn lines(start: usize, held: usize) -> Vec<String> {
+        // Numbered by distance from the end, so a slice says where it came
+        // from: `d0` is the newest line the region holds.
+        (0..held)
+            .map(|n| format!("d{}", start + held - 1 - n))
+            .collect()
+    }
+
+    fn visible_texts(scroll: usize, rows: usize, start: usize, held: usize) -> Vec<String> {
+        let lines = lines(start, held);
+        let log = UiLog {
+            region: LogRegion {
+                lines: start..start + held,
+                columns: 0..80,
+            },
+            revision: 0,
+            lines: &lines,
+        };
+        visible(&log, scroll, rows).to_vec()
+    }
+
+    /// Following the end: the pane's last row is the newest line.
+    #[test]
+    fn the_pane_ends_at_the_line_the_scroll_names() {
+        assert_eq!(visible_texts(0, 3, 0, 10), ["d2", "d1", "d0"]);
+        assert_eq!(visible_texts(4, 3, 0, 10), ["d6", "d5", "d4"]);
+    }
+
+    /// The region is wider than the pane on both sides, so the visible rows
+    /// come out of the middle — the margin is fetched and not drawn.
+    #[test]
+    fn the_margin_is_fetched_and_not_drawn() {
+        // Region covers distances 5..15, pane shows 8..11.
+        assert_eq!(visible_texts(8, 3, 5, 10), ["d10", "d9", "d8"]);
+    }
+
+    /// Less history than the pane has room for fills what it can rather than
+    /// sliding off the end of what there is.
+    #[test]
+    fn a_short_log_gives_back_every_line_it_has() {
+        assert_eq!(visible_texts(0, 10, 0, 3), ["d2", "d1", "d0"]);
+    }
+
+    /// A client that has not caught up with a scroll hands back the region it
+    /// still has. The pane draws the overlap rather than blanking, and draws
+    /// nothing only when there is none.
+    #[test]
+    fn a_stale_region_is_drawn_where_it_actually_belongs() {
+        // Asked to show 8..11, but the client still holds 0..10: the two meet
+        // at distances 8 and 9, so those are the rows that get drawn.
+        assert_eq!(visible_texts(8, 3, 0, 10), ["d9", "d8"]);
+        // And a region entirely newer than the scroll has no overlap at all.
+        assert!(visible_texts(50, 3, 0, 10).is_empty());
     }
 }

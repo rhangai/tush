@@ -1,4 +1,4 @@
-use crate::{runner::RunnerState, unit::UnitEvent};
+use crate::{log::LogRegion, runner::RunnerState, unit::UnitEvent};
 
 /// One unit, as the screen needs it: what it is called, and where its run was
 /// the last time anybody looked.
@@ -48,6 +48,40 @@ pub enum UiCommand {
     /// Hand it an event and let its behavior decide — the mode switch, for a
     /// unit that has modes.
     Dispatch { key: String, event: UnitEvent },
+}
+
+/// What a client has for the pane: some lines, and what they are.
+///
+/// The lines are [`String`]s because that is what
+/// [`copy_region`](crate::log::LogReader::copy_region) produces. A struct per
+/// line, with room for which stream it came from, would be a shape this
+/// cannot fill — when stderr wants its own colour it is the copy underneath
+/// that has to learn about it first, not this.
+pub struct UiLog<'a> {
+    /// Which region these lines actually are.
+    ///
+    /// The answer's region, not the question's, and the two can differ: a
+    /// client that has not caught up with a scroll holds the region from
+    /// before it. Reporting it is what lets the pane draw what came back, at
+    /// the offset it belongs at, rather than blanking for as long as a round
+    /// trip takes.
+    pub region: LogRegion,
+    /// What the log these came from had written when they were taken.
+    ///
+    /// A change token and nothing more: compare two, and different means the
+    /// log moved under the region. It says *that* it moved, not by how many
+    /// lines — the log counts chunks, and one chunk is one or two lines or
+    /// part of a long one.
+    ///
+    /// So it is what a client polls to know whether to fetch the region
+    /// again, and what a pane scrolled up uses to know its view has drifted —
+    /// which it can report to the reader, but not correct.
+    ///
+    /// Only comparable within one unit. Two logs count their own, so a
+    /// revision from before the selection moved means nothing after it.
+    pub revision: u64,
+    /// The lines, oldest first.
+    pub lines: &'a [String],
 }
 
 /// What the UI reads a session through, and sends its commands down.
@@ -115,4 +149,33 @@ pub trait UiClient {
     /// render loop to hold a client and ask, a signal handler wanting
     /// everything stopped being the obvious one.
     fn send(&self, command: UiCommand);
+
+    /// Say which log the pane is showing, and which rectangle of it.
+    ///
+    /// Declaring rather than asking, for the same reason
+    /// [`send`](UiClient::send) does not wait: fetching a region may be a
+    /// round trip, and a screen cannot be made to hold still for one. This
+    /// starts whatever the client has to do; [`log`](UiClient::log) is where
+    /// the result turns up, one sync or several later.
+    ///
+    /// `key` of `None` is a pane with nothing selected, and releases whatever
+    /// the client was holding for the last one.
+    ///
+    /// Ask for more than the pane draws. The extra is what the view scrolls
+    /// within without asking again — the region is a buffer as much as a
+    /// request, and a rectangle is cheap: a few hundred lines clipped to the
+    /// pane's width is tens of kibibytes whatever the log behind it is.
+    ///
+    /// Called every frame with the current region. Deciding whether anything
+    /// has to happen is the client's: it is the one holding the region, the
+    /// revision it was taken at, and the connection it would have to use.
+    fn set_log(&mut self, key: Option<&str>, region: LogRegion);
+
+    /// The lines for the pane, as of the last [`sync`](UiClient::sync).
+    ///
+    /// `None` while there is nothing to draw at all: no unit selected, or a
+    /// first region that has not arrived. Once there is something there is
+    /// something — a client hands back the region it has even when a newer
+    /// one was asked for, rather than emptying the pane while it catches up.
+    fn log(&self) -> Option<UiLog<'_>>;
 }

@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     app::App,
+    log::{LogReader, LogRegion},
     runner::RunnerState,
-    ui::client::{UiClient, UiCommand, UiUnit},
+    ui::client::{UiClient, UiCommand, UiLog, UiUnit},
 };
 
 /// A [`UiClient`] over a session running in this process.
@@ -17,10 +18,40 @@ use crate::{
 /// Here there is none. [`sync`](UiClient::sync) reads a `HashMap` of atomics,
 /// and [`send`](UiClient::send) is a direct call — so the row of states is
 /// only ever one `sync` old, which is as fresh as anything in this file gets.
+/// The one log a [`UiApp`] is following, and the last rectangle read out of
+/// it.
+struct AppLog {
+    /// Which unit it belongs to. A pane moving to another one throws this
+    /// away rather than re-pointing it: a reader is a copy of one log's
+    /// chunks, and the revision counted against it means nothing elsewhere.
+    key: String,
+    /// A reader over that unit's log, which is to say a mirror of it.
+    ///
+    /// The size is the reader's business and not the pane's — what bounds
+    /// what the pane costs is the region, which is a rectangle either way.
+    reader: LogReader,
+    /// The region last asked for.
+    wanted: LogRegion,
+    /// The region `lines` actually is.
+    ///
+    /// The same as `wanted` here, always, because resolving one is a walk
+    /// over memory this process already has. Carried anyway because it is
+    /// what the trait promises, and a client that has to wait for its answers
+    /// is who it is promised for.
+    region: LogRegion,
+    /// What the log had written when `lines` were taken.
+    revision: u64,
+    /// The lines of `region`, oldest first. Kept between syncs so the strings
+    /// in it are refilled rather than reallocated.
+    lines: Vec<String>,
+}
+
 pub struct UiApp {
     app: Arc<App>,
     /// The rows, built once and then written over in place.
     units: Vec<UiUnit>,
+    /// The log the pane is showing, if it is showing one.
+    log: Option<AppLog>,
 }
 
 impl UiApp {
@@ -57,7 +88,30 @@ impl UiApp {
         Self {
             app: app.clone(),
             units: list,
+            log: None,
         }
+    }
+
+    /// Take in what the followed log has, and cut the wanted rectangle out of
+    /// it.
+    ///
+    /// Skipped entirely when neither the question nor the log has changed —
+    /// which is most syncs, since a quiet unit does not move its revision and
+    /// a still pane does not move its region. That test is the whole reason
+    /// the revision is carried.
+    fn sync_log(&mut self) {
+        let Some(log) = &mut self.log else {
+            return;
+        };
+        log.reader.sync();
+        let revision = log.reader.seen();
+        if revision == log.revision && log.region == log.wanted {
+            return;
+        }
+
+        log.reader.copy_region(log.wanted.clone(), &mut log.lines);
+        log.region = log.wanted.clone();
+        log.revision = revision;
     }
 }
 
@@ -78,10 +132,52 @@ impl UiClient for UiApp {
                 unit.mode = mode;
             }
         }
+        self.sync_log();
     }
 
     fn units(&self) -> &[UiUnit] {
         &self.units
+    }
+
+    /// Point the reader at `key`, and remember the rectangle wanted from it.
+    ///
+    /// A new reader only when the unit changed. Nothing else happens here —
+    /// resolving the region is [`sync`](UiClient::sync)'s job, so that the
+    /// lines and the states in one frame are taken at the same moment.
+    ///
+    /// The revision starts at zero for a new log, which no reader reports
+    /// after a sync, so the first one always resolves.
+    fn set_log(&mut self, key: Option<&str>, region: LogRegion) {
+        let Some(key) = key else {
+            self.log = None;
+            return;
+        };
+        match &mut self.log {
+            Some(log) if log.key == key => log.wanted = region,
+            _ => {
+                let Some(reader) = self.app.units().log_reader(key) else {
+                    self.log = None;
+                    return;
+                };
+                self.log = Some(AppLog {
+                    key: key.to_owned(),
+                    reader,
+                    region: region.clone(),
+                    wanted: region,
+                    revision: 0,
+                    lines: Vec::new(),
+                });
+            }
+        }
+    }
+
+    fn log(&self) -> Option<UiLog<'_>> {
+        let log = self.log.as_ref()?;
+        Some(UiLog {
+            region: log.region.clone(),
+            revision: log.revision,
+            lines: &log.lines,
+        })
     }
 
     /// Do it, and drop whatever it had to say about it.

@@ -38,7 +38,7 @@ mod ui;
 pub use app::UiApp;
 
 #[allow(unused_imports)]
-pub use client::{UiClient, UiCommand, UiUnit};
+pub use client::{UiClient, UiCommand, UiLog, UiUnit};
 
 #[allow(unused_imports)]
 pub use ui::Ui;
