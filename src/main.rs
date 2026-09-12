@@ -46,7 +46,7 @@ use anyhow::anyhow;
 use crate::{
     app::App,
     config::Config,
-    unit::{Unit, UnitBehavior, UnitMap},
+    unit::{Unit, UnitAction, UnitBehavior, UnitEvent, UnitMap},
 };
 
 /// Temporary entrypoint used to exercise the runtime while the CLI does not
@@ -58,16 +58,23 @@ use crate::{
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_path("tmp/example.yaml")?;
     let app = App::new(config)?;
-    let mut log = app
-        .units()
-        .log_reader("server-setup")
-        .ok_or(anyhow!("Invalid"))?;
-    let h = app.units().start("server-setup")?;
+
+    const NAME: &str = "server";
+    let mut log = app.units().log_reader(NAME).ok_or(anyhow!("Invalid"))?;
+    let h = app.units().start(NAME)?;
     h.wait().await;
+    if let Some(handle) = app.dispatch(NAME, UnitEvent::Default)? {
+        handle.wait().await;
+        log.sync();
+    };
+    if let Some(handle) = app.dispatch(NAME, UnitEvent::Default)? {
+        handle.wait().await;
+        log.sync();
+    };
     for line in log.iter_sync() {
         line.print();
     }
-    println!("{:?}", app.units().state("server-setup"));
+    println!("{:?}", app.units().state(NAME));
     // let map = UnitMap::new();
     // let mut log = map.add("key", UnitBehavior::program()).unwrap();
     // let h1 = map.start("key").unwrap();

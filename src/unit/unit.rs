@@ -55,6 +55,11 @@ impl Unit {
         self.set_handle(handle)
     }
 
+    /// Clone the handle
+    pub fn clone_handle(&self) -> Option<Arc<RunnerHandle>> {
+        self.handle.load_full()
+    }
+
     /// Set the handle internally
     ///
     /// The restart handshake. The new handle is published immediately — so

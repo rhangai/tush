@@ -8,7 +8,8 @@ use anyhow::Result;
 use crate::{
     app::error::{AppError, AppErrors},
     config::Config,
-    unit::{UnitBehavior, UnitMap},
+    runner::RunnerHandle,
+    unit::{UnitAction, UnitBehavior, UnitEvent, UnitMap},
     util::graph::DependencyGraph,
 };
 
@@ -97,6 +98,23 @@ impl App {
             units: UnitMap::new(behaviors),
             groups,
         })
+    }
+
+    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    pub fn dispatch(&self, name: &str, event: UnitEvent) -> Result<Option<Arc<RunnerHandle>>> {
+        let Some(action) = self.units().dispatch(name, event)? else {
+            return Ok(None);
+        };
+        match action {
+            UnitAction::Start => {
+                let handle = self.units().start(name)?;
+                Ok(Some(handle))
+            }
+            UnitAction::Stop => {
+                self.units().stop(name)?;
+                Ok(None)
+            }
+        }
     }
 
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
