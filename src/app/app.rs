@@ -59,7 +59,7 @@ impl App {
             return Err(AppErrors::new(errors).into());
         }
 
-        let units = UnitMap::new();
+        let mut behaviors: HashMap<String, UnitBehavior> = HashMap::new();
         let mut groups: HashMap<String, Vec<String>> = HashMap::new();
 
         for proc in config.procs {
@@ -90,10 +90,13 @@ impl App {
             }
             // The keys come from a mapping, so they are unique and the
             // `None` that a taken name would give back cannot happen here.
-            units.add(proc.key, behavior);
+            behaviors.insert(proc.key, behavior);
         }
 
-        Ok(Self { units, groups })
+        Ok(Self {
+            units: UnitMap::new(behaviors),
+            groups,
+        })
     }
 
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.

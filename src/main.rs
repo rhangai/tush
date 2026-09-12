@@ -41,6 +41,8 @@ mod runner;
 mod unit;
 mod util;
 
+use anyhow::anyhow;
+
 use crate::{
     app::App,
     config::Config,
@@ -56,6 +58,16 @@ use crate::{
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_path("tmp/example.yaml")?;
     let app = App::new(config)?;
+    let mut log = app
+        .units()
+        .log_reader("server-setup")
+        .ok_or(anyhow!("Invalid"))?;
+    let h = app.units().start("server-setup")?;
+    h.wait().await;
+    for line in log.iter_sync() {
+        line.print();
+    }
+    println!("{:?}", app.units().state("server-setup"));
     // let map = UnitMap::new();
     // let mut log = map.add("key", UnitBehavior::program()).unwrap();
     // let h1 = map.start("key").unwrap();

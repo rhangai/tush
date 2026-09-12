@@ -1,10 +1,6 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    sync::{Arc, Weak},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
-use parking_lot::RwLock;
 
 use crate::{
     log::LogReader,
@@ -47,35 +43,18 @@ use crate::{
 /// starting hands the run to a task rather than performing it — so the read
 /// lock is held for that and no longer, and never across an await.
 pub struct UnitMap {
-    /// A weak pointer back to itself (hence [`Arc::new_cyclic`]), so that the
-    /// `UnitContext` handed to each unit can reach the map without a cycle
-    /// that would leak it.
-    ptr: Weak<UnitMap>,
     /// The units, by name.
-    units: RwLock<HashMap<String, Unit>>,
+    units: HashMap<String, Unit>,
 }
 
 impl UnitMap {
     /// Create an empty map, self referencing through a weak pointer.
-    pub fn new() -> Arc<Self> {
-        Arc::new_cyclic(|ptr| Self {
-            ptr: ptr.clone(),
-            units: RwLock::new(HashMap::new()),
-        })
-    }
-
-    /// Declare a unit under `key`.
-    ///
-    /// It is created stopped, with an empty log; nothing runs until
-    /// [`start`](UnitMap::start).
-    ///
-    /// Adding over a name that is already taken replaces it, and the unit
-    /// that was there is dropped — which aborts whatever it was running,
-    /// without waiting for it to be gone.
-    pub fn add(&self, key: impl Into<String>, behavior: UnitBehavior) {
-        let mut lock = self.units.write();
-        lock.entry(key.into())
-            .or_insert_with(|| Unit::new(behavior));
+    pub fn new(behaviors: HashMap<String, UnitBehavior>) -> Arc<Self> {
+        let mut units: HashMap<String, Unit> = HashMap::new();
+        for (key, behavior) in behaviors {
+            units.insert(key, Unit::new(behavior));
+        }
+        Arc::new(Self { units })
     }
 
     /// Start the unit under `key`, using its own behavior.
@@ -115,8 +94,8 @@ impl UnitMap {
     /// unit can be in, so it is reported as an error rather than silently
     /// doing nothing — once, here, for all three verbs.
     fn with<T>(&self, key: &str, f: impl FnOnce(&Unit) -> T) -> Result<T> {
-        let units = self.units.read();
-        let unit = units
+        let unit = self
+            .units
             .get(key)
             .with_context(|| format!("no unit named `{key}`"))?;
         Ok(f(unit))
@@ -129,11 +108,12 @@ mod test {
 
     /// A map with `keys` declared, each running nothing.
     fn map(keys: &[&str]) -> Arc<UnitMap> {
-        let map = UnitMap::new();
+        let mut behaviors: HashMap<String, UnitBehavior> = HashMap::new();
         for key in keys {
-            map.add(*key, UnitBehavior::noop(*key));
+            let name: String = key.to_owned().into();
+            behaviors.insert(name.clone(), UnitBehavior::noop(name));
         }
-        map
+        UnitMap::new(behaviors)
     }
 
     /// A unit that was declared and never started is stopped, which is a
@@ -171,16 +151,5 @@ mod test {
 
         handle.wait().await;
         assert!(map.state("server").unwrap().is_finished());
-    }
-
-    /// Adding over a name puts a fresh unit there: the run that was under it
-    /// is gone, not inherited.
-    #[tokio::test]
-    async fn adding_over_a_name_replaces_what_was_there() {
-        let map = map(&["server"]);
-        map.start("server").unwrap();
-
-        map.add("server", UnitBehavior::noop("server"));
-        assert!(matches!(map.state("server"), Ok(RunnerState::Stopped)));
     }
 }
