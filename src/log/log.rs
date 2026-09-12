@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicU32, AtomicU64, Ordering},
@@ -614,8 +615,8 @@ impl LogReader {
         LogReaderIter {
             head,
             tail,
-            chunk: 0,
-            piece: 0,
+            pos: (0, 0),
+            end: (head.len() + tail.len(), 0),
         }
     }
 
@@ -660,11 +661,31 @@ pub struct LogReaderIter<'a> {
     head: &'a [LogReaderChunk],
     /// Whatever wrapped past the end, or nothing if the contents do not.
     tail: &'a [LogReaderChunk],
-    /// Which chunk, counting across `head` then `tail`.
-    chunk: usize,
-    /// Which piece of that chunk.
-    piece: usize,
+    /// Where the walk is.
+    pos: LogReaderPos,
+    /// Where it stops, exclusive.
+    ///
+    /// A walk needs an end as well as a start, because a window of the
+    /// history can stop short of the newest line —
+    /// [`tail_range`](LogReaderIter::tail_range) with a range that does not
+    /// begin at 0 is exactly that, and a view scrolled up is why it exists.
+    /// For a walk of everything it is `(chunks, 0)`: one past the last chunk.
+    end: LogReaderPos,
 }
+
+/// Somewhere in a walk: which chunk, and which piece of it.
+///
+/// A pair rather than two fields because the two numbers are never useful
+/// apart — every place that reads one reads the other — and because being a
+/// pair is what makes `<` mean what the walk needs it to mean. Tuples compare
+/// the chunk first and only then the piece, which is exactly how one position
+/// comes before another here, so the bound test in
+/// [`next`](LogReaderIter::next) is the comparison you would write for a pair
+/// of numbers rather than a spelled out pair of cases.
+///
+/// The chunk counts across `head` then `tail`, the way
+/// [`at`](LogReaderIter::at) resolves it.
+type LogReaderPos = (usize, usize);
 
 impl<'a> LogReaderIter<'a> {
     /// Chunk `n`, counting across both slices, or `None` past the end.
@@ -672,6 +693,166 @@ impl<'a> LogReaderIter<'a> {
         self.head
             .get(n)
             .or_else(|| self.tail.get(n - self.head.len()))
+    }
+
+    /// How many chunks there are to walk across, both slices together.
+    fn chunks(&self) -> usize {
+        self.head.len() + self.tail.len()
+    }
+
+    /// Whether a line ends after piece `piece` of chunk `index`.
+    ///
+    /// The one question both directions have to answer the same way — the
+    /// forward walk reports it as [`newline`](LogReaderRef::newline), and the
+    /// backward one counts it to find where a line began. Two copies of the
+    /// rule would be two chances for the windows to disagree with the render.
+    ///
+    /// The rule itself is in [`LogReader::iter_sync`]: the line carries on
+    /// only if the room cut this chunk short *and* the next chunk is the same
+    /// writer's. Which is also why the last piece of the last chunk always
+    /// ends a line — there is no next chunk to carry it — and so why counting
+    /// backwards from the end never starts inside an unterminated line.
+    fn ends_line(&self, index: usize, piece: usize, chunk: &LogReaderChunk) -> bool {
+        let last = piece + 1 == chunk.count();
+        !(last
+            && chunk.continues()
+            && self
+                .at(index + 1)
+                .is_some_and(|next| next.writer() == chunk.writer()))
+    }
+
+    /// Narrow the walk to a window of the newest lines, counted back from the
+    /// last one.
+    ///
+    /// `lines` is a range of *distances from the end*, not positions: `0` is
+    /// the last line, `1` the one before it. So `0..20` is the last twenty
+    /// lines, and `10..20` is the ten before those — which is what a view
+    /// scrolled ten lines up wants. What comes out is still oldest first,
+    /// like every other walk here; only the window moves.
+    ///
+    /// # Why it narrows a walk rather than starting one
+    ///
+    /// Because then it composes with both of them, and the caller keeps
+    /// saying which it meant:
+    ///
+    /// ```ignore
+    /// reader.iter_sync().tail(20, 64)              // fetch, then the last 20 lines
+    /// reader.iter_unsync().tail_range(10..20, 64)  // another window of the same copy
+    /// ```
+    ///
+    /// The same pair on [`LogReader`] would have had to pick one of the two
+    /// and then grow a twin for the other. Building an iterator is two slices
+    /// and four numbers, so there is nothing to save by folding the fetch
+    /// into it — and the question of whether to sync stays where it already
+    /// had an answer.
+    ///
+    /// # `max_chunks`
+    ///
+    /// A ceiling on how far back it will look, in chunks. Finding where a
+    /// line begins means walking backwards until the newlines have been
+    /// counted, and with no bound that walk is the whole ring — which for a
+    /// log whose lines are mostly blank is a lot of work to render twenty of
+    /// them.
+    ///
+    /// So it is a budget, and a view sets it from what it could possibly
+    /// draw: a pane `h` rows tall cannot show more than `h` chunks' worth of
+    /// pieces, whatever the lines in them look like.
+    ///
+    /// Hitting it truncates rather than fails — the walk simply starts at the
+    /// oldest chunk it was allowed to reach, so the first line may come out
+    /// as its tail rather than whole, exactly as it would if the log had
+    /// discarded the rest. Pass [`usize::MAX`] for no ceiling.
+    ///
+    /// # Fewer lines than asked for
+    ///
+    /// Not an error and not distinguishable in the result: a log with three
+    /// lines asked for twenty gives three. A view that needs to know whether
+    /// there is more above it can ask for one line more than it means to
+    /// draw, and see whether it got it.
+    ///
+    /// A range that starts past everything held is the other half of that,
+    /// and it comes back empty rather than clamped — a view scrolled above
+    /// the top of the history is showing nothing, not showing the oldest
+    /// lines a second time.
+    ///
+    /// # How the ends are found
+    ///
+    /// Walking backwards and counting the pieces that end a line, let `n` be
+    /// the count so far at some position. Every position from there to the
+    /// end spans exactly `n` whole lines — whole, because the very last piece
+    /// always ends one, so there is never a dangling remainder at the far
+    /// end.
+    ///
+    /// The line at distance `k` from the end therefore *begins* at the
+    /// earliest position whose count is `k + 1`, which is what the two
+    /// assignments below capture: keep overwriting while the count sits on
+    /// the number wanted, and stop once it goes past. The same expression
+    /// gives both ends — the start from `lines.end`, the exclusive end from
+    /// `lines.start` — since a line's start is the previous line's end.
+    ///
+    /// `lines.start` of 0 has no such position, because no position counts
+    /// zero: it means the window runs to the newest piece there is, which is
+    /// the initial value rather than anything the walk finds.
+    pub fn tail_range(mut self, lines: Range<usize>, max_chunks: usize) -> Self {
+        let chunks = self.chunks();
+        if lines.is_empty() {
+            return self.empty();
+        }
+
+        let floor = chunks.saturating_sub(max_chunks);
+        // Where the window begins. Left at the oldest piece the ceiling
+        // allows, which is what a log holding fewer lines than were asked for
+        // falls back to: give what there is rather than nothing.
+        let mut start = (floor, 0);
+        // Where it ends, and unknown until the walk finds it — unless nothing
+        // is being skipped, in which case it ends at the newest piece there
+        // is, and no position the walk could reach would say so.
+        let mut end = (lines.start == 0).then_some((chunks, 0));
+
+        let mut count = 0;
+        'walk: for index in (floor..chunks).rev() {
+            let Some(chunk) = self.at(index) else { break };
+            for piece in (0..chunk.count()).rev() {
+                if self.ends_line(index, piece, chunk) {
+                    count += 1;
+                }
+                if count > lines.end {
+                    break 'walk;
+                }
+                if count == lines.end {
+                    start = (index, piece);
+                }
+                if lines.start > 0 && count == lines.start {
+                    end = Some((index, piece));
+                }
+            }
+        }
+
+        // Never reached the line the window ends at, so the whole window is
+        // older than anything the reader holds. Which is not the same as the
+        // *start* going unfound, where part of the window is still here and
+        // gets truncated to it — hence one of them clamps and the other does
+        // not.
+        let Some(end) = end else {
+            return self.empty();
+        };
+
+        self.pos = start;
+        self.end = end;
+        self
+    }
+
+    /// The last `lines` lines: [`tail_range`](LogReaderIter::tail_range) over
+    /// `0..lines`.
+    pub fn tail(self, lines: usize, max_chunks: usize) -> Self {
+        self.tail_range(0..lines, max_chunks)
+    }
+
+    /// Park the walk on its own end, so it yields nothing.
+    fn empty(mut self) -> Self {
+        self.end = (self.chunks(), 0);
+        self.pos = self.end;
+        self
     }
 }
 
@@ -733,30 +914,30 @@ impl<'a> Iterator for LogReaderIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let chunk = self.at(self.chunk)?;
+            // Both are positions, so this is the comparison a pair of
+            // numbers gets. It comes first because a window may stop part way
+            // through a chunk that has more pieces in it.
+            if self.pos >= self.end {
+                return None;
+            }
+
+            let (index, piece) = self.pos;
+            let chunk = self.at(index)?;
             // A chunk with nothing left to give; move on. Pushed chunks are
             // never empty, so this is a step rather than a loop in practice.
-            if self.piece >= chunk.count() {
-                self.chunk += 1;
-                self.piece = 0;
+            if piece >= chunk.count() {
+                self.pos = (index + 1, 0);
                 continue;
             }
 
-            let text = chunk.get_str(self.piece)?;
-            let last = self.piece + 1 == chunk.count();
-            // The line carries on only if this chunk was cut short *and* the
-            // next chunk is the same writer's — see `LogReader::iter`.
-            let carries_on = last
-                && chunk.continues()
-                && self
-                    .at(self.chunk + 1)
-                    .is_some_and(|next| next.writer() == chunk.writer());
+            let text = chunk.get_str(piece)?;
+            let newline = self.ends_line(index, piece, chunk);
 
-            self.piece += 1;
+            self.pos = (index, piece + 1);
             return Some(LogReaderRef {
                 data: text,
-                newline: !carries_on,
-                index: self.chunk,
+                newline,
+                index,
             });
         }
     }
@@ -1085,5 +1266,213 @@ mod test {
         for pair in addresses.windows(2) {
             assert_eq!(pair[1] - pair[0], stride, "the chunks are not one run");
         }
+    }
+
+    /// The lines a window gives back, joined out of its pieces.
+    ///
+    /// A split line arrives as several pieces and is one line here, which is
+    /// the whole point of counting by `newline` rather than by piece. A
+    /// trailing run with no newline is kept too — a window the ceiling cut
+    /// part way through a line is supposed to show the tail of it.
+    fn window(reader: &LogReader, lines: Range<usize>, max_chunks: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut line = String::new();
+        for piece in reader.iter_unsync().tail_range(lines, max_chunks) {
+            line.push_str(piece.as_str());
+            if piece.newline() {
+                out.push(std::mem::take(&mut line));
+            }
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+        out
+    }
+
+    /// A reader holding `lines` numbered lines, all of them still in the ring.
+    fn tail_reader(lines: usize) -> LogReader {
+        let log = log_with(64, lines);
+        let mut reader = log.reader();
+        reader.sync();
+        reader
+    }
+
+    #[test]
+    fn tail_gives_back_the_newest_lines_oldest_first() {
+        let reader = tail_reader(10);
+        assert_eq!(
+            window(&reader, 0..3, usize::MAX),
+            ["linha 7", "linha 8", "linha 9"]
+        );
+    }
+
+    /// `tail` is the range starting at zero, and has to stay that way rather
+    /// than becoming a second implementation of the same walk.
+    #[test]
+    fn tail_is_tail_range_from_zero() {
+        let reader = tail_reader(10);
+        let by_range: Vec<_> = reader
+            .iter_unsync()
+            .tail_range(0..4, 8)
+            .map(|p| p.as_str().to_owned())
+            .collect();
+        let by_tail: Vec<_> = reader
+            .iter_unsync()
+            .tail(4, 8)
+            .map(|p| p.as_str().to_owned())
+            .collect();
+        assert_eq!(by_range, by_tail);
+    }
+
+    /// Narrowing composes with the fetching walk too — which is the reason
+    /// these live on the iterator rather than on the reader.
+    #[test]
+    fn a_window_composes_with_the_syncing_walk() {
+        let log = log_with(64, 6);
+        let mut reader = log.reader();
+
+        // Never synced, so the unsynced walk has nothing while the syncing
+        // one fetches first and then narrows.
+        assert_eq!(reader.iter_unsync().tail(2, usize::MAX).count(), 0);
+        let lines: Vec<String> = reader
+            .iter_sync()
+            .tail(2, usize::MAX)
+            .map(|p| p.as_str().to_owned())
+            .collect();
+        assert_eq!(lines, ["linha 4", "linha 5"]);
+    }
+
+    /// The range counts distance from the end, so a start past zero is a view
+    /// scrolled up: the lines before the ones `0..n` would have given.
+    #[test]
+    fn a_range_that_starts_past_zero_skips_the_newest_lines() {
+        let reader = tail_reader(10);
+        assert_eq!(window(&reader, 0..2, usize::MAX), ["linha 8", "linha 9"]);
+        assert_eq!(window(&reader, 2..4, usize::MAX), ["linha 6", "linha 7"]);
+        assert_eq!(window(&reader, 1..3, usize::MAX), ["linha 7", "linha 8"]);
+    }
+
+    /// Asking for more than there is gives what there is. A view cannot know
+    /// how much a log holds before it asks, so this is the ordinary case for
+    /// a process that has just started, not an edge one.
+    #[test]
+    fn asking_for_more_lines_than_exist_gives_all_of_them() {
+        let reader = tail_reader(3);
+        assert_eq!(
+            window(&reader, 0..50, usize::MAX),
+            ["linha 0", "linha 1", "linha 2"]
+        );
+    }
+
+    /// And a range that begins past everything held gives nothing, rather
+    /// than clamping back onto the oldest lines — a view scrolled above the
+    /// top of the history is showing nothing.
+    #[test]
+    fn a_range_that_starts_past_the_oldest_line_is_empty() {
+        let reader = tail_reader(3);
+        assert!(window(&reader, 10..20, usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn an_empty_range_walks_nothing() {
+        let reader = tail_reader(10);
+        assert_eq!(reader.iter_unsync().tail_range(0..0, usize::MAX).count(), 0);
+        assert_eq!(reader.iter_unsync().tail_range(5..5, usize::MAX).count(), 0);
+        assert_eq!(reader.iter_unsync().tail(0, usize::MAX).count(), 0);
+    }
+
+    /// An unbounded window is the plain walk — the narrowing must not be a
+    /// second way of reading the same chunks.
+    #[test]
+    fn an_unbounded_window_is_the_plain_walk() {
+        let reader = tail_reader(10);
+        let whole: Vec<_> = reader
+            .iter_unsync()
+            .map(|p| (p.as_str().to_owned(), p.newline(), p.index()))
+            .collect();
+        let tail: Vec<_> = reader
+            .iter_unsync()
+            .tail(usize::MAX, usize::MAX)
+            .map(|p| (p.as_str().to_owned(), p.newline(), p.index()))
+            .collect();
+        assert_eq!(whole, tail);
+    }
+
+    /// The ceiling bounds the backwards walk, so a window can come back short
+    /// — which is the point: it is a render budget, not a request that can
+    /// fail. Two lines to a chunk here, so two chunks is four lines.
+    #[test]
+    fn the_chunk_ceiling_truncates_the_window() {
+        let reader = tail_reader(20);
+        assert_eq!(
+            window(&reader, 0..10, 2),
+            ["linha 16", "linha 17", "linha 18", "linha 19"]
+        );
+        // Without the ceiling the same ask reaches all ten.
+        assert_eq!(window(&reader, 0..10, usize::MAX).len(), 10);
+    }
+
+    /// A line the chunk size cut in two is still one line to count back over,
+    /// and the window hands back every piece of it.
+    #[test]
+    fn a_split_line_counts_once_and_comes_back_whole() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa = "L".repeat(LOG_CHUNK_SIZE + 40);
+        buffer.write(format!("antes\n{longa}\ndepois\n").as_bytes());
+
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(
+            window(&reader, 0..2, usize::MAX),
+            [longa.clone(), "depois".to_owned()]
+        );
+        assert_eq!(window(&reader, 1..2, usize::MAX), [longa]);
+        assert_eq!(window(&reader, 2..3, usize::MAX), ["antes"]);
+    }
+
+    /// Hitting the ceiling part way through a line gives the tail of it, the
+    /// same shape a log that had discarded the rest would give.
+    #[test]
+    fn the_ceiling_can_land_inside_a_line() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        let longa = "L".repeat(LOG_CHUNK_SIZE * 3);
+        buffer.write(format!("{longa}\n").as_bytes());
+
+        let mut reader = log.reader();
+        reader.sync();
+
+        let cortada = window(&reader, 0..1, 2);
+        assert_eq!(cortada.len(), 1);
+        let cortada = &cortada[0];
+        assert!(
+            cortada.len() < longa.len() && longa.ends_with(cortada.as_str()),
+            "expected the tail of the line, got {} of {}",
+            cortada.len(),
+            longa.len()
+        );
+    }
+
+    /// The index a piece reports is its place in the reader's window, so a
+    /// narrowed walk has to report the same numbers the plain one does rather
+    /// than counting from wherever it happened to start.
+    #[test]
+    fn a_window_reports_the_indexes_of_the_whole_reader() {
+        let reader = tail_reader(10);
+        let last = reader
+            .iter_unsync()
+            .last()
+            .expect("there is output")
+            .index();
+        assert_eq!(
+            reader
+                .iter_unsync()
+                .tail(1, usize::MAX)
+                .map(|p| p.index())
+                .last(),
+            Some(last)
+        );
     }
 }
