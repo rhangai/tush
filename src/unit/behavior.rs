@@ -66,7 +66,10 @@ impl UnitBehavior {
     /// [`dispatch`](UnitBehavior::dispatch) away, and that is what the `&mut
     /// self` there is for.
     pub fn modes(name: String, modes: Vec<UnitBehavior>) -> Self {
-        Self::wrap(name, UnitBehaviorInner::Modes(BehaviorModes { modes }))
+        Self::wrap(
+            name,
+            UnitBehaviorInner::Modes(BehaviorModes { index: 0, modes }),
+        )
     }
 
     /// A behavior that does nothing and succeeds immediately.
@@ -188,16 +191,24 @@ fn command(argv: &[String]) -> Result<Command> {
 /// `dispatch` that switches modes belongs here, next to the list it switches
 /// within.
 struct BehaviorModes {
+    index: usize,
     modes: Vec<UnitBehavior>,
 }
 
 impl UnitBehaviorKind for BehaviorModes {
-    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
-        match self.modes.first() {
-            Some(mode) => mode.spawn(writer),
-            // A proc whose `modes` list is empty has nothing to start, which
-            // is what the noop runner is.
-            None => Ok(RunnerHandle::new(())),
+    fn dispatch(&mut self, _event: UnitEvent) -> Option<UnitAction> {
+        if self.modes.is_empty() {
+            return None;
         }
+        self.index = (self.index + 1) % self.modes.len();
+        Some(UnitAction::Start)
+    }
+
+    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+        if self.modes.is_empty() {
+            return Ok(RunnerHandle::new(()));
+        };
+        let mode = &self.modes[self.index];
+        mode.spawn(writer)
     }
 }

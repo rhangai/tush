@@ -3,6 +3,6 @@ pub enum UnitEvent {
 }
 
 pub enum UnitAction {
-    StartSelf,
-    StopSelf,
+    Start,
+    Stop,
 }
