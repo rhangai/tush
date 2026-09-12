@@ -1,24 +1,37 @@
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::Result;
 
 use crate::{
     app::error::{AppError, AppErrors},
     config::Config,
+    unit::{UnitBehavior, UnitMap},
     util::graph::DependencyGraph,
 };
 
 /// A session that has been checked and is ready to be run.
 ///
-/// Empty for now: it exists to be the thing a [`Config`] becomes once it has
-/// been found sound. Everything a run needs — the units, the start order, the
-/// groups — lands here as it is built.
-///
 /// The type is the proof. A `Config` is whatever the file said; an `App` is a
 /// config that has survived [`new`](App::new), so anything holding one can
 /// stop asking whether the procs it names exist or whether their dependencies
-/// can be satisfied.
-pub struct App {}
+/// can be satisfied — the questions were answered once, at the door.
+///
+/// What it holds is the config turned into the things a run actually uses:
+/// the [`units`](App::units), and the [`groups`](App::groups) that address
+/// them in bulk. The start order is not here yet.
+pub struct App {
+    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    units: Arc<UnitMap>,
+    /// Group name to the keys declared under it.
+    ///
+    /// Built while the units are, so a group only ever names units that were
+    /// added — and inverted from how the config writes it, because a config
+    /// is written per proc and a group is used per group.
+    groups: HashMap<String, Vec<String>>,
+}
 
 impl App {
     /// Check a config, and build the session from it.
@@ -41,6 +54,65 @@ impl App {
     /// check: the edge is simply not added, the graph stays honest about what
     /// it knows, and both kinds of problem come back together.
     pub fn new(config: Config) -> Result<Self> {
+        let errors = Self::check(&config);
+        if !errors.is_empty() {
+            return Err(AppErrors::new(errors).into());
+        }
+
+        let units = UnitMap::new();
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+
+        for proc in config.procs {
+            // Borrowed before the fields start moving out from under it.
+            let name = proc.display_name().to_owned();
+
+            let behavior = match (proc.run, proc.modes) {
+                // `run` and `modes` together was refused above, so the `_`
+                // here is only ever `None`; spelling it out as a catch-all
+                // keeps the match total without an `unreachable!` that would
+                // turn a checking mistake into a panic.
+                (Some(run), _) => UnitBehavior::run_many(name, run.0),
+                (None, Some(modes)) => UnitBehavior::modes(
+                    name,
+                    modes
+                        .into_iter()
+                        .map(|mode| UnitBehavior::run_many(mode.name, mode.run.0))
+                        .collect(),
+                ),
+                // A proc that says neither is not an error, only a proc with
+                // nothing to start — the config layer leaves that open on
+                // purpose, and the noop runner is what it means.
+                (None, None) => UnitBehavior::noop(name),
+            };
+
+            for group in proc.groups {
+                groups.entry(group).or_default().push(proc.key.clone());
+            }
+            // The keys come from a mapping, so they are unique and the
+            // `None` that a taken name would give back cannot happen here.
+            units.add(proc.key, behavior);
+        }
+
+        Ok(Self { units, groups })
+    }
+
+    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    pub fn units(&self) -> &Arc<UnitMap> {
+        &self.units
+    }
+
+    /// The keys belonging to each group.
+    pub fn groups(&self) -> &HashMap<String, Vec<String>> {
+        &self.groups
+    }
+
+    /// Everything wrong with `config`, in the order it was found.
+    ///
+    /// Separate from [`new`](App::new) because the two halves want the config
+    /// differently: checking reads every proc and borrows their names to
+    /// build the graph, while building takes them apart. Doing the first to
+    /// completion means the second never has to wonder.
+    fn check(config: &Config) -> Vec<AppError> {
         let mut errors = Vec::new();
         let declared: HashSet<&str> = config.procs.iter().map(|proc| proc.key.as_str()).collect();
 
@@ -79,10 +151,6 @@ impl App {
             procs: cycle.iter().map(|key| (*key).to_owned()).collect(),
         }));
 
-        if errors.is_empty() {
-            Ok(Self {})
-        } else {
-            Err(AppErrors::new(errors).into())
-        }
+        errors
     }
 }
