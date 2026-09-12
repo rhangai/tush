@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use enum_dispatch::enum_dispatch;
 use tokio::process::Command;
 
 use crate::{
     base::Process,
     log::LogWriterRef,
-    runner::RunnerHandle,
+    runner::{RunnerHandle, RunnerSerial},
     unit::dispatch::{UnitAction, UnitEvent},
 };
 
@@ -24,25 +24,66 @@ use crate::{
 /// the rest of the crate sees, which keeps new kinds from leaking into every
 /// signature.
 ///
-/// This is the seam where the config file (see `tmp/example.yaml`) will be
-/// parsed into: today only the hardcoded [`run`](UnitBehavior::run),
-/// [`noop`](UnitBehavior::noop) and `modes` exist.
+/// This is the seam the config file (see `tmp/example.yaml`) is parsed into:
+/// a proc's `run` becomes [`run`](UnitBehavior::run) or
+/// [`run_many`](UnitBehavior::run_many), and its `modes` become
+/// [`modes`](UnitBehavior::modes) over one behavior per mode.
+///
+/// # The name
+///
+/// Every behavior carries one, and it means different things at different
+/// depths: for the behavior a unit holds it is the proc, and for the
+/// behaviors inside a [`modes`](UnitBehavior::modes) it is the mode — `Build`,
+/// `Watch`. Which is the point of keeping it on the wrapper rather than on
+/// the unit: a mode is a behavior, so a mode has a name the same way.
 pub struct UnitBehavior {
+    name: String,
     inner: UnitBehaviorInner,
 }
 
 impl UnitBehavior {
-    /// A placeholder behavior running a hardcoded shell command.
-    pub fn run() -> Self {
-        Self {
-            inner: UnitBehaviorInner::Run(BehaviorRun {}),
-        }
+    /// One command, as its argv: the program, then its arguments.
+    pub fn run(name: String, command: Vec<String>) -> Self {
+        Self::run_many(name, vec![command])
+    }
+
+    /// Several commands, run one after the other, stopping at the first that
+    /// fails.
+    ///
+    /// One unit still, with one log and one state — the sequence is a
+    /// [`RunnerSerial`], which is itself a single runner.
+    pub fn run_many(name: String, commands: Vec<Vec<String>>) -> Self {
+        Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
+    }
+
+    /// Several named ways to run, one of which is current.
+    ///
+    /// Each mode is a whole [`UnitBehavior`], which is what lets a mode be
+    /// anything a proc can be — one command, or a sequence of them — and what
+    /// gives it its name.
+    ///
+    /// Today it always runs the first. Choosing between them is a
+    /// [`dispatch`](UnitBehavior::dispatch) away, and that is what the `&mut
+    /// self` there is for.
+    pub fn modes(name: String, modes: Vec<UnitBehavior>) -> Self {
+        Self::wrap(name, UnitBehaviorInner::Modes(BehaviorModes { modes }))
     }
 
     /// A behavior that does nothing and succeeds immediately.
-    pub fn noop() -> Self {
+    pub fn noop(name: String) -> Self {
+        Self::wrap(name, UnitBehaviorInner::Noop(BehaviorNoop {}))
+    }
+
+    /// What this behavior is called: the proc, or the mode.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Put a kind behind the wrapper the rest of the crate sees.
+    fn wrap(name: impl Into<String>, inner: UnitBehaviorInner) -> Self {
         Self {
-            inner: UnitBehaviorInner::Noop(BehaviorNoop {}),
+            name: name.into(),
+            inner,
         }
     }
 
@@ -98,25 +139,65 @@ impl UnitBehaviorKind for BehaviorNoop {
     }
 }
 
-/// Runs an external command.
+/// Runs external commands, in order.
 ///
-/// The command is hardcoded for now — a shell script that prints, sleeps and
-/// exits non zero, which exercises log capture, the wait path and a failing
-/// exit code in one go.
-struct BehaviorRun {}
+/// Always a [`RunnerSerial`], even for one command, so that the one and the
+/// many are the same shape — there is no second path through here for the
+/// common case to drift away from.
+struct BehaviorRun {
+    /// Each command as its argv, in the order they were written.
+    commands: Vec<Vec<String>>,
+}
+
 impl UnitBehaviorKind for BehaviorRun {
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
-        let mut command = Command::new("find");
-        command.args([".", "-type", "f"]);
-        let proc = Process::new(command, writer);
-        Ok(RunnerHandle::new(proc))
+        if self.commands.is_empty() {
+            return Ok(RunnerHandle::new(()));
+        }
+        if self.commands.len() == 1 {
+            let process = Process::new(command(&self.commands[0])?, writer);
+            return Ok(RunnerHandle::new(process));
+        }
+        let mut serial = RunnerSerial::new();
+        for argv in &self.commands {
+            let writer = writer.as_ref().map(LogWriterRef::share);
+            serial.add(Process::new(command(argv)?, writer));
+        }
+        Ok(RunnerHandle::new(serial))
     }
 }
 
-/// Runs nothing, succeeding immediately, via the `()` runner.
-struct BehaviorModes {}
+/// Builds the child from an argv.
+///
+/// The first word is the program and the rest are its arguments, handed to
+/// the OS as they are: no shell, so nothing re-splits them and no quoting
+/// rule applies.
+fn command(argv: &[String]) -> Result<Command> {
+    let Some((program, args)) = argv.split_first() else {
+        bail!("a command with no program to run");
+    };
+    let mut command = Command::new(program);
+    command.args(args);
+    Ok(command)
+}
+
+/// Several behaviors, one of which is the one that runs.
+///
+/// The first of them, for now. What makes this a kind of its own rather than
+/// a `Vec` on the unit is that choosing is going to be its own behavior: the
+/// `dispatch` that switches modes belongs here, next to the list it switches
+/// within.
+struct BehaviorModes {
+    modes: Vec<UnitBehavior>,
+}
+
 impl UnitBehaviorKind for BehaviorModes {
-    fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
-        Ok(RunnerHandle::new(()))
+    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+        match self.modes.first() {
+            Some(mode) => mode.spawn(writer),
+            // A proc whose `modes` list is empty has nothing to start, which
+            // is what the noop runner is.
+            None => Ok(RunnerHandle::new(())),
+        }
     }
 }

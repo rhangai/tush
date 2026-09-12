@@ -136,7 +136,7 @@ mod test {
     fn map(keys: &[&str]) -> Arc<UnitMap> {
         let map = UnitMap::new();
         for key in keys {
-            map.add(*key, UnitBehavior::noop());
+            map.add(*key, UnitBehavior::noop(*key));
         }
         map
     }
@@ -185,7 +185,7 @@ mod test {
         let map = map(&["server"]);
         map.start("server").unwrap();
 
-        map.add("server", UnitBehavior::noop());
+        map.add("server", UnitBehavior::noop("server"));
         assert!(matches!(map.state("server"), Ok(RunnerState::Stopped)));
     }
 }
