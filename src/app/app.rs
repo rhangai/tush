@@ -1,8 +1,12 @@
-use std::{collections::HashSet, fmt};
+use std::collections::HashSet;
 
 use anyhow::Result;
 
-use crate::{config::Config, util::graph::DependencyGraph};
+use crate::{
+    app::error::{AppError, AppErrors},
+    config::Config,
+    util::graph::DependencyGraph,
+};
 
 /// A session that has been checked and is ready to be run.
 ///
@@ -78,73 +82,7 @@ impl App {
         if errors.is_empty() {
             Ok(Self {})
         } else {
-            Err(AppErrors { errors }.into())
+            Err(AppErrors::new(errors).into())
         }
     }
 }
-
-/// Everything wrong with a config, reported at once.
-///
-/// One error rather than many so it can travel as an error, and a list rather
-/// than a string so that whatever reports it — a line on stderr now, a panel
-/// in the interface later — can decide how each one is shown.
-#[derive(Debug)]
-pub struct AppErrors {
-    errors: Vec<AppError>,
-}
-
-impl AppErrors {
-    /// The problems, in the order they were found: per proc as the config
-    /// declares them, and then the cycles.
-    pub fn errors(&self) -> &[AppError] {
-        &self.errors
-    }
-}
-
-impl fmt::Display for AppErrors {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let count = self.errors.len();
-        let plural = if count == 1 { "" } else { "s" };
-        write!(f, "{count} problem{plural} with the configuration:")?;
-        for error in &self.errors {
-            write!(f, "\n  - {error}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for AppErrors {}
-
-/// One thing wrong with a config.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AppError {
-    /// A proc declared `run` and `modes` both.
-    RunAndModes { proc: String },
-    /// A proc depends on a name that no proc is declared under.
-    UnknownDependency { proc: String, depends: String },
-    /// Procs that wait on each other in a circle, so none of them can be
-    /// first. A cycle of one is a proc that depends on itself.
-    Cycle { procs: Vec<String> },
-}
-
-impl fmt::Display for AppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RunAndModes { proc } => {
-                write!(f, "`{proc}` declares both `run` and `modes`")
-            }
-            Self::UnknownDependency { proc, depends } => {
-                write!(f, "`{proc}` depends on `{depends}`, which is not a proc")
-            }
-            Self::Cycle { procs } if procs.len() == 1 => {
-                write!(f, "`{}` depends on itself", procs[0])
-            }
-            Self::Cycle { procs } => {
-                let procs: Vec<_> = procs.iter().map(|proc| format!("`{proc}`")).collect();
-                write!(f, "{} depend on each other in a circle", procs.join(", "))
-            }
-        }
-    }
-}
-
-impl std::error::Error for AppError {}
