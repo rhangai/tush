@@ -9,12 +9,14 @@
 //! separate from the unit is what allows a unit to be restarted under a
 //! different description (the `modes` in the config sketch: build vs. watch).
 //!
-//! The `pool` and `context` modules are placeholders for the next layer —
-//! many units, their groups and their dependencies — and are not wired up yet.
+//! [`UnitMap`] is the layer above: every unit of a session, by name, shared
+//! rather than owned, so that anything holding the map can start, stop and
+//! ask after any of them. The `context` module — how a unit reaches back to
+//! the map it belongs to, for the groups and `pre-condition` dependencies in
+//! the config sketch — is still a placeholder.
 
-mod context;
 mod description;
-mod pool;
+mod map;
 mod unit;
 
 #[allow(unused_imports)]
@@ -22,3 +24,6 @@ pub use unit::Unit;
 
 #[allow(unused_imports)]
 pub use description::UnitDescription;
+
+#[allow(unused_imports)]
+pub use map::UnitMap;

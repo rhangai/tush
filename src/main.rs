@@ -35,7 +35,7 @@ mod runner;
 mod unit;
 mod util;
 
-use crate::unit::{Unit, UnitDescription};
+use crate::unit::{Unit, UnitDescription, UnitMap};
 
 /// Temporary entrypoint used to exercise the runtime while the CLI does not
 /// exist yet.
@@ -44,9 +44,9 @@ use crate::unit::{Unit, UnitDescription};
 /// observed states so the restart handshake can be inspected by hand.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let unit = Unit::new(UnitDescription::program());
-    let mut log = unit.log_reader();
-    let h1 = unit.start()?;
+    let map = UnitMap::new();
+    let mut log = map.add("key", UnitDescription::program()).unwrap();
+    let h1 = map.start("key").unwrap();
     // println!("{:?}", h1.state());
     h1.wait().await;
     for line in log.iter_sync() {
