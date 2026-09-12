@@ -4,7 +4,12 @@ use anyhow::Result;
 use enum_dispatch::enum_dispatch;
 use tokio::process::Command;
 
-use crate::{base::Process, log::LogWriterRef, runner::RunnerHandle};
+use crate::{
+    base::Process,
+    log::LogWriterRef,
+    runner::RunnerHandle,
+    unit::dispatch::{UnitAction, UnitEvent},
+};
 
 /// The recipe for a run: what a [`Unit`](crate::unit::Unit) spawns when started.
 ///
@@ -22,9 +27,9 @@ pub struct UnitDescription {
 
 impl UnitDescription {
     /// A placeholder description running a hardcoded shell command.
-    pub fn program() -> Self {
+    pub fn run() -> Self {
         Self {
-            inner: UnitDescriptionInner::Program(DescProgram {}),
+            inner: UnitDescriptionInner::Run(DescRun {}),
         }
     }
 
@@ -33,6 +38,11 @@ impl UnitDescription {
         Self {
             inner: UnitDescriptionInner::Noop(DescNoop {}),
         }
+    }
+
+    /// Dispatch an event to the description
+    pub fn dispatch(&mut self, event: UnitEvent) -> Option<UnitAction> {
+        self.inner.dispatch(event)
     }
 
     /// Build the runner and hand back a paused handle for it.
@@ -59,12 +69,17 @@ impl AsRef<UnitDescription> for UnitDescription {
 #[enum_dispatch]
 enum UnitDescriptionInner {
     Noop(DescNoop),
-    Program(DescProgram),
+    Run(DescRun),
+    Modes(DescModes),
 }
 
 /// What every kind of description must be able to do.
 #[enum_dispatch(UnitDescriptionInner)]
 trait UnitDescriptionBehavior {
+    /// Dispatch a event that may trigger an action
+    fn dispatch(&mut self, _event: UnitEvent) -> Option<UnitAction> {
+        None
+    }
     /// Build the runner for one run and wrap it in a paused handle.
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>>;
 }
@@ -74,8 +89,8 @@ trait UnitDescriptionBehavior {
 /// The command is hardcoded for now — a shell script that prints, sleeps and
 /// exits non zero, which exercises log capture, the wait path and a failing
 /// exit code in one go.
-struct DescProgram {}
-impl UnitDescriptionBehavior for DescProgram {
+struct DescRun {}
+impl UnitDescriptionBehavior for DescRun {
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
         let mut command = Command::new("find");
         command.args([".", "-type", "f"]);
@@ -87,6 +102,14 @@ impl UnitDescriptionBehavior for DescProgram {
 /// Runs nothing, succeeding immediately, via the `()` runner.
 struct DescNoop {}
 impl UnitDescriptionBehavior for DescNoop {
+    fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+        Ok(RunnerHandle::new(()))
+    }
+}
+
+/// Runs nothing, succeeding immediately, via the `()` runner.
+struct DescModes {}
+impl UnitDescriptionBehavior for DescModes {
     fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
         Ok(RunnerHandle::new(()))
     }

@@ -16,14 +16,18 @@
 //! the config sketch — is still a placeholder.
 
 mod description;
+mod dispatch;
 mod map;
 mod unit;
-
-#[allow(unused_imports)]
-pub use unit::Unit;
 
 #[allow(unused_imports)]
 pub use description::UnitDescription;
 
 #[allow(unused_imports)]
+pub use dispatch::{UnitAction, UnitEvent};
+
+#[allow(unused_imports)]
 pub use map::UnitMap;
+
+#[allow(unused_imports)]
+pub use unit::Unit;

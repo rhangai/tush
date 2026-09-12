@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
+use parking_lot::Mutex;
 
 use crate::{
     log::{Log, LogReader},
     runner::{RunnerHandle, RunnerState},
-    unit::description::UnitDescription,
+    unit::{UnitAction, UnitEvent, description::UnitDescription},
 };
 
 /// A named, restartable entry: one log, one description, one current run.
@@ -20,7 +21,7 @@ use crate::{
 /// without locking, including while a restart is in flight.
 pub struct Unit {
     log: Log,
-    description: UnitDescription,
+    description: Mutex<UnitDescription>,
     handle: ArcSwapOption<RunnerHandle>,
 }
 
@@ -29,7 +30,7 @@ impl Unit {
     pub fn new(description: UnitDescription) -> Self {
         Self {
             log: Log::new(4096),
-            description,
+            description: Mutex::new(description),
             handle: ArcSwapOption::const_empty(),
         }
     }
@@ -41,23 +42,16 @@ impl Unit {
         self.log.debug();
     }
 
-    /// Start running the process
-    ///
-    /// Uses the unit's own description.
-    pub fn start(&self) -> anyhow::Result<Arc<RunnerHandle>> {
-        self.start_with_description(&self.description)
+    /// Dispatch an event to the behavior
+    pub fn dispatch(&self, event: UnitEvent) -> Option<UnitAction> {
+        self.description.lock().dispatch(event)
     }
 
     /// Start running the process
     ///
-    /// Runs `desc` instead of the unit's own — the mechanism behind switching
-    /// a unit between modes. The unit's stored description is left untouched,
-    /// so a later [`start`](Unit::start) goes back to it.
-    pub fn start_with_description(
-        &self,
-        desc: impl AsRef<UnitDescription>,
-    ) -> anyhow::Result<Arc<RunnerHandle>> {
-        let handle = desc.as_ref().spawn(Some(self.log.writer()))?;
+    /// Uses the unit's own description.
+    pub fn start(&self) -> anyhow::Result<Arc<RunnerHandle>> {
+        let handle = self.description.lock().spawn(Some(self.log.writer()))?;
         self.set_handle(handle)
     }
 
