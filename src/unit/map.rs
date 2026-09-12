@@ -96,6 +96,39 @@ impl UnitMap {
         self.with(key, Unit::log_reader).ok()
     }
 
+    /// The name every unit was declared under.
+    ///
+    /// In no particular order — the map is a `HashMap`, and the declaration
+    /// order did not survive being put into one. A caller that shows these to
+    /// a person has to impose an order of its own, or the same session will
+    /// list itself differently on every render.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.units.keys().map(String::as_str)
+    }
+
+    /// Stop every unit, and wait until each one is really gone.
+    ///
+    /// [`stop`](UnitMap::stop) only asks; the process is still on its way out
+    /// when it returns, and dropping the map does no better — `Drop` cannot
+    /// await. This is the teardown you can observe, which is what a session
+    /// that owns its children wants before its own process exits.
+    ///
+    /// Every unit is asked to stop before any of them is waited on, so the
+    /// grace periods overlap instead of queueing up one shutdown at a time.
+    pub async fn shutdown(&self) {
+        let handles: Vec<Arc<RunnerHandle>> = self
+            .units
+            .values()
+            .filter_map(|unit| {
+                unit.stop();
+                unit.clone_handle()
+            })
+            .collect();
+        for handle in handles {
+            handle.wait().await;
+        }
+    }
+
     /// Run `f` on the unit under `key`, or fail naming what was asked for.
     ///
     /// An unknown name is a mistake in a config or a command, not a state a
