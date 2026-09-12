@@ -136,7 +136,11 @@ enum UnitBehaviorInner {
 /// What every kind of behavior must be able to do.
 #[enum_dispatch(UnitBehaviorInner)]
 trait UnitBehaviorKind {
-    /// Dispatch a event that may trigger an action
+    /// What an event asks of this behavior, given where its run is.
+    ///
+    /// Nothing, by default. A kind with no answer to an event should not
+    /// invent one — and [`BehaviorNoop`] never will have one, because a proc
+    /// that declared no way to run has nothing an event could ask of it.
     fn dispatch(&mut self, _event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         None
     }
@@ -144,6 +148,7 @@ trait UnitBehaviorKind {
     fn mode(&self) -> Option<&str> {
         None
     }
+
     /// Build the runner for one run and wrap it in a paused handle.
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>>;
 }
@@ -167,6 +172,20 @@ struct BehaviorRun {
 }
 
 impl UnitBehaviorKind for BehaviorRun {
+    /// Start it if nothing is running, and leave a running one alone.
+    ///
+    /// Pressing the key again on something already up should not take it down
+    /// and bring it back: the restart is what the user did *not* ask for.
+    ///
+    /// Every way of not running is a way of being startable, the three
+    /// terminal states included — a run that finished, failed or was killed
+    /// is a run you can have again.
+    fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
+        match event {
+            UnitEvent::Default => state.is_stopped().then_some(UnitAction::Start),
+        }
+    }
+
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
         if self.commands.is_empty() {
             return Ok(RunnerHandle::new(()));
@@ -214,13 +233,28 @@ impl UnitBehaviorKind for BehaviorModes {
         Some(self.modes.get(self.index)?.name())
     }
 
-    fn dispatch(&mut self, event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
+    /// Move to the next mode and run it — except the very first time.
+    ///
+    /// A unit with modes is already *on* one before it has ever run, and that
+    /// mode is the first one, which is what the config wrote first and what
+    /// the row on screen has been saying all along. Stepping past it would
+    /// make the first press start something other than what it offered, and
+    /// there would be no way to run the first mode at all without cycling the
+    /// whole way round.
+    ///
+    /// [`Stopped`](RunnerState::Stopped) is exactly that case and nothing
+    /// else: a unit reports it only while it has no run behind it, since a
+    /// handle is never in that state — one that finished says so, and says
+    /// how.
+    fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
         if self.modes.is_empty() {
             return None;
         }
         match event {
             UnitEvent::Default => {
-                self.index = (self.index + 1) % self.modes.len();
+                if !matches!(state, RunnerState::Stopped) {
+                    self.index = (self.index + 1) % self.modes.len();
+                }
                 Some(UnitAction::Start)
             }
         }
@@ -232,5 +266,114 @@ impl UnitBehaviorKind for BehaviorModes {
         };
         let mode = &self.modes[self.index];
         mode.spawn(writer)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Ask a behavior what it would do from `state`.
+    fn dispatch(behavior: &mut UnitBehavior, state: RunnerState) -> Option<UnitAction> {
+        behavior.dispatch(UnitEvent::Default, state)
+    }
+
+    fn run() -> UnitBehavior {
+        UnitBehavior::run("proc".into(), vec!["true".into()])
+    }
+
+    fn modes() -> UnitBehavior {
+        UnitBehavior::modes(
+            "proc".into(),
+            vec![
+                UnitBehavior::run("Build".into(), vec!["true".into()]),
+                UnitBehavior::run("Watch".into(), vec!["true".into()]),
+            ],
+        )
+    }
+
+    /// Pressing the key on something already up should not take it down and
+    /// bring it back: the restart is what was not asked for.
+    #[test]
+    fn a_plain_run_is_left_alone_while_it_is_running() {
+        let mut behavior = run();
+        for state in [
+            RunnerState::Waiting,
+            RunnerState::Started,
+            RunnerState::Running,
+            RunnerState::Killing,
+        ] {
+            assert!(dispatch(&mut behavior, state).is_none(), "{state:?}");
+        }
+    }
+
+    /// Every way of not running is a way of being startable, including the
+    /// three that mean it ran and stopped.
+    #[test]
+    fn a_plain_run_starts_again_from_any_state_that_is_not_running() {
+        let mut behavior = run();
+        for state in [
+            RunnerState::Stopped,
+            RunnerState::ExitSuccess,
+            RunnerState::ExitError(None),
+            RunnerState::Killed(None),
+        ] {
+            assert!(
+                matches!(dispatch(&mut behavior, state), Some(UnitAction::Start)),
+                "{state:?}"
+            );
+        }
+    }
+
+    /// The first press runs the mode the unit was already showing. Stepping
+    /// past it would start something other than what the row offered, and
+    /// leave no way to run the first mode without cycling all the way round.
+    #[test]
+    fn the_first_press_runs_the_mode_it_was_already_on() {
+        let mut behavior = modes();
+        assert_eq!(behavior.mode(), Some("Build"));
+
+        assert!(matches!(
+            dispatch(&mut behavior, RunnerState::Stopped),
+            Some(UnitAction::Start)
+        ));
+        assert_eq!(behavior.mode(), Some("Build"), "it stepped past the first");
+    }
+
+    /// After that every press moves on, whether the run is still going or
+    /// already over — a unit with modes is a unit you cycle.
+    #[test]
+    fn every_press_after_the_first_moves_to_the_next_mode() {
+        let mut behavior = modes();
+        dispatch(&mut behavior, RunnerState::Stopped);
+
+        dispatch(&mut behavior, RunnerState::Running);
+        assert_eq!(behavior.mode(), Some("Watch"));
+        dispatch(&mut behavior, RunnerState::ExitSuccess);
+        assert_eq!(behavior.mode(), Some("Build"), "it should wrap round");
+    }
+
+    /// Only `Stopped` means never run, so a unit that ran and finished cycles
+    /// like any other — the state a unit reports with no handle is the one
+    /// case, and a finished handle says how it finished instead.
+    #[test]
+    fn a_finished_run_is_not_a_first_press() {
+        let mut behavior = modes();
+        dispatch(&mut behavior, RunnerState::Killed(None));
+        assert_eq!(behavior.mode(), Some("Watch"));
+    }
+
+    /// A proc that declared no way to run has nothing an event could ask of
+    /// it, in any state.
+    #[test]
+    fn a_noop_answers_nothing() {
+        let mut behavior = UnitBehavior::noop("proc".into());
+        for state in [
+            RunnerState::Stopped,
+            RunnerState::Running,
+            RunnerState::ExitSuccess,
+        ] {
+            assert!(dispatch(&mut behavior, state).is_none(), "{state:?}");
+        }
     }
 }

@@ -7,7 +7,6 @@ use tokio_stream::StreamExt;
 
 use crate::{
     log::LogRegion,
-    runner::RunnerState,
     ui::{
         client::{UiClient, UiCommand, UiLog, UiUnit},
         render,
@@ -181,7 +180,10 @@ impl<C: UiClient> Ui<C> {
             KeyCode::End | KeyCode::Char('G') => self.select(ListState::select_last),
             KeyCode::PageUp => self.log_scroll = self.log_scroll.saturating_add(self.page()),
             KeyCode::PageDown => self.log_scroll = self.log_scroll.saturating_sub(self.page()),
-            KeyCode::Enter => self.activate(),
+            KeyCode::Enter => self.send(|key| UiCommand::Dispatch {
+                key,
+                event: UnitEvent::Default,
+            }),
             KeyCode::Backspace => self.send(|key| UiCommand::Stop { key }),
             _ => {}
         }
@@ -205,33 +207,6 @@ impl<C: UiClient> Ui<C> {
     /// read stays on screen to land on.
     fn page(&self) -> usize {
         self.log_size.0.saturating_sub(1).max(1)
-    }
-
-    /// <kbd>Enter</kbd>: start the selected unit, or move it along if it is
-    /// already running.
-    ///
-    /// The decision is made here, against the state that was on the screen
-    /// when the key was pressed, rather than being a command of its own. Two
-    /// reasons. The user aimed at what they could see, so the snapshot they
-    /// aimed at is the right thing to read. And a behavior with modes answers
-    /// [`UnitEvent::Default`] by switching to the next one and restarting —
-    /// which is only what you want for something that is *already* running;
-    /// on a stopped unit it would silently skip a mode before starting it.
-    fn activate(&mut self) {
-        let Some(unit) = self.selected() else {
-            return;
-        };
-        let command = if matches!(unit.state, RunnerState::Stopped) {
-            UiCommand::Start {
-                key: unit.key.clone(),
-            }
-        } else {
-            UiCommand::Dispatch {
-                key: unit.key.clone(),
-                event: UnitEvent::Default,
-            }
-        };
-        self.client.send(command);
     }
 
     /// Send the command `command` builds for the selected unit's key, if
