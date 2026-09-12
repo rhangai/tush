@@ -9,9 +9,23 @@ use crate::{runner::RunnerState, unit::UnitEvent};
 /// ever shows.
 #[derive(Clone, Debug)]
 pub struct UiUnit {
-    /// The name the unit was declared under, which is also how a
-    /// [`UiCommand`] addresses it.
+    /// The name the unit was declared under, which is how a [`UiCommand`]
+    /// addresses it — and nothing else. It is not shown; see
+    /// [`name`](UiUnit::name).
     pub key: String,
+    /// What to call it on screen.
+    ///
+    /// Separate from the key because the config lets a proc give itself one
+    /// (`name:`), falling back to the key when it does not. Folding the two
+    /// together would mean either showing an identifier where a title was
+    /// meant, or addressing a unit by something a person was free to change.
+    pub name: String,
+    /// Which of its modes it is on, for a unit that has modes.
+    ///
+    /// `None` is not "no mode" but "no modes at all", which is most units —
+    /// and it has to stay tellable from a mode, because a row shows nothing
+    /// here rather than inventing a label for a proc that runs one way.
+    pub mode: Option<String>,
     /// Where its run was at the last sync.
     pub state: RunnerState,
 }

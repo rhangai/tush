@@ -27,7 +27,7 @@ impl UiApp {
     /// Show `app`.
     ///
     /// The rows are laid out here, in the order they will keep for the rest
-    /// of the run: alphabetically, because the map they come out of has no
+    /// of the run: alphabetically by display name, because the map they come out of has no
     /// order of its own and an arbitrary one would put the list in a
     /// different sequence on every poll — the row under the cursor would stop
     /// being the row the user aimed at. It stands in for the order the config
@@ -37,17 +37,27 @@ impl UiApp {
     /// Every row starts [`Stopped`](RunnerState::Stopped), which is also what
     /// a session that has not been started reports, and the first
     /// [`sync`](UiClient::sync) replaces them all anyway.
+    ///
+    /// The display name is taken once and kept, because a proc does not get
+    /// renamed — unlike the mode, which is read on every sync. Falling back
+    /// to the key is what the config itself does for a proc that gave no
+    /// name, so the unreachable error arm lands on the right answer anyway.
     pub fn new(app: Arc<App>) -> Self {
-        let mut units: Vec<UiUnit> = app
-            .units()
+        let units = app.units();
+        let mut list: Vec<UiUnit> = units
             .keys()
             .map(|key| UiUnit {
+                name: units.name(key).unwrap_or_else(|_| key.to_owned()),
                 key: key.to_owned(),
+                mode: None,
                 state: RunnerState::Stopped,
             })
             .collect();
-        units.sort_by(|a, b| a.key.cmp(&b.key));
-        Self { app, units }
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        Self {
+            app: app.clone(),
+            units: list,
+        }
     }
 }
 
@@ -63,6 +73,9 @@ impl UiClient for UiApp {
         for unit in &mut self.units {
             if let Ok(state) = units.state(&unit.key) {
                 unit.state = state;
+            }
+            if let Ok(mode) = units.mode(&unit.key) {
+                unit.mode = mode;
             }
         }
     }

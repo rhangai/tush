@@ -3,8 +3,9 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, List, ListItem},
+    widgets::{Block, HighlightSpacing, List, ListItem},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     runner::RunnerState,
@@ -14,23 +15,35 @@ use crate::{
     },
 };
 
-/// How wide the status column is, in columns.
+/// How far the detail line sits in from the name above it.
 ///
-/// Fixed, so the names line up into a column of their own and the eye can run
-/// down either one. Wide enough for the longest label plus an exit code.
-const STATUS_WIDTH: usize = 10;
+/// The indent is what makes two lines read as one row: the name is the
+/// heading and everything under it hangs off it, so the eye finds the names
+/// by running down the left edge and never has to separate them from what
+/// qualifies them.
+const DETAIL_INDENT: &str = "  ";
+
+/// What separates a name from the mode it is running in.
+const MODE_SEPARATOR: &str = " · ";
+
+/// The mark on the selected row, and the column it lives in.
+///
+/// The trailing space is part of it: the mark needs to not touch the name,
+/// and every row is indented by however wide this is, selected or not, so the
+/// names stay in one column as the cursor moves over them.
+const CURSOR: &str = "> ";
 
 /// How wide the units column is, in columns.
 ///
 /// A fixed width rather than a share of the terminal, because what has to fit
-/// is the status column plus a name — neither of which grows when the window
-/// does. A proportional split would spend half a wide terminal on whitespace
-/// that the log could have used.
+/// is a name — which does not grow when the window does. A proportional split
+/// would spend half a wide terminal on whitespace that the log could have
+/// used.
 ///
 /// It is also what makes the list stay put: a name lands in the same place
 /// whatever else is on screen, so the cursor is not somewhere new after a
 /// resize.
-const UNITS_WIDTH: u16 = 32;
+const UNITS_WIDTH: u16 = 30;
 
 /// Draw one frame: the units on the left, their log on the right, and a line
 /// at the bottom.
@@ -50,13 +63,20 @@ pub fn draw<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>) {
 
     frame.render_widget(log_pane(selected), log_area);
 
-    let items: Vec<ListItem> = units
-        .iter()
-        .map(|unit| item(&unit.state, &unit.key))
-        .collect();
+    // Two borders and the cursor's own column; what is left is what a row has
+    // to lay itself out inside, which is why the rows are built here rather
+    // than by a widget that never learns how wide it ended up.
+    let row_width = (units_area.width as usize)
+        .saturating_sub(2)
+        .saturating_sub(CURSOR.width());
+
+    let items: Vec<ListItem> = units.iter().map(|unit| item(unit, row_width)).collect();
     let list = List::new(items)
-        .block(Block::bordered().title(" units "))
-        .highlight_symbol("▌")
+        .block(Block::bordered())
+        .highlight_symbol(CURSOR)
+        // Always, so the cursor's column is reserved on every row and a name
+        // does not shift sideways as the selection passes over it.
+        .highlight_spacing(HighlightSpacing::Always)
         .highlight_style(Style::new().add_modifier(Modifier::BOLD));
     frame.render_stateful_widget(list, units_area, list_state);
 }
@@ -79,13 +99,99 @@ fn log_pane(unit: Option<&UiUnit>) -> Block<'static> {
     }
 }
 
-/// One row: the status, then the name.
-fn item<'a>(state: &RunnerState, key: &'a str) -> ListItem<'a> {
-    let (label, color) = status(state);
-    ListItem::new(Line::from(vec![
-        Span::styled(format!(" {label:<STATUS_WIDTH$}"), Style::new().fg(color)),
-        Span::raw(key),
-    ]))
+/// One row, over two lines: the name, and under it everything that qualifies
+/// it.
+///
+/// # Why two lines and not one
+///
+/// Because on one line the name and the status compete for the same width,
+/// and the loser is whichever the pane is too narrow for. Given a line of its
+/// own the name gets the whole column and is cut only when it genuinely does
+/// not fit, while the detail line underneath has room for as many facets as
+/// turn up without ever being the reason a name lost its tail.
+///
+/// It costs rows, which a pane of a few procs has to spare — and the third,
+/// blank line is part of the bargain: two lines with nothing between them
+/// read as four rows rather than two.
+///
+/// # The detail line
+///
+/// The status first, in its colour, because it is the word the row exists to
+/// tell you. Then the mode, dimmed, for a unit that has modes — the one thing
+/// about a running proc that its name and its state do not already say, since
+/// two units can both be `running` and be doing entirely different work.
+///
+/// More facets will want this line — a restart count, a port, the group that
+/// started it — which is why it is a run of spans rather than a pair of
+/// fields.
+///
+/// # Two reasons there is no mode to show
+///
+/// A unit with no modes at all, which is most of them: its
+/// [`mode`](UiUnit::mode) is `None` and nothing is invented for it.
+///
+/// And a unit that is [`Stopped`](RunnerState::Stopped), which is the one
+/// state where no run exists — not one that failed or was killed, but none at
+/// all. The behavior is still sitting on a mode and will start in it, but a
+/// mode is something a run is in, so a stopped row saying `stopped · Build`
+/// claims work that is not happening. The terminal states are the other way
+/// round: `exit 2 · Build` is which mode it was that failed, and that is
+/// worth keeping.
+fn item(unit: &UiUnit, width: usize) -> ListItem<'static> {
+    let (label, color) = status(&unit.state);
+    let used = DETAIL_INDENT.width() + label.width();
+
+    let mut detail = vec![
+        Span::raw(DETAIL_INDENT),
+        Span::styled(label, Style::new().fg(color)),
+    ];
+    let running_mode = match unit.state {
+        RunnerState::Stopped => None,
+        _ => unit.mode.as_deref(),
+    };
+    if let Some(mode) = running_mode {
+        let mode = fit(
+            &format!("{MODE_SEPARATOR}{mode}"),
+            width.saturating_sub(used),
+        );
+        detail.push(Span::styled(mode, Style::new().dim()));
+    }
+
+    ListItem::new(vec![
+        Line::from(fit(&unit.name, width)),
+        Line::from(detail),
+        Line::default(),
+    ])
+}
+
+/// `text` in at most `width` columns, ending in an ellipsis if it had to be
+/// cut.
+///
+/// Counted in columns rather than characters because that is what the
+/// terminal lays out: a name with a wide character in it takes two columns
+/// for it, and measuring in `char`s would leave the status column a column
+/// short for every one of them.
+fn fit(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+    // One column goes to the ellipsis, so anything narrower than that has
+    // room for the mark and nothing else.
+    let room = width.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > room {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    if width > 0 {
+        out.push('…');
+    }
+    out
 }
 
 /// The bottom line: what the keys do.

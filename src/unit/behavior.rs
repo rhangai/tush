@@ -90,6 +90,16 @@ impl UnitBehavior {
         }
     }
 
+    /// Which of its modes is current, for a behavior that has any.
+    ///
+    /// The mode's own [`name`](UnitBehavior::name) — `Build`, `Watch` — and
+    /// `None` for a behavior that runs only one way, which is most of them.
+    /// The distinction is the point: there is nothing to show for a proc that
+    /// has no modes, and a made up label for it would be noise on every row.
+    pub fn mode(&self) -> Option<&str> {
+        self.inner.mode()
+    }
+
     /// Hand an event to the behavior, and take the action it asks for.
     pub fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
         self.inner.dispatch(event, state)
@@ -128,6 +138,10 @@ enum UnitBehaviorInner {
 trait UnitBehaviorKind {
     /// Dispatch a event that may trigger an action
     fn dispatch(&mut self, _event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
+        None
+    }
+    /// Which of its modes is current, for the kinds that have any.
+    fn mode(&self) -> Option<&str> {
         None
     }
     /// Build the runner for one run and wrap it in a paused handle.
@@ -196,6 +210,10 @@ struct BehaviorModes {
 }
 
 impl UnitBehaviorKind for BehaviorModes {
+    fn mode(&self) -> Option<&str> {
+        Some(self.modes.get(self.index)?.name())
+    }
+
     fn dispatch(&mut self, event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         if self.modes.is_empty() {
             return None;

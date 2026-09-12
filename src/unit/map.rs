@@ -82,6 +82,16 @@ impl UnitMap {
         self.with(key, Unit::clone_handle)
     }
 
+    /// What the unit under `key` is called on screen.
+    pub fn name(&self, key: &str) -> Result<String> {
+        self.with(key, Unit::name)
+    }
+
+    /// Which of its modes the unit under `key` is currently on, if it has any.
+    pub fn mode(&self, key: &str) -> Result<Option<String>> {
+        self.with(key, Unit::mode)
+    }
+
     /// State of the unit under `key`.
     ///
     /// [`Stopped`](RunnerState::Stopped) for a unit that was declared and
