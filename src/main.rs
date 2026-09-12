@@ -9,6 +9,8 @@
 //!
 //! - [`base`] — the low level pieces: child [`Process`](base::Process)
 //!   handling and the [`ExitReason`](base::ExitReason) of a finished process.
+//! - [`mod@config`] — the config file parsed into the [`Config`](config::Config)
+//!   the units are declared from.
 //! - [`mod@log`] — capture of a process's output into the bounded
 //!   [`Log`](log::Log) history.
 //! - [`runner`] — the async supervision layer: the [`Runner`](runner::Runner)
@@ -30,12 +32,16 @@
 #![allow(dead_code)]
 
 mod base;
+mod config;
 mod log;
 mod runner;
 mod unit;
 mod util;
 
-use crate::unit::{Unit, UnitDescription, UnitMap};
+use crate::{
+    config::Config,
+    unit::{Unit, UnitDescription, UnitMap},
+};
 
 /// Temporary entrypoint used to exercise the runtime while the CLI does not
 /// exist yet.
@@ -44,13 +50,15 @@ use crate::unit::{Unit, UnitDescription, UnitMap};
 /// observed states so the restart handshake can be inspected by hand.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let map = UnitMap::new();
-    let mut log = map.add("key", UnitDescription::program()).unwrap();
-    let h1 = map.start("key").unwrap();
-    // println!("{:?}", h1.state());
-    h1.wait().await;
-    for line in log.iter_sync() {
-        line.print();
-    }
+    let config = Config::from_path("tmp/example.yaml");
+    println!("{:#?}", config);
+    // let map = UnitMap::new();
+    // let mut log = map.add("key", UnitDescription::program()).unwrap();
+    // let h1 = map.start("key").unwrap();
+    // // println!("{:?}", h1.state());
+    // h1.wait().await;
+    // for line in log.iter_sync() {
+    //     line.print();
+    // }
     Ok(())
 }
