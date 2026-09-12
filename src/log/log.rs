@@ -52,6 +52,14 @@ pub struct LogWriterRef {
 }
 
 impl LogWriterRef {
+    /// Share the writer ref, it is like Clone, but explicit
+    pub fn share(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            id: self.id,
+        }
+    }
+
     /// Which writer this is.
     ///
     /// The same id its chunks carry, so a caller holding the writer can find
@@ -610,7 +618,6 @@ impl LogReader {
     fn chunks(&self) -> &LocalRingBuffer<LogReaderChunk> {
         &self.chunks
     }
-
 }
 
 /// Walks a [`LogReader`]'s pieces, oldest first.
@@ -632,7 +639,9 @@ pub struct LogReaderIter<'a> {
 impl<'a> LogReaderIter<'a> {
     /// Chunk `n`, counting across both slices, or `None` past the end.
     fn at(&self, n: usize) -> Option<&'a LogReaderChunk> {
-        self.head.get(n).or_else(|| self.tail.get(n - self.head.len()))
+        self.head
+            .get(n)
+            .or_else(|| self.tail.get(n - self.head.len()))
     }
 }
 
@@ -845,7 +854,10 @@ mod test {
         reader.sync();
         assert!(!reader.is_empty(), "nothing reached the log");
         assert!(
-            reader.iter_unsync().last().is_some_and(|piece| piece.newline()),
+            reader
+                .iter_unsync()
+                .last()
+                .is_some_and(|piece| piece.newline()),
             "the last piece left the line hanging"
         );
     }
