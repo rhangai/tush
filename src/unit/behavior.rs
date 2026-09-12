@@ -90,6 +90,14 @@ trait UnitBehaviorKind {
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>>;
 }
 
+/// Runs nothing, succeeding immediately, via the `()` runner.
+struct BehaviorNoop {}
+impl UnitBehaviorKind for BehaviorNoop {
+    fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+        Ok(RunnerHandle::new(()))
+    }
+}
+
 /// Runs an external command.
 ///
 /// The command is hardcoded for now — a shell script that prints, sleeps and
@@ -102,14 +110,6 @@ impl UnitBehaviorKind for BehaviorRun {
         command.args([".", "-type", "f"]);
         let proc = Process::new(command, writer);
         Ok(RunnerHandle::new(proc))
-    }
-}
-
-/// Runs nothing, succeeding immediately, via the `()` runner.
-struct BehaviorNoop {}
-impl UnitBehaviorKind for BehaviorNoop {
-    fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
-        Ok(RunnerHandle::new(()))
     }
 }
 
