@@ -7,6 +7,8 @@
 //!
 //! # Module layout
 //!
+//! - [`mod@app`] — a [`Config`](config::Config) that has been checked, and
+//!   the session built from it.
 //! - [`base`] — the low level pieces: child [`Process`](base::Process)
 //!   handling and the [`ExitReason`](base::ExitReason) of a finished process.
 //! - [`mod@config`] — the config file parsed into the [`Config`](config::Config)
@@ -31,6 +33,7 @@
 
 #![allow(dead_code)]
 
+mod app;
 mod base;
 mod config;
 mod log;
@@ -39,6 +42,7 @@ mod unit;
 mod util;
 
 use crate::{
+    app::App,
     config::Config,
     unit::{Unit, UnitDescription, UnitMap},
 };
@@ -50,8 +54,8 @@ use crate::{
 /// observed states so the restart handshake can be inspected by hand.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::from_path("tmp/example.yaml");
-    println!("{:#?}", config);
+    let config = Config::from_path("tmp/example.yaml")?;
+    let app = App::new(config)?;
     // let map = UnitMap::new();
     // let mut log = map.add("key", UnitDescription::program()).unwrap();
     // let h1 = map.start("key").unwrap();
