@@ -72,15 +72,10 @@ impl UnitMap {
     /// Adding over a name that is already taken replaces it, and the unit
     /// that was there is dropped — which aborts whatever it was running,
     /// without waiting for it to be gone.
-    pub fn add(&self, key: impl Into<String>, behavior: UnitBehavior) -> Option<LogReader> {
+    pub fn add(&self, key: impl Into<String>, behavior: UnitBehavior) {
         let mut lock = self.units.write();
-        match lock.entry(key.into()) {
-            Entry::Occupied(_) => None,
-            Entry::Vacant(vacant_entry) => {
-                let unit = Unit::new(behavior);
-                Some(vacant_entry.insert(unit).log_reader())
-            }
-        }
+        lock.entry(key.into())
+            .or_insert_with(|| Unit::new(behavior));
     }
 
     /// Start the unit under `key`, using its own behavior.
