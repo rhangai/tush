@@ -60,6 +60,21 @@ impl LogWriterRef {
         }
     }
 
+    /// Fork the ref
+    pub fn fork(&self) -> Self {
+        let Some(inner) = self.inner.upgrade() else {
+            return Self {
+                inner: Weak::new(),
+                id: LogWriterId::new(0),
+            };
+        };
+        let id = inner.next_writer_id();
+        Self {
+            inner: Arc::downgrade(&inner),
+            id,
+        }
+    }
+
     /// Which writer this is.
     ///
     /// The same id its chunks carry, so a caller holding the writer can find
@@ -167,13 +182,28 @@ impl LogWriterRef {
     {
         tokio::spawn(async move {
             let mut log_buffer = LogBuffer::new(self);
-            loop {
-                let result = log_buffer.read(&mut read).await?;
-                if !result {
-                    break;
-                }
-            }
-            Ok(())
+            log_buffer.read_all(&mut read).await
+        })
+    }
+
+    /// Spawn but with stderr
+    pub fn consume_spawn_stderr<R1, R2>(
+        self,
+        mut stdout: R1,
+        mut stderr: R2,
+    ) -> JoinHandle<std::io::Result<()>>
+    where
+        R1: AsyncRead + Unpin + Send + 'static,
+        R2: AsyncRead + Unpin + Send + 'static,
+    {
+        tokio::spawn(async move {
+            let mut stderr_buffer = LogBuffer::new(self.fork());
+            let mut stdout_buffer = LogBuffer::new(self);
+            let (r1, r2) = tokio::join!(
+                stderr_buffer.read_all(&mut stderr),
+                stdout_buffer.read_all(&mut stdout)
+            );
+            r1.and(r2)
         })
     }
 }

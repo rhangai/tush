@@ -236,15 +236,21 @@ impl ProcessInner {
                 command.process_group(0);
                 let (child, writer_task) = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
+                    command.stderr(Stdio::piped());
                     let mut child = command.spawn()?;
                     let stdout = child
                         .stdout
                         .take()
                         .ok_or(anyhow!("stdout should be piped after Stdio::piped()"))?;
-                    let writer_task = writer.consume_spawn(stdout);
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .ok_or(anyhow!("stderr should be piped after Stdio::piped()"))?;
+                    let writer_task = writer.consume_spawn_stderr(stdout, stderr);
                     (child, Some(writer_task))
                 } else {
                     command.stdout(Stdio::null());
+                    command.stderr(Stdio::null());
                     let child = command.spawn()?;
                     (child, None)
                 };

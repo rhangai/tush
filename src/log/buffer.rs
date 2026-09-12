@@ -326,6 +326,20 @@ impl<W: LogBufferWriter> LogBufferAny<W> {
         }
         Ok(true)
     }
+
+    /// Read until done
+    pub async fn read_all<R>(&mut self, read: &mut R) -> io::Result<()>
+    where
+        R: AsyncRead + Unpin,
+    {
+        loop {
+            let result = self.read(read).await?;
+            if !result {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Hand the reader's chunk back when the task that owned it is done.
@@ -685,7 +699,11 @@ mod test {
             assert!(handed.borrow().spare.is_empty());
             drop(buffer);
         }
-        assert_eq!(handed.borrow().spare.len(), 1, "the chunk was not given back");
+        assert_eq!(
+            handed.borrow().spare.len(),
+            1,
+            "the chunk was not given back"
+        );
 
         // And the next reader takes that one rather than making another.
         let before = handed.borrow().minted;
@@ -753,10 +771,7 @@ mod test {
         while buffer.read(&mut src).await.unwrap() {}
 
         let a = LogWriterId::new(0);
-        assert_eq!(
-            lines(&handed),
-            [(a, longa), (a, "depois".to_string())]
-        );
+        assert_eq!(lines(&handed), [(a, longa), (a, "depois".to_string())]);
     }
 
     /// The same with the cuts falling wherever the reads land, on text where
