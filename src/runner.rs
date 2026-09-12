@@ -12,9 +12,11 @@
 //!
 //! Runners compose: [`RunnerSerial`] is itself a `Runner` made of several,
 //! run one after the other, so a unit whose config lists more than one
-//! command is still one handle, one log and one state.
+//! command is still one handle, one log and one state. What such a sequence
+//! does when one of its runners fails is a [`RunnerPolicy`].
 
 mod handle;
+mod policy;
 mod runner;
 mod serial;
 mod state;
@@ -27,6 +29,9 @@ pub use handle::RunnerHandle;
 
 #[allow(unused_imports)]
 pub use serial::RunnerSerial;
+
+#[allow(unused_imports)]
+pub use policy::RunnerPolicy;
 
 #[allow(unused_imports)]
 pub use state::{RunnerState, RunnerStateAtomic};

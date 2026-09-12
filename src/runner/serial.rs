@@ -1,6 +1,9 @@
 use anyhow::Result;
 
-use crate::{base::ExitReason, runner::Runner};
+use crate::{
+    base::ExitReason,
+    runner::{Runner, policy::RunnerPolicy},
+};
 
 /// Several runners, one after the other.
 ///
@@ -11,13 +14,20 @@ use crate::{base::ExitReason, runner::Runner};
 /// becomes — `[[npm, run, build], [npm, run, test]]` is one unit, with one
 /// log and one state, that happens to be two processes in a row.
 ///
-/// # Stopping at the first failure
+/// # What a failure does
 ///
-/// The chain is an `&&`, not a `;`. A runner that does not come back
-/// [`Success`](ExitReason::Success) ends the sequence, and its reason becomes
-/// the serial's — so a build that fails is reported as a failure and the test
-/// step that would have run against a stale build does not run at all. Only a
-/// sequence that gets all the way through is a success.
+/// Up to the [`RunnerPolicy`]. Under the default,
+/// [`Abort`](RunnerPolicy::Abort), the chain is an `&&`: a runner that does
+/// not come back [`Success`](ExitReason::Success) ends the sequence and the
+/// rest is left unrun — so a build that fails is reported as a failure and
+/// the test step that would have run against a stale build does not run at
+/// all. Under [`Continue`](RunnerPolicy::Continue) it is a `;`, and every
+/// runner gets its turn.
+///
+/// Either way the sequence is only a success if every runner was. Under
+/// `Continue` the reason reported is the *first* failure, not the last: a
+/// later one is usually a consequence of it, and the first is the one worth
+/// showing.
 ///
 /// # Aborting
 ///
@@ -30,6 +40,8 @@ use crate::{base::ExitReason, runner::Runner};
 pub struct RunnerSerial<R: Runner> {
     /// The runners, in the order they were added.
     runners: Vec<R>,
+    /// What to do when one of them does not succeed.
+    policy: RunnerPolicy,
     /// Which one is running, by index.
     ///
     /// `None` before the first and after the last, and after any runner that
@@ -40,9 +52,18 @@ pub struct RunnerSerial<R: Runner> {
 
 impl<R: Runner> RunnerSerial<R> {
     /// A sequence with nothing in it, which succeeds immediately.
+    ///
+    /// Stops at the first failure; see
+    /// [`with_policy`](RunnerSerial::with_policy) for the alternative.
     pub fn new() -> Self {
+        Self::with_policy(RunnerPolicy::default())
+    }
+
+    /// The same, deciding for itself what a failure means.
+    pub fn with_policy(policy: RunnerPolicy) -> Self {
         Self {
             runners: Vec::new(),
+            policy,
             running: None,
         }
     }
@@ -60,8 +81,13 @@ impl<R: Runner> Default for RunnerSerial<R> {
 }
 
 impl<R: Runner> Runner for RunnerSerial<R> {
-    /// Run each one in turn, stopping at the first that does not succeed.
+    /// Run each one in turn, as far as the [`RunnerPolicy`] allows.
+    ///
+    /// A runner that returns `Err` — one that could not be started at all,
+    /// rather than one that ran and failed — ends the sequence whatever the
+    /// policy says. The policy weighs exit reasons, and that is not one.
     async fn run(&mut self) -> Result<ExitReason> {
+        let mut failure = None;
         for index in 0..self.runners.len() {
             // Published before the await, because the await is the only place
             // this can be cancelled, and after it there is nothing left to
@@ -75,11 +101,17 @@ impl<R: Runner> Runner for RunnerSerial<R> {
             self.running = None;
 
             let reason = reason?;
-            if !matches!(reason, ExitReason::Success) {
+            if matches!(reason, ExitReason::Success) {
+                continue;
+            }
+            // Kept whether or not the sequence stops here, so that a
+            // `Continue` run still comes back as the failure it was.
+            failure.get_or_insert(reason);
+            if self.policy.is_abort(reason) {
                 return Ok(reason);
             }
         }
-        Ok(ExitReason::Success)
+        Ok(failure.unwrap_or(ExitReason::Success))
     }
 
     /// Shut down whichever runner was in flight, and abandon the rest.
