@@ -7,7 +7,7 @@ use tokio::process::Command;
 use crate::{
     base::Process,
     log::LogWriterRef,
-    runner::{RunnerHandle, RunnerSerial},
+    runner::{RunnerHandle, RunnerSerial, RunnerState},
     unit::dispatch::{UnitAction, UnitEvent},
 };
 
@@ -91,8 +91,8 @@ impl UnitBehavior {
     }
 
     /// Hand an event to the behavior, and take the action it asks for.
-    pub fn dispatch(&mut self, event: UnitEvent) -> Option<UnitAction> {
-        self.inner.dispatch(event)
+    pub fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
+        self.inner.dispatch(event, state)
     }
 
     /// Build the runner and hand back a paused handle for it.
@@ -127,7 +127,7 @@ enum UnitBehaviorInner {
 #[enum_dispatch(UnitBehaviorInner)]
 trait UnitBehaviorKind {
     /// Dispatch a event that may trigger an action
-    fn dispatch(&mut self, _event: UnitEvent) -> Option<UnitAction> {
+    fn dispatch(&mut self, _event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         None
     }
     /// Build the runner for one run and wrap it in a paused handle.
@@ -196,12 +196,16 @@ struct BehaviorModes {
 }
 
 impl UnitBehaviorKind for BehaviorModes {
-    fn dispatch(&mut self, _event: UnitEvent) -> Option<UnitAction> {
+    fn dispatch(&mut self, event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         if self.modes.is_empty() {
             return None;
         }
-        self.index = (self.index + 1) % self.modes.len();
-        Some(UnitAction::Start)
+        match event {
+            UnitEvent::Default => {
+                self.index = (self.index + 1) % self.modes.len();
+                Some(UnitAction::Start)
+            }
+        }
     }
 
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {

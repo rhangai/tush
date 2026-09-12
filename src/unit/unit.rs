@@ -44,7 +44,7 @@ impl Unit {
 
     /// Hand an event to the behavior, and take the action it asks for.
     pub fn dispatch(&self, event: UnitEvent) -> Option<UnitAction> {
-        self.behavior.lock().dispatch(event)
+        self.behavior.lock().dispatch(event, self.state())
     }
 
     /// Start running the process
