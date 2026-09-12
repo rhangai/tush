@@ -36,7 +36,7 @@ impl Runner for Process {
 /// A process is a runner
 ///
 /// The unit type is the no-op runner: it succeeds immediately. Useful as a
-/// placeholder for descriptions that have nothing to execute, and as the
+/// placeholder for behaviors that have nothing to execute, and as the
 /// simplest thing to test the handle's state machine against.
 impl Runner for () {
     async fn run(&mut self) -> anyhow::Result<ExitReason> {

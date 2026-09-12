@@ -11,36 +11,42 @@ use crate::{
     unit::dispatch::{UnitAction, UnitEvent},
 };
 
-/// The recipe for a run: what a [`Unit`](crate::unit::Unit) spawns when started.
+/// What a [`Unit`](crate::unit::Unit) does: what it spawns when started, and
+/// how it answers the events that reach it.
 ///
-/// A description is inert and reusable — spawning it does not consume it, so
-/// the same description can back any number of runs. The concrete kinds live
-/// behind [`UnitDescriptionInner`]; this wrapper is what the rest of the crate
-/// sees, which keeps new kinds from leaking into every signature.
+/// Behavior rather than description, because it is not inert. A description
+/// would be read; this is *asked* — [`dispatch`](UnitBehavior::dispatch) takes
+/// `&mut self` and may answer with a [`UnitAction`], which is how a behavior
+/// like `modes` gets to remember which mode it is in. That is also why the
+/// unit keeps it behind a lock.
+///
+/// The concrete kinds live behind [`UnitBehaviorInner`]; this wrapper is what
+/// the rest of the crate sees, which keeps new kinds from leaking into every
+/// signature.
 ///
 /// This is the seam where the config file (see `tmp/example.yaml`) will be
-/// parsed into: today only the hardcoded [`program`](UnitDescription::program)
-/// and [`noop`](UnitDescription::noop) exist.
-pub struct UnitDescription {
-    inner: UnitDescriptionInner,
+/// parsed into: today only the hardcoded [`run`](UnitBehavior::run),
+/// [`noop`](UnitBehavior::noop) and `modes` exist.
+pub struct UnitBehavior {
+    inner: UnitBehaviorInner,
 }
 
-impl UnitDescription {
-    /// A placeholder description running a hardcoded shell command.
+impl UnitBehavior {
+    /// A placeholder behavior running a hardcoded shell command.
     pub fn run() -> Self {
         Self {
-            inner: UnitDescriptionInner::Run(DescRun {}),
+            inner: UnitBehaviorInner::Run(BehaviorRun {}),
         }
     }
 
-    /// A description that does nothing and succeeds immediately.
+    /// A behavior that does nothing and succeeds immediately.
     pub fn noop() -> Self {
         Self {
-            inner: UnitDescriptionInner::Noop(DescNoop {}),
+            inner: UnitBehaviorInner::Noop(BehaviorNoop {}),
         }
     }
 
-    /// Dispatch an event to the description
+    /// Hand an event to the behavior, and take the action it asks for.
     pub fn dispatch(&mut self, event: UnitEvent) -> Option<UnitAction> {
         self.inner.dispatch(event)
     }
@@ -48,34 +54,34 @@ impl UnitDescription {
     /// Build the runner and hand back a paused handle for it.
     ///
     /// The handle comes back parked at the start gate; releasing it is the
-    /// caller's job — see [`Unit::start_with_description`](crate::unit::Unit).
+    /// caller's job — see [`Unit::start`](crate::unit::Unit::start).
     /// `writer` is the log the process output should be sent to, if any.
     pub fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
         self.inner.spawn(writer)
     }
 }
 
-impl AsRef<UnitDescription> for UnitDescription {
-    fn as_ref(&self) -> &UnitDescription {
+impl AsRef<UnitBehavior> for UnitBehavior {
+    fn as_ref(&self) -> &UnitBehavior {
         self
     }
 }
 
-/// The kinds of description that exist.
+/// The kinds of behavior that exist.
 ///
 /// The `enum_dispatch` macro generates the delegation of
-/// [`UnitDescriptionBehavior`] to each variant, so dispatch stays static — no
+/// [`UnitBehaviorKind`] to each variant, so dispatch stays static — no
 /// `Box<dyn ...>` on a path that is otherwise allocation free.
 #[enum_dispatch]
-enum UnitDescriptionInner {
-    Noop(DescNoop),
-    Run(DescRun),
-    Modes(DescModes),
+enum UnitBehaviorInner {
+    Noop(BehaviorNoop),
+    Run(BehaviorRun),
+    Modes(BehaviorModes),
 }
 
-/// What every kind of description must be able to do.
-#[enum_dispatch(UnitDescriptionInner)]
-trait UnitDescriptionBehavior {
+/// What every kind of behavior must be able to do.
+#[enum_dispatch(UnitBehaviorInner)]
+trait UnitBehaviorKind {
     /// Dispatch a event that may trigger an action
     fn dispatch(&mut self, _event: UnitEvent) -> Option<UnitAction> {
         None
@@ -89,8 +95,8 @@ trait UnitDescriptionBehavior {
 /// The command is hardcoded for now — a shell script that prints, sleeps and
 /// exits non zero, which exercises log capture, the wait path and a failing
 /// exit code in one go.
-struct DescRun {}
-impl UnitDescriptionBehavior for DescRun {
+struct BehaviorRun {}
+impl UnitBehaviorKind for BehaviorRun {
     fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
         let mut command = Command::new("find");
         command.args([".", "-type", "f"]);
@@ -100,16 +106,16 @@ impl UnitDescriptionBehavior for DescRun {
 }
 
 /// Runs nothing, succeeding immediately, via the `()` runner.
-struct DescNoop {}
-impl UnitDescriptionBehavior for DescNoop {
+struct BehaviorNoop {}
+impl UnitBehaviorKind for BehaviorNoop {
     fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
         Ok(RunnerHandle::new(()))
     }
 }
 
 /// Runs nothing, succeeding immediately, via the `()` runner.
-struct DescModes {}
-impl UnitDescriptionBehavior for DescModes {
+struct BehaviorModes {}
+impl UnitBehaviorKind for BehaviorModes {
     fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
         Ok(RunnerHandle::new(()))
     }

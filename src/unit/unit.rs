@@ -6,10 +6,10 @@ use parking_lot::Mutex;
 use crate::{
     log::{Log, LogReader},
     runner::{RunnerHandle, RunnerState},
-    unit::{UnitAction, UnitEvent, description::UnitDescription},
+    unit::{UnitAction, UnitEvent, behavior::UnitBehavior},
 };
 
-/// A named, restartable entry: one log, one description, one current run.
+/// A named, restartable entry: one log, one behavior, one current run.
 ///
 /// The unit outlives its runs. Handles come and go — each
 /// [`start`](Unit::start) creates a new one — but the [`Log`] belongs to the
@@ -21,37 +21,37 @@ use crate::{
 /// without locking, including while a restart is in flight.
 pub struct Unit {
     log: Log,
-    description: Mutex<UnitDescription>,
+    behavior: Mutex<UnitBehavior>,
     handle: ArcSwapOption<RunnerHandle>,
 }
 
 impl Unit {
     /// Create a stopped unit with an empty log.
-    pub fn new(description: UnitDescription) -> Self {
+    pub fn new(behavior: UnitBehavior) -> Self {
         Self {
             log: Log::new(4096),
-            description: Mutex::new(description),
+            behavior: Mutex::new(behavior),
             handle: ArcSwapOption::const_empty(),
         }
     }
 
     /// Start running the process
     ///
-    /// Uses the unit's own description.
+    /// Uses the unit's own behavior.
     pub fn debug(&self) {
         self.log.debug();
     }
 
-    /// Dispatch an event to the behavior
+    /// Hand an event to the behavior, and take the action it asks for.
     pub fn dispatch(&self, event: UnitEvent) -> Option<UnitAction> {
-        self.description.lock().dispatch(event)
+        self.behavior.lock().dispatch(event)
     }
 
     /// Start running the process
     ///
-    /// Uses the unit's own description.
+    /// Uses the unit's own behavior.
     pub fn start(&self) -> anyhow::Result<Arc<RunnerHandle>> {
-        let handle = self.description.lock().spawn(Some(self.log.writer()))?;
+        let handle = self.behavior.lock().spawn(Some(self.log.writer()))?;
         self.set_handle(handle)
     }
 

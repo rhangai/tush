@@ -19,7 +19,7 @@
 //!   trait, its [`RunnerHandle`](runner::RunnerHandle) and the
 //!   [`RunnerState`](runner::RunnerState) machine.
 //! - [`mod@unit`] — the user facing concept: a [`Unit`] is a named,
-//!   restartable entry described by a [`UnitDescription`].
+//!   restartable entry whose [`UnitBehavior`] decides what it does.
 //! - [`util`] — shared data structures, currently the recycling ring buffer
 //!   the logs keep their chunks in.
 //!
@@ -44,20 +44,20 @@ mod util;
 use crate::{
     app::App,
     config::Config,
-    unit::{Unit, UnitDescription, UnitMap},
+    unit::{Unit, UnitBehavior, UnitMap},
 };
 
 /// Temporary entrypoint used to exercise the runtime while the CLI does not
 /// exist yet.
 ///
-/// It starts a unit, replaces its running description twice and prints the
+/// It starts a unit, replaces its running behavior twice and prints the
 /// observed states so the restart handshake can be inspected by hand.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_path("tmp/example.yaml")?;
     let app = App::new(config)?;
     // let map = UnitMap::new();
-    // let mut log = map.add("key", UnitDescription::program()).unwrap();
+    // let mut log = map.add("key", UnitBehavior::program()).unwrap();
     // let h1 = map.start("key").unwrap();
     // // println!("{:?}", h1.state());
     // h1.wait().await;

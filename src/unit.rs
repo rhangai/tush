@@ -5,9 +5,10 @@
 //! [`Log`](crate::log::Log) — so the output history is not lost on restart —
 //! and it holds whichever handle is current.
 //!
-//! A [`UnitDescription`] is the recipe: what to spawn, and how. Keeping it
-//! separate from the unit is what allows a unit to be restarted under a
-//! different description (the `modes` in the config sketch: build vs. watch).
+//! A [`UnitBehavior`] is what the unit does: what to spawn, and how it
+//! answers the events that reach it. Keeping it separate from the unit is
+//! what lets a unit be restarted under a different behavior — the `modes` in
+//! the config: build vs. watch.
 //!
 //! [`UnitMap`] is the layer above: every unit of a session, by name, shared
 //! rather than owned, so that anything holding the map can start, stop and
@@ -15,13 +16,13 @@
 //! the map it belongs to, for the groups and `pre-condition` dependencies in
 //! the config sketch — is still a placeholder.
 
-mod description;
+mod behavior;
 mod dispatch;
 mod map;
 mod unit;
 
 #[allow(unused_imports)]
-pub use description::UnitDescription;
+pub use behavior::UnitBehavior;
 
 #[allow(unused_imports)]
 pub use dispatch::{UnitAction, UnitEvent};
