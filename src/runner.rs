@@ -9,9 +9,14 @@
 //!
 //! A handle supervises exactly one run. Restarting is not a operation on a
 //! handle — it is a new handle, which is what [`Unit`](crate::unit::Unit) does.
+//!
+//! Runners compose: [`RunnerSerial`] is itself a `Runner` made of several,
+//! run one after the other, so a unit whose config lists more than one
+//! command is still one handle, one log and one state.
 
 mod handle;
 mod runner;
+mod serial;
 mod state;
 
 #[allow(unused_imports)]
@@ -19,6 +24,9 @@ pub use runner::Runner;
 
 #[allow(unused_imports)]
 pub use handle::RunnerHandle;
+
+#[allow(unused_imports)]
+pub use serial::RunnerSerial;
 
 #[allow(unused_imports)]
 pub use state::{RunnerState, RunnerStateAtomic};
