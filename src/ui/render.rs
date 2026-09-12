@@ -125,7 +125,7 @@ fn draw_log<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>, area: Rect) {
 /// asked for: a client behind a scroll hands back what it has, and the pane
 /// draws the overlap rather than nothing.
 fn visible<'a>(log: &'a UiLog<'a>, scroll: usize, rows: usize) -> &'a [String] {
-    let from_end = scroll.saturating_sub(log.region.lines.start);
+    let from_end = scroll.saturating_sub(log.region.line_start);
     let end = log.lines.len().saturating_sub(from_end);
     let start = end.saturating_sub(rows);
     &log.lines[start..end]
@@ -287,10 +287,7 @@ mod test {
     fn visible_texts(scroll: usize, rows: usize, start: usize, held: usize) -> Vec<String> {
         let lines = lines(start, held);
         let log = UiLog {
-            region: LogRegion {
-                lines: start..start + held,
-                columns: 0..80,
-            },
+            region: LogRegion::new(start..start + held, 0..80),
             revision: 0,
             lines: &lines,
         };

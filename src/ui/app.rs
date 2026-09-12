@@ -109,8 +109,8 @@ impl UiApp {
             return;
         }
 
-        log.reader.copy_region(log.wanted.clone(), &mut log.lines);
-        log.region = log.wanted.clone();
+        log.reader.copy_region(log.wanted, &mut log.lines);
+        log.region = log.wanted;
         log.revision = revision;
     }
 }
@@ -162,7 +162,7 @@ impl UiClient for UiApp {
                 self.log = Some(AppLog {
                     key: key.to_owned(),
                     reader,
-                    region: region.clone(),
+                    region,
                     wanted: region,
                     revision: 0,
                     lines: Vec::new(),
@@ -174,7 +174,7 @@ impl UiClient for UiApp {
     fn log(&self) -> Option<UiLog<'_>> {
         let log = self.log.as_ref()?;
         Some(UiLog {
-            region: log.region.clone(),
+            region: log.region,
             revision: log.revision,
             lines: &log.lines,
         })

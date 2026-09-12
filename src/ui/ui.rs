@@ -137,10 +137,7 @@ impl<C: UiClient> Ui<C> {
         let key = self.selected().map(|unit| unit.key.clone());
         let (rows, columns) = self.log_size;
         let start = self.log_scroll.saturating_sub(LOG_MARGIN);
-        let region = LogRegion {
-            lines: start..self.log_scroll + rows + LOG_MARGIN,
-            columns: 0..columns,
-        };
+        let region = LogRegion::new(start..self.log_scroll + rows + LOG_MARGIN, 0..columns);
         self.client.set_log(key.as_deref(), region);
     }
 
@@ -158,7 +155,7 @@ impl<C: UiClient> Ui<C> {
         let Some(log) = self.client.log() else {
             return;
         };
-        let held = log.region.lines.start + log.lines.len();
+        let held = log.region.line_start + log.lines.len();
         let rows = self.log_size.0;
         self.log_scroll = self.log_scroll.min(held.saturating_sub(rows));
     }

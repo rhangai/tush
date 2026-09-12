@@ -664,7 +664,7 @@ impl LogReader {
         // memory and not a copy of it.
         for piece in self
             .iter_unsync()
-            .tail_range(region.lines.clone(), usize::MAX)
+            .tail_range(region.line_start..region.line_end, usize::MAX)
         {
             if !open {
                 if lines < out.len() {
@@ -674,12 +674,7 @@ impl LogReader {
                 }
                 open = true;
             }
-            clip_into(
-                &mut out[lines],
-                piece.as_str(),
-                &mut column,
-                &region.columns,
-            );
+            clip_into(&mut out[lines], piece.as_str(), &mut column, region);
             if piece.newline() {
                 lines += 1;
                 column = 0;
@@ -731,36 +726,63 @@ impl LogReader {
 /// pane it is for — a window that moves in two directions over text bigger
 /// than it in both, and bounded in both so that holding one costs the pane
 /// and not the log.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// Both pairs are half open, and both are counted from the edge the log grows
+/// from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LogRegion {
-    /// Which lines, counted back from the newest: `0` is the last line, `1`
-    /// the one before it. `2..20` is the eighteen lines above the last two.
+    /// The first line, counted back from the newest: `0` is the last line,
+    /// `1` the one before it.
     ///
     /// Relative to the end because that is the addressing the log answers —
     /// it counts chunks pushed, not lines written, so there is no absolute
     /// line number to name. What it costs is that with output still arriving
-    /// the same range names different lines each time, so a pane held still
+    /// the same bounds name different lines each time, so a pane held still
     /// over a running process drifts.
-    pub lines: Range<usize>,
-    /// Which columns of each line.
+    pub line_start: usize,
+    /// One line past the last, so `2..20` is the eighteen above the last two.
+    pub line_end: usize,
+    /// The first column of each line to take.
     ///
     /// Columns, not bytes: this is a window onto a terminal, and a byte
     /// offset would cut characters in half. A character straddling either
     /// edge is left out rather than halved.
-    pub columns: Range<usize>,
+    pub column_start: usize,
+    /// One column past the last.
+    pub column_end: usize,
 }
 
-/// Append the part of `text` that falls inside `columns`.
+impl LogRegion {
+    /// A region from the two ranges it reads best as:
+    /// `LogRegion::new(2..20, 0..512)`.
+    ///
+    /// Four fields rather than two [`Range`]s, because `Range` is an iterator
+    /// and the standard library left it non-[`Copy`] on purpose: a `Copy`
+    /// iterator would let `for x in range` consume a duplicate and leave the
+    /// original looking untouched. Nothing iterates a region, so holding
+    /// `Range`s inside one inherits that restriction for a reason it does not
+    /// have, and pays for it in a clone at every call site.
+    pub fn new(lines: Range<usize>, columns: Range<usize>) -> Self {
+        Self {
+            line_start: lines.start,
+            line_end: lines.end,
+            column_start: columns.start,
+            column_end: columns.end,
+        }
+    }
+}
+
+/// Append the part of `text` that falls inside the region's columns.
 ///
 /// `column` is how far into the line the pieces before this one already
 /// reached, and is advanced past all of `text` whether or not any of it was
 /// taken — the window is over the line, and a piece entirely to the left of
 /// it still moves the position along.
-fn clip_into(out: &mut String, text: &str, column: &mut usize, columns: &Range<usize>) {
+fn clip_into(out: &mut String, text: &str, column: &mut usize, region: LogRegion) {
     for character in text.chars() {
         let start = *column;
         *column += character.width().unwrap_or(0);
-        if start >= columns.end {
+        if start >= region.column_end {
             // Past the right hand edge, and so is everything after it. The
             // position is left where it is because nothing will read it
             // again: no later piece of this line can be inside the window.
@@ -768,7 +790,7 @@ fn clip_into(out: &mut String, text: &str, column: &mut usize, columns: &Range<u
         }
         // A character straddling an edge is dropped: half of one is not
         // something a terminal can draw.
-        if start >= columns.start && *column <= columns.end {
+        if start >= region.column_start && *column <= region.column_end {
             out.push(character);
         }
     }
@@ -1420,7 +1442,7 @@ mod test {
     /// The lines of a region, windowed to `columns`.
     fn columns(reader: &LogReader, lines: Range<usize>, columns: Range<usize>) -> Vec<String> {
         let mut out = Vec::new();
-        reader.copy_region(LogRegion { lines, columns }, &mut out);
+        reader.copy_region(LogRegion::new(lines, columns), &mut out);
         out
     }
 
@@ -1509,13 +1531,7 @@ mod test {
         reader.sync();
 
         let mut out = Vec::new();
-        reader.copy_region(
-            LogRegion {
-                lines: 2..20,
-                columns: 0..512,
-            },
-            &mut out,
-        );
+        reader.copy_region(LogRegion::new(2..20, 0..512), &mut out);
         assert_eq!(out.len(), 18);
         let bytes: usize = out.iter().map(String::len).sum();
         assert!(bytes <= 18 * 512, "a pane's worth, not a log's: {bytes}");
@@ -1540,22 +1556,10 @@ mod test {
         reader.sync();
 
         let mut out = Vec::new();
-        reader.copy_region(
-            LogRegion {
-                lines: 0..6,
-                columns: 0..usize::MAX,
-            },
-            &mut out,
-        );
+        reader.copy_region(LogRegion::new(0..6, 0..usize::MAX), &mut out);
         assert_eq!(out.len(), 6);
 
-        reader.copy_region(
-            LogRegion {
-                lines: 0..2,
-                columns: 0..usize::MAX,
-            },
-            &mut out,
-        );
+        reader.copy_region(LogRegion::new(0..2, 0..usize::MAX), &mut out);
         assert_eq!(
             out,
             ["linha 8", "linha 9"],
