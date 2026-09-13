@@ -2,13 +2,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::{DefaultTerminal, widgets::ListState};
+use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
 use crate::{
     ui::{
         client::{UiClient, UiCommand, UiUnit},
-        render::UiRender,
+        render::{Move, UiRender},
     },
     unit::UnitEvent,
 };
@@ -129,10 +129,10 @@ impl<C: UiClient> Ui<C> {
             return;
         }
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.select(ListState::select_next),
-            KeyCode::Up | KeyCode::Char('k') => self.select(ListState::select_previous),
-            KeyCode::Home | KeyCode::Char('g') => self.select(ListState::select_first),
-            KeyCode::End | KeyCode::Char('G') => self.select(ListState::select_last),
+            KeyCode::Down | KeyCode::Char('j') => self.select(Move::Next),
+            KeyCode::Up | KeyCode::Char('k') => self.select(Move::Previous),
+            KeyCode::Home | KeyCode::Char('g') => self.select(Move::First),
+            KeyCode::End | KeyCode::Char('G') => self.select(Move::Last),
             KeyCode::PageUp => self.render.scroll_log(1),
             KeyCode::PageDown => self.render.scroll_log(-1),
             KeyCode::Enter => self.send(|key| UiCommand::Dispatch {
@@ -145,7 +145,7 @@ impl<C: UiClient> Ui<C> {
     }
 
     /// Move the cursor, bounded by however many units there are.
-    fn select(&mut self, movement: impl FnOnce(&mut ListState)) {
+    fn select(&mut self, movement: Move) {
         self.render.select(movement, self.client.units().len());
     }
 
