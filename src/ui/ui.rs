@@ -11,12 +11,9 @@ use crossterm::{
 use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
-use crate::{
-    ui::{
-        client::{UiClient, UiCommand, UiUnit},
-        render::{Move, UiRender},
-    },
-    unit::UnitEvent,
+use crate::ui::{
+    client::{UiClient, UiCommand, UiUnit},
+    render::{Move, UiMenuChoice, UiRender},
 };
 
 /// How many lines one notch of the wheel moves the log.
@@ -144,6 +141,19 @@ impl<C: UiClient> Ui<C> {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        // Before anything else, the menu included: raw mode means the
+        // terminal no longer turns this into a signal, so if the UI does not
+        // quit on it, nothing does.
+        if Self::is_interrupt(&key) {
+            self.running = false;
+            return;
+        }
+        // The menu takes every other key while it is up, which is what makes
+        // it one: `q` closes it rather than quitting the session, and `j`
+        // moves within it rather than under it.
+        if self.render.menu_open() {
+            return self.handle_menu(key);
+        }
         if Self::is_quit(&key) {
             self.running = false;
             return;
@@ -163,18 +173,65 @@ impl<C: UiClient> Ui<C> {
             // are reading. It is free now that it no longer moves the list —
             // which was the wrong thing for it to move.
             KeyCode::End | KeyCode::Char('G') => self.render.follow_log(),
-            KeyCode::Enter => self.send(|key| UiCommand::Dispatch {
-                key,
-                event: UnitEvent::Default,
-            }),
-            // Not a dispatch: a behavior with modes answers an event by
-            // moving to the next one, and a restart is the same work in the
-            // same mode. `Start` is already that — it sees the old run out
-            // before the new one begins.
+            KeyCode::Enter => self.open_menu(),
+            // The accelerator for the entry the menu would open on: start it,
+            // or restart it in the mode it is already in. Not a dispatch,
+            // because it asks for no mode to change — `Start` sees the old
+            // run out before the new one begins, which is the whole of it.
             KeyCode::Char('r' | 'R') => self.send(|key| UiCommand::Start { key }),
-            KeyCode::Backspace => self.send(|key| UiCommand::Stop { key }),
+            // Both, because they are one key to a hand: whichever of them the
+            // keyboard put under the finger that means "get rid of this".
+            KeyCode::Backspace | KeyCode::Delete => self.send(|key| UiCommand::Stop { key }),
             _ => {}
         }
+    }
+
+    /// Act on one key while the menu has them.
+    ///
+    /// A chosen entry is sent and the menu closes. Leaving it open would
+    /// leave the cursor on a label that the press itself just made wrong —
+    /// `Start Watch` becomes the restart of a run that is now under way.
+    ///
+    /// <kbd>Esc</kbd> and <kbd>q</kbd> are the same answer as the `Cancel`
+    /// row, which is there so that this paragraph is not the only place the
+    /// way out is written down.
+    fn handle_menu(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.render.close_menu(),
+            KeyCode::Down | KeyCode::Char('j') => self.render.select_menu(Move::Next),
+            KeyCode::Up | KeyCode::Char('k') => self.render.select_menu(Move::Previous),
+            KeyCode::Enter => match self.render.menu_choice() {
+                UiMenuChoice::Send { key: unit, event } => {
+                    self.render.close_menu();
+                    self.client.send(UiCommand::Dispatch { key: unit, event });
+                }
+                UiMenuChoice::Cancel => self.render.close_menu(),
+            },
+            _ => {}
+        }
+    }
+
+    /// Open the action menu over the selected unit.
+    ///
+    /// The entries are read out of the client once, here, and then held
+    /// still: a menu is a question about a moment, and one that rebuilt
+    /// itself per frame would renumber its entries when a process exited —
+    /// moving the one under the cursor between a finger going down and coming
+    /// up.
+    ///
+    /// The buffer goes out to the client and comes back rather than being
+    /// filled through a `&mut`, because filling it in place means holding a
+    /// borrow of the screen across a read of the session, which is the one
+    /// shape the borrow checker will not have. It keeps its capacity either
+    /// way, so opening a menu again allocates nothing.
+    fn open_menu(&mut self) {
+        let Some(unit) = self.selected() else {
+            return;
+        };
+        let (key, title) = (unit.key.clone(), unit.name.clone());
+        let mut items = self.render.take_menu_items();
+        self.client.choices(&key, &mut items);
+        self.render.open_menu(key, title, items);
     }
 
     /// Act on the wheel.
@@ -209,16 +266,17 @@ impl<C: UiClient> Ui<C> {
         self.render.selected_unit(&self.client)
     }
 
-    /// <kbd>q</kbd>, <kbd>Esc</kbd> or <kbd>Ctrl-C</kbd>.
+    /// <kbd>Ctrl-C</kbd>, which quits from anywhere.
     ///
-    /// `Ctrl-C` is in here because raw mode means the terminal no longer
-    /// turns it into a signal — if the UI does not treat it as quit, nothing
-    /// does.
+    /// Apart from [`is_quit`](Self::is_quit) because it is the one key the
+    /// menu does not get to take: a popup that could swallow the only way out
+    /// of a raw mode terminal is a popup that can strand you in one.
+    fn is_interrupt(key: &KeyEvent) -> bool {
+        key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+    }
+
+    /// <kbd>q</kbd> or <kbd>Esc</kbd>, which quit only from the list.
     fn is_quit(key: &KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => true,
-            KeyCode::Char('c') => key.modifiers.contains(KeyModifiers::CONTROL),
-            _ => false,
-        }
+        matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
     }
 }

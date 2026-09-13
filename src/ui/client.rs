@@ -1,6 +1,10 @@
 use arcstr::ArcStr;
 
-use crate::{log::LogRegion, runner::RunnerState, unit::UnitEvent};
+use crate::{
+    log::LogRegion,
+    runner::RunnerState,
+    unit::{UnitChoice, UnitEvent},
+};
 
 /// One unit, as the screen needs it: what it is called, and where its run was
 /// the last time anybody looked.
@@ -51,8 +55,11 @@ pub enum UiCommand {
     Start { key: ArcStr },
     /// Stop it.
     Stop { key: ArcStr },
-    /// Hand it an event and let its behavior decide — the mode switch, for a
-    /// unit that has modes.
+    /// Hand it an event and let its behavior decide.
+    ///
+    /// What every entry of the action menu sends, because every entry came
+    /// out of the behavior in the first place — including the ones that move
+    /// a unit onto another mode, which nothing outside the behavior could do.
     Dispatch { key: ArcStr, event: UnitEvent },
 }
 
@@ -146,6 +153,23 @@ pub trait UiClient {
     /// a list that reshuffles itself is a list nobody can press
     /// <kbd>Enter</kbd> on.
     fn units(&self) -> &[UiUnit];
+
+    /// Everything that can be asked of the unit under `key` right now, for
+    /// the menu to list.
+    ///
+    /// Called when a menu opens and not per frame, which is why it may look
+    /// like work: a list of every unit's choices, rebuilt thirty times a
+    /// second to serve the one popup that might open, is work proportional to
+    /// the units to answer a question about one of them.
+    ///
+    /// Filled into a `Vec` the caller owns and reuses, so that opening a menu
+    /// again costs the refcounts and not an allocation.
+    ///
+    /// Local and instant like every other read here, which for a client with
+    /// a connection means answering from what it last synced — and filling
+    /// nothing if that is nothing, the way [`log`](UiClient::log) hands back
+    /// what it has rather than waiting for what was asked.
+    fn choices(&self, key: &str, out: &mut Vec<UnitChoice>);
 
     /// Ask for something to happen, and do not wait to find out whether it
     /// did.

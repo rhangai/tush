@@ -9,7 +9,7 @@ use crate::{
     base::Process,
     log::LogWriterRef,
     runner::{RunnerHandle, RunnerSerial, RunnerState},
-    unit::dispatch::{UnitAction, UnitEvent},
+    unit::dispatch::{UnitAction, UnitChoice, UnitEvent},
 };
 
 /// What a [`Unit`](crate::unit::Unit) does: what it spawns when started, and
@@ -71,9 +71,10 @@ impl UnitBehavior {
     /// anything a proc can be — one command, or a sequence of them — and what
     /// gives it its name.
     ///
-    /// Today it always runs the first. Choosing between them is a
-    /// [`dispatch`](UnitBehavior::dispatch) away, and that is what the `&mut
-    /// self` there is for.
+    /// It starts on the first, which is what the config wrote first, and
+    /// moves only when a [`StartMode`](UnitEvent::StartMode) picks another —
+    /// which is what the `&mut self` on [`dispatch`](UnitBehavior::dispatch)
+    /// is for.
     pub fn modes(name: impl Into<ArcStr>, modes: Vec<UnitBehavior>) -> Self {
         Self::wrap(
             name,
@@ -113,8 +114,41 @@ impl UnitBehavior {
     }
 
     /// Hand an event to the behavior, and take the action it asks for.
+    ///
+    /// [`Stop`](UnitEvent::Stop) is answered here rather than passed down,
+    /// for the same reason it is offered here: ending a run is the same work
+    /// whatever the unit runs, so no kind has to know about it and none can
+    /// accidentally refuse it.
     pub fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
+        if let UnitEvent::Stop = event {
+            return (!state.is_stopped()).then_some(UnitAction::Stop);
+        }
         self.inner.dispatch(event, state)
+    }
+
+    /// Everything that can be asked of this behavior right now, written into
+    /// `out`.
+    ///
+    /// Filled into a `Vec` the caller owns rather than returned, because the
+    /// caller is a menu that opens and closes over and over while keeping one
+    /// buffer: refilling it costs the [`ArcStr`] refcounts and nothing else.
+    /// Cleared here rather than by the caller, so that what comes back is the
+    /// list and not the list appended to whatever was there.
+    ///
+    /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, because
+    /// ending a run is not a property of the recipe. Doing it once, here, is
+    /// also what makes it the last entry of every menu — in the same place
+    /// every time, for every unit.
+    pub fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+        out.clear();
+        self.inner.choices(state, out);
+        out.push(UnitChoice {
+            verb: STOP,
+            mode: None,
+            event: UnitEvent::Stop,
+            enabled: !state.is_stopped(),
+            current: false,
+        });
     }
 
     /// Build the runner and hand back a paused handle for it.
@@ -156,6 +190,16 @@ trait UnitBehaviorKind {
     fn dispatch(&mut self, _event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         None
     }
+
+    /// The ways this behavior offers to be run, in the order a menu should
+    /// list them.
+    ///
+    /// Nothing by default, for the same reason: a proc with no way to run has
+    /// nothing to offer. Its menu is the dimmed [`Stop`](UnitEvent::Stop) the
+    /// wrapper appends, which is the honest picture of a proc that declared
+    /// no way to run.
+    fn choices(&self, _state: RunnerState, _out: &mut Vec<UnitChoice>) {}
+
     /// Which of its modes is current, for the kinds that have any.
     fn mode(&self) -> Option<ArcStr> {
         None
@@ -184,17 +228,37 @@ struct BehaviorRun {
 }
 
 impl UnitBehaviorKind for BehaviorRun {
-    /// Start it if nothing is running, and leave a running one alone.
+    /// One way to run, so one entry — and it is always available, because a
+    /// run that is up restarts.
     ///
-    /// Pressing the key again on something already up should not take it down
-    /// and bring it back: the restart is what the user did *not* ask for.
+    /// That is a change from when this was <kbd>Enter</kbd>, which refused to
+    /// touch a live run on the grounds that the restart was what the user did
+    /// *not* ask for. Off a menu it is exactly what they asked for: the entry
+    /// says `Restart`, and they put the cursor on it and pressed.
+    fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+        out.push(UnitChoice {
+            verb: verb(state),
+            mode: None,
+            event: UnitEvent::Start,
+            enabled: true,
+            current: true,
+        });
+    }
+
+    /// Start it, whatever it was doing.
     ///
-    /// Every way of not running is a way of being startable, the three
-    /// terminal states included — a run that finished, failed or was killed
-    /// is a run you can have again.
-    fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
+    /// Nothing sends this blind any more — it is one entry of a list this
+    /// behavior wrote and the user read — so there is nothing left here to
+    /// protect a running unit from.
+    ///
+    /// [`StartMode`](UnitEvent::StartMode) is refused because there are no
+    /// modes to move between: inventing an index would run the one command
+    /// under a name it does not have. [`Stop`](UnitEvent::Stop) never arrives,
+    /// having been answered by the wrapper.
+    fn dispatch(&mut self, event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         match event {
-            UnitEvent::Default => state.is_stopped().then_some(UnitAction::Start),
+            UnitEvent::Start => Some(UnitAction::Start),
+            UnitEvent::StartMode(_) | UnitEvent::Stop => None,
         }
     }
 
@@ -213,6 +277,19 @@ impl UnitBehaviorKind for BehaviorRun {
         }
         Ok(RunnerHandle::new(serial))
     }
+}
+
+/// The three words a menu entry can begin with.
+const START: &str = "start";
+const RESTART: &str = "restart";
+const STOP: &str = "stop";
+
+/// What starting is called from `state`.
+///
+/// `Restart` when there is a run to replace, which is the difference between
+/// an entry that warns you what it is about to do and one that does it.
+fn verb(state: RunnerState) -> &'static str {
+    if state.is_stopped() { START } else { RESTART }
 }
 
 /// Builds the child from an argv.
@@ -245,30 +322,50 @@ impl UnitBehaviorKind for BehaviorModes {
         Some(self.modes.get(self.index)?.name())
     }
 
-    /// Move to the next mode and run it — except the very first time.
+    /// One entry per mode, in the order the config wrote them, each naming
+    /// the mode it would run.
     ///
-    /// A unit with modes is already *on* one before it has ever run, and that
-    /// mode is the first one, which is what the config wrote first and what
-    /// the row on screen has been saying all along. Stepping past it would
-    /// make the first press start something other than what it offered, and
-    /// there would be no way to run the first mode at all without cycling the
-    /// whole way round.
-    ///
-    /// [`Stopped`](RunnerState::Stopped) is exactly that case and nothing
-    /// else: a unit reports it only while it has no run behind it, since a
-    /// handle is never in that state — one that finished says so, and says
-    /// how.
-    fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
-        if self.modes.is_empty() {
-            return None;
+    /// The mode it is on reads `Restart` while a run is up and `Start`
+    /// otherwise. The others always read `Start`, even though picking one
+    /// does take the current run down: what the entry names is the run it is
+    /// about to make, and that one is starting. The run it replaces is named
+    /// by the entry above it, which says `Restart` and is where the cursor
+    /// already was.
+    fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+        for (index, mode) in self.modes.iter().enumerate() {
+            let current = index == self.index;
+            out.push(UnitChoice {
+                verb: if current { verb(state) } else { START },
+                mode: Some(mode.name()),
+                event: UnitEvent::StartMode(index),
+                enabled: true,
+                current,
+            });
         }
+    }
+
+    /// Move onto the mode that was picked, and run it.
+    ///
+    /// Moving the index is the whole reason this is an event and not a
+    /// command: [`spawn`](UnitBehaviorKind::spawn) reads it, so picking a
+    /// mode and running it are one step and there is no window in which the
+    /// unit is on a mode it is not running.
+    ///
+    /// An index that is not a mode is refused rather than clamped. It cannot
+    /// have come from a list this behavior wrote, so it is a caller that made
+    /// one up — and running some other mode than the one asked for is a worse
+    /// answer than running none.
+    fn dispatch(&mut self, event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         match event {
-            UnitEvent::Default => {
-                if !matches!(state, RunnerState::Stopped) {
-                    self.index = (self.index + 1) % self.modes.len();
+            UnitEvent::Start => (!self.modes.is_empty()).then_some(UnitAction::Start),
+            UnitEvent::StartMode(index) => {
+                if index >= self.modes.len() {
+                    return None;
                 }
+                self.index = index;
                 Some(UnitAction::Start)
             }
+            UnitEvent::Stop => None,
         }
     }
 
@@ -278,122 +375,5 @@ impl UnitBehaviorKind for BehaviorModes {
         };
         let mode = &self.modes[self.index];
         mode.spawn(writer)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    /// Ask a behavior what it would do from `state`.
-    fn dispatch(behavior: &mut UnitBehavior, state: RunnerState) -> Option<UnitAction> {
-        behavior.dispatch(UnitEvent::Default, state)
-    }
-
-    fn run() -> UnitBehavior {
-        UnitBehavior::run("proc", vec!["true".into()])
-    }
-
-    fn modes() -> UnitBehavior {
-        UnitBehavior::modes(
-            "proc",
-            vec![
-                UnitBehavior::run("Build", vec!["true".into()]),
-                UnitBehavior::run("Watch", vec!["true".into()]),
-            ],
-        )
-    }
-
-    /// Pressing the key on something already up should not take it down and
-    /// bring it back: the restart is what was not asked for.
-    #[test]
-    fn a_plain_run_is_left_alone_while_it_is_running() {
-        let mut behavior = run();
-        for state in [
-            RunnerState::Waiting,
-            RunnerState::Started,
-            RunnerState::Running,
-            RunnerState::Killing,
-        ] {
-            assert!(dispatch(&mut behavior, state).is_none(), "{state:?}");
-        }
-    }
-
-    /// Every way of not running is a way of being startable, including the
-    /// three that mean it ran and stopped.
-    #[test]
-    fn a_plain_run_starts_again_from_any_state_that_is_not_running() {
-        let mut behavior = run();
-        for state in [
-            RunnerState::Stopped,
-            RunnerState::ExitSuccess,
-            RunnerState::ExitError(None),
-            RunnerState::Killed(None),
-        ] {
-            assert!(
-                matches!(dispatch(&mut behavior, state), Some(UnitAction::Start)),
-                "{state:?}"
-            );
-        }
-    }
-
-    /// The first press runs the mode the unit was already showing. Stepping
-    /// past it would start something other than what the row offered, and
-    /// leave no way to run the first mode without cycling all the way round.
-    #[test]
-    fn the_first_press_runs_the_mode_it_was_already_on() {
-        let mut behavior = modes();
-        assert_eq!(behavior.mode().as_deref(), Some("Build"));
-
-        assert!(matches!(
-            dispatch(&mut behavior, RunnerState::Stopped),
-            Some(UnitAction::Start)
-        ));
-        assert_eq!(
-            behavior.mode().as_deref(),
-            Some("Build"),
-            "it stepped past the first"
-        );
-    }
-
-    /// After that every press moves on, whether the run is still going or
-    /// already over — a unit with modes is a unit you cycle.
-    #[test]
-    fn every_press_after_the_first_moves_to_the_next_mode() {
-        let mut behavior = modes();
-        dispatch(&mut behavior, RunnerState::Stopped);
-
-        dispatch(&mut behavior, RunnerState::Running);
-        assert_eq!(behavior.mode().as_deref(), Some("Watch"));
-        dispatch(&mut behavior, RunnerState::ExitSuccess);
-        assert_eq!(
-            behavior.mode().as_deref(),
-            Some("Build"),
-            "it should wrap round"
-        );
-    }
-
-    /// Only `Stopped` means never run, so a unit that ran and finished cycles
-    /// like any other — the state a unit reports with no handle is the one
-    /// case, and a finished handle says how it finished instead.
-    #[test]
-    fn a_finished_run_is_not_a_first_press() {
-        let mut behavior = modes();
-        dispatch(&mut behavior, RunnerState::Killed(None));
-        assert_eq!(behavior.mode().as_deref(), Some("Watch"));
-    }
-
-    /// A proc that declared no way to run has nothing an event could ask of
-    /// it, in any state.
-    #[test]
-    fn a_noop_answers_nothing() {
-        let mut behavior = UnitBehavior::noop("proc");
-        for state in [
-            RunnerState::Stopped,
-            RunnerState::Running,
-            RunnerState::ExitSuccess,
-        ] {
-            assert!(dispatch(&mut behavior, state).is_none(), "{state:?}");
-        }
     }
 }

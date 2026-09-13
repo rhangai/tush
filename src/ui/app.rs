@@ -7,6 +7,7 @@ use crate::{
     log::{LogReader, LogRegion},
     runner::RunnerState,
     ui::client::{UiClient, UiCommand, UiLog, UiUnit},
+    unit::UnitChoice,
 };
 
 /// A [`UiClient`] over a session running in this process.
@@ -180,6 +181,17 @@ impl UiClient for UiApp {
             revision: log.revision,
             lines: &log.lines,
         })
+    }
+
+    /// Straight out of the unit, which holds the list that answers this.
+    ///
+    /// The `Err` arm is a name the map does not have, and the names came out
+    /// of the map — so it leaves `out` empty, which the menu draws as a menu
+    /// with nothing in it rather than as a crash.
+    fn choices(&self, key: &str, out: &mut Vec<UnitChoice>) {
+        if self.app.units().choices(key, out).is_err() {
+            out.clear();
+        }
     }
 
     /// Do it, and drop whatever it had to say about it.

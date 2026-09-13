@@ -25,7 +25,7 @@ mod unit;
 pub use behavior::UnitBehavior;
 
 #[allow(unused_imports)]
-pub use dispatch::{UnitAction, UnitEvent};
+pub use dispatch::{UnitAction, UnitChoice, UnitEvent};
 
 #[allow(unused_imports)]
 pub use map::UnitMap;

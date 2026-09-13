@@ -6,7 +6,7 @@ use arcstr::ArcStr;
 use crate::{
     log::LogReader,
     runner::{RunnerHandle, RunnerState},
-    unit::{UnitAction, UnitEvent, behavior::UnitBehavior, unit::Unit},
+    unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior, unit::Unit},
 };
 
 /// Every [`Unit`] in a session, by name.
@@ -77,6 +77,11 @@ impl UnitMap {
 
     pub fn dispatch(&self, key: &str, event: UnitEvent) -> Result<Option<UnitAction>> {
         self.with(key, |unit| Unit::dispatch(unit, event))
+    }
+
+    /// Everything that can be asked of the unit under `key` right now.
+    pub fn choices(&self, key: &str, out: &mut Vec<UnitChoice>) -> Result<()> {
+        self.with(key, |unit| Unit::choices(unit, out))
     }
 
     pub fn clone_handle(&self, key: &str) -> Result<Option<Arc<RunnerHandle>>> {

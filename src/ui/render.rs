@@ -27,6 +27,7 @@
 //! claimed.
 
 mod log;
+mod menu;
 mod units;
 
 use ratatui::{
@@ -39,10 +40,15 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{log::LogRegion, ui::client::UiClient};
+use arcstr::ArcStr;
+
+use crate::{log::LogRegion, ui::client::UiClient, unit::UnitChoice};
 
 #[allow(unused_imports)]
 pub use log::{UiRenderLog, UiRenderLogState};
+
+#[allow(unused_imports)]
+pub use menu::{UiMenuChoice, UiRenderMenu, UiRenderMenuState};
 
 #[allow(unused_imports)]
 pub use units::{Move, UiRenderUnits, UiRenderUnitsState};
@@ -61,6 +67,16 @@ use crate::ui::client::UiUnit;
 /// resize.
 const UNITS_WIDTH: u16 = 30;
 
+/// The mark on a selected row, and the column it lives in.
+///
+/// The trailing space is part of it: the mark needs to not touch what it
+/// marks, and every row is indented by however wide this is, selected or not,
+/// so the text stays in one column as the cursor moves over it.
+///
+/// Up here rather than in one of the panes because both lists use it, and one
+/// idiom drawn two ways is two idioms.
+const CURSOR: &str = "> ";
+
 /// The frame the panes are drawn in.
 ///
 /// What it holds is what a screen has to remember between frames and nothing
@@ -71,6 +87,8 @@ pub struct UiRender {
     units: UiRenderUnitsState,
     /// Where the log pane is looking from, and how big it came out.
     log: UiRenderLogState,
+    /// What the action menu is showing, when it is open.
+    menu: UiRenderMenuState,
     /// The areas the frame was last laid out into, and the frame they came
     /// from.
     ///
@@ -100,6 +118,7 @@ impl UiRender {
         Self {
             units: UiRenderUnitsState::default(),
             log: UiRenderLogState::default(),
+            menu: UiRenderMenuState::default(),
             areas: (Rect::ZERO, [Rect::ZERO; 3]),
             body: Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]),
             panes: Layout::horizontal([Constraint::Length(UNITS_WIDTH), Constraint::Fill(1)]),
@@ -130,6 +149,19 @@ impl UiRender {
             units_area,
             &mut self.units,
         );
+
+        // Last, because it goes over the top of both panes. Centred rather
+        // than pinned to the row it acts on: anchoring would have to dodge
+        // the bottom of the frame and the edge of the pane, and the title
+        // says which unit it is for from anywhere on screen.
+        if self.menu.is_open() {
+            let (width, height) = self.menu.size();
+            frame.render_stateful_widget(
+                UiRenderMenu::new(&self.border),
+                centered(frame.area(), width, height),
+                &mut self.menu,
+            );
+        }
     }
 
     /// The footer, the units pane and the log pane, laid out from the whole
@@ -178,6 +210,36 @@ impl UiRender {
     pub fn clamp_log(&mut self, held: usize) {
         self.log.clamp(held);
     }
+
+    /// Whether the menu has the keys.
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    /// Lend out the menu's entry buffer to be refilled.
+    pub fn take_menu_items(&mut self) -> Vec<UnitChoice> {
+        self.menu.take_items()
+    }
+
+    /// Open the menu over `key`, titled `title`, listing `items`.
+    pub fn open_menu(&mut self, key: ArcStr, title: ArcStr, items: Vec<UnitChoice>) {
+        self.menu.open(key, title, items);
+    }
+
+    /// Give the keys back to the list.
+    pub fn close_menu(&mut self) {
+        self.menu.close();
+    }
+
+    /// Move the menu cursor to the next entry that can be chosen.
+    pub fn select_menu(&mut self, movement: Move) {
+        self.menu.select(movement);
+    }
+
+    /// What <kbd>Enter</kbd> on the menu comes to.
+    pub fn menu_choice(&self) -> UiMenuChoice {
+        self.menu.chosen()
+    }
 }
 
 impl Default for UiRender {
@@ -203,6 +265,23 @@ impl Widget for UiRenderHints<'_> {
             (x, _) = buffer.set_stringn(x, area.y, &span.content, room, span.style);
         }
     }
+}
+
+/// A box of `width` by `height` in the middle of `area`, never bigger than it.
+///
+/// Clamped rather than allowed to hang off the edge, because a popup drawn
+/// past the frame is a popup with no border on one side — and the terminal it
+/// happens in is the small one, where the menu was the only thing on screen
+/// worth reading.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
 }
 
 /// How many columns are left between `x` and `right`.
@@ -258,8 +337,8 @@ fn key_hints() -> Line<'static> {
     Line::from(vec![
         Span::raw(" "),
         key_hint("↑↓", "move"),
-        key_hint("⏎", "start"),
-        key_hint("r", "restart"),
+        key_hint("⏎", "actions"),
+        key_hint("r", "(re)start"),
         key_hint("⌫", "stop"),
         key_hint("pgup/dn", "scroll"),
         key_hint("end", "follow"),

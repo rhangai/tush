@@ -10,7 +10,7 @@ use crate::{
     runner::RunnerState,
     ui::{
         client::UiUnit,
-        render::{DIGITS_MAX, decimal, room, set_clipped},
+        render::{CURSOR, DIGITS_MAX, decimal, room, set_clipped},
     },
 };
 
@@ -24,13 +24,6 @@ const DETAIL_INDENT: &str = "  ";
 
 /// What separates a name from the mode it is running in.
 const MODE_SEPARATOR: &str = " · ";
-
-/// The mark on the selected row, and the column it lives in.
-///
-/// The trailing space is part of it: the mark needs to not touch the name,
-/// and every row is indented by however wide this is, selected or not, so the
-/// names stay in one column as the cursor moves over them.
-const CURSOR: &str = "> ";
 
 /// How many rows one unit takes: its name, what qualifies it, and a gap.
 ///
@@ -157,18 +150,17 @@ impl StatefulWidget for UiRenderUnits<'_> {
 /// about a running proc that its name and its state do not already say, since
 /// two units can both be `running` and be doing entirely different work.
 ///
-/// # Two reasons there is no mode to show
+/// # Why a stopped row shows its mode
 ///
-/// A unit with no modes at all, which is most of them: its
-/// [`mode`](UiUnit::mode) is `None` and nothing is invented for it.
+/// It used to not. The argument was that a mode is something a run is *in*,
+/// so `stopped · Build` claimed work that was not happening. What the menu
+/// changed is that the mode is now what the unit will start in — the entry
+/// the menu opens with the cursor on — so the row is saying which run the
+/// next press would make, not claiming one is under way.
 ///
-/// And a unit that is [`Stopped`](RunnerState::Stopped), which is the one
-/// state where no run exists — not one that failed or was killed, but none at
-/// all. The behavior is still sitting on a mode and will start in it, but a
-/// mode is something a run is in, so a stopped row saying `stopped · Build`
-/// claims work that is not happening. The terminal states are the other way
-/// round: `exit 2 · Build` is which mode it was that failed, and that is
-/// worth keeping.
+/// The one row with no mode is the one with no modes at all, which is most of
+/// them: its [`mode`](UiUnit::mode) is `None` and nothing is invented for it.
+///
 fn draw_unit(buffer: &mut Buffer, unit: &UiUnit, area: Rect, selected: bool) {
     // The selected row is bold throughout, so the style every piece of it is
     // written with starts from there rather than being applied after.
@@ -208,11 +200,7 @@ fn draw_unit(buffer: &mut Buffer, unit: &UiUnit, area: Rect, selected: bool) {
             .0;
     }
 
-    let mode = match unit.state {
-        RunnerState::Stopped => None,
-        _ => unit.mode.as_deref(),
-    };
-    if let Some(mode) = mode {
+    if let Some(mode) = unit.mode.as_deref() {
         let dim = base.add_modifier(Modifier::DIM);
         x = buffer
             .set_stringn(x, detail, MODE_SEPARATOR, room(x, right), dim)

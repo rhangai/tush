@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use crate::{
     log::{Log, LogReader, LogWriterNotes},
     runner::{RunnerHandle, RunnerState},
-    unit::{UnitAction, UnitEvent, behavior::UnitBehavior},
+    unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior},
 };
 
 /// A named, restartable entry: one log, one behavior, one current run.
@@ -69,6 +69,18 @@ impl Unit {
     /// Hand an event to the behavior, and take the action it asks for.
     pub fn dispatch(&self, event: UnitEvent) -> Option<UnitAction> {
         self.behavior.lock().dispatch(event, self.state())
+    }
+
+    /// Everything that can be asked of this unit right now, written into
+    /// `out`.
+    ///
+    /// The state is read here rather than taken, so that the list and the
+    /// state it was built from are the same moment — a menu that offered a
+    /// `Restart` because the caller looked a frame ago is a menu that lies
+    /// about the cheapest thing it could have checked.
+    pub fn choices(&self, out: &mut Vec<UnitChoice>) {
+        let state = self.state();
+        self.behavior.lock().choices(state, out);
     }
 
     /// Start running the process
