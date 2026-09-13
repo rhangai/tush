@@ -33,6 +33,9 @@
 //! ```
 
 #![allow(dead_code)]
+// A hard error and not a warning: the point of `SmallStr` is that nothing
+// else names what is inside it, and a warning is something you walk past.
+#![deny(clippy::disallowed_types)]
 
 mod app;
 mod base;

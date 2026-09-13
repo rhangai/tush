@@ -1,1 +1,6 @@
 allow-private-module-inception = true
+
+# Everything holds names through `util::str::SmallStr`, so that what backs it
+# is one line to change. Naming the crate's own type is how that gets undone
+# a use site at a time — `str.rs` is the one module allowed to.
+disallowed-types = ["smol_str::SmolStr"]
