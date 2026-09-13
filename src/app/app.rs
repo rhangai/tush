@@ -72,23 +72,24 @@ impl App {
 
     /// Get the behavior from the config
     fn get_behavior(proc: &ConfigProc) -> UnitBehavior {
-        let name = proc.display_name();
+        let name = proc.name.clone().unwrap_or_else(|| proc.key.clone());
         let short = proc.name_short.clone();
 
-        let behavior = {
-            if let Some(run) = &proc.run {
-                UnitBehavior::run_many(name, run.commands.clone())
-            } else if let Some(modes) = &proc.modes {
-                return UnitBehavior::modes(
-                    name,
-                    modes.iter().map(|mode| {
-                        UnitBehavior::run_many(mode.name.clone(), mode.run.commands.clone())
-                            .with_short(mode.name_short.clone())
-                    }),
-                );
-            } else {
-                UnitBehavior::noop(name)
-            }
+        // Every arm falls through to the one `with_short`: a `return` here
+        // reads as the same thing and is not, since the proc's own short name
+        // is applied below.
+        let behavior = if let Some(run) = &proc.run {
+            UnitBehavior::run_many(name, run.commands.clone())
+        } else if let Some(modes) = &proc.modes {
+            UnitBehavior::modes(
+                name,
+                modes.iter().map(|mode| {
+                    UnitBehavior::run_many(mode.name.clone(), mode.run.commands.clone())
+                        .with_short(mode.name_short.clone())
+                }),
+            )
+        } else {
+            UnitBehavior::noop(name)
         };
         behavior.with_short(short)
     }

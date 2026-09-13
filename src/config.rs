@@ -152,18 +152,6 @@ pub struct ConfigProc {
     pub modes: Option<Vec<ConfigUnitMode>>,
 }
 
-impl ConfigProc {
-    /// What to call it: its name, or its key when it did not give one.
-    ///
-    /// By value, because it is handed to a
-    /// [`UnitBehavior`](crate::unit::UnitBehavior) that keeps it — an
-    /// [`ArcStr`] travels as a refcount, while a `&str` would have to be
-    /// allocated into one at the far end.
-    pub fn display_name(&self) -> ArcStr {
-        self.name.clone().unwrap_or_else(|| self.key.clone())
-    }
-}
-
 /// One named way to run a proc, switched between without redeclaring it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,8 +184,12 @@ pub struct ConfigUnitMode {
 /// a list of lists is a command each, and either way this holds the list.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
 pub struct ConfigUnitRun {
+    /// Each command as its argv, in the order they were written.
+    ///
+    /// `transparent` and not `flatten`: `run` in the file is a sequence, and
+    /// flattening asks for the keys of a map it never has.
     #[serde_as(as = "OneOrMany<_>")]
-    #[serde(flatten)]
     pub commands: SmallMatrixArcStr,
 }
