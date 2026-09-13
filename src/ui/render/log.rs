@@ -97,10 +97,6 @@ impl UiRenderLogState {
     }
 }
 
-/// What a pane with no lines in it says, so an empty one does not read as a
-/// pane that failed to draw.
-const EMPTY: &str = "no output yet";
-
 /// The log pane: a unit's output, titled with the unit rather than with the
 /// word "log", so it says which output it is about before it has any.
 pub struct UiRenderLog<'a> {
@@ -133,14 +129,22 @@ impl<'a> UiRenderLog<'a> {
     /// is room for them and where they are about the unit being looked at.
     fn draw_title(&self, buffer: &mut Buffer, area: Rect, inner: Rect) {
         let theme = self.theme;
-        let separator = &theme.symbol.separator;
+        let separator = &theme.symbols.separator;
         let plain = Style::new();
         let dim = plain.add_modifier(Modifier::DIM);
         let right = inner.right();
 
         let mut x = buffer.set_stringn(inner.x, area.y, " ", 1, plain).0;
         let Some(unit) = self.unit else {
-            let x = set_clipped(buffer, theme, x, area.y, "log", room(x, right), dim);
+            let x = set_clipped(
+                buffer,
+                theme,
+                x,
+                area.y,
+                &theme.texts.log,
+                room(x, right),
+                dim,
+            );
             buffer.set_stringn(x, area.y, " ", 1, plain);
             return;
         };
@@ -158,10 +162,10 @@ impl<'a> UiRenderLog<'a> {
             .set_stringn(x, area.y, separator, room(x, right), dim)
             .0;
 
-        let status = theme.status.get(unit.state);
-        let style = plain.fg(status.color);
+        let style = plain.fg(theme.colors.status(unit.state));
+        let label = theme.texts.status(unit.state);
         x = buffer
-            .set_stringn(x, area.y, &status.label, room(x, right), style)
+            .set_stringn(x, area.y, label, room(x, right), style)
             .0;
         if let RunnerState::ExitError(Some(code)) = unit.state {
             let mut digits = [0u8; DIGITS_MAX];
@@ -209,7 +213,8 @@ impl StatefulWidget for UiRenderLog<'_> {
         });
         if lines.is_empty() {
             let style = Style::new().add_modifier(Modifier::DIM);
-            buffer.set_stringn(text.x, text.y, EMPTY, room(text.x, text.right()), style);
+            let empty = &self.theme.texts.empty;
+            buffer.set_stringn(text.x, text.y, empty, room(text.x, text.right()), style);
             return;
         }
         for (row, line) in lines.iter().enumerate() {
@@ -242,7 +247,7 @@ fn draw_behind(buffer: &mut Buffer, theme: &UiTheme, area: Rect, scroll: usize) 
     let count = decimal(scroll, &mut digits);
 
     // " ↓ 42 ", ending one short of the corner.
-    let arrow = &theme.symbol.behind;
+    let arrow = &theme.symbols.behind;
     let width = (arrow.width() + count.width() + 1) as u16;
     let Some(x) = area.right().checked_sub(width + 1) else {
         return;

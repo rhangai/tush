@@ -23,9 +23,7 @@ pub use app::UiApp;
 pub use client::{UiClient, UiCommand, UiLog, UiUnit};
 
 #[allow(unused_imports)]
-pub use theme::{
-    UiTheme, UiThemeColors, UiThemeStatus, UiThemeStatuses, UiThemeSymbols, UiThemeUnits,
-};
+pub use theme::{UiTheme, UiThemeColors, UiThemeMenuLayout, UiThemeSymbols, UiThemeTexts};
 
 #[allow(unused_imports)]
 pub use ui::Ui;

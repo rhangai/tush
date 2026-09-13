@@ -26,11 +26,6 @@ const PAD_Y: u16 = 1;
 /// object rather than a box shrunk to fit the word `Stop`.
 const MIN_WIDTH: u16 = 28;
 
-/// The way out. Here and not in a behavior, because dismissing a popup asks
-/// nothing of a process — an event for it would be one the unit layer has to
-/// carry and ignore.
-const CANCEL: &str = "cancel";
-
 /// A blank row before the way out, so it is not what you hit aiming at
 /// `Stop`.
 const CANCEL_GAP: u16 = 1;
@@ -49,7 +44,7 @@ pub struct UiRenderMenuState {
     title: SmallStr,
     /// The entries, kept across a close so the next open refills them.
     items: Vec<UnitChoice>,
-    /// Which row: an entry, or [`CANCEL`] at `items.len()`. Only ever one
+    /// Which row: an entry, or the way out at `items.len()`. Only ever one
     /// that can be chosen.
     cursor: usize,
 }
@@ -73,7 +68,7 @@ impl UiRenderMenuState {
     ///
     /// The cursor starts on the mode the unit is already on, so two presses
     /// run what the row was offering; failing that the first enabled entry,
-    /// failing that [`CANCEL`]. Between them it never lands on a disabled
+    /// failing that the way out. Between them it never lands on a disabled
     /// row, so <kbd>Enter</kbd> is never a press that does nothing.
     pub fn open(&mut self, key: SmallStr, title: SmallStr, items: Vec<UnitChoice>) {
         self.cursor = items
@@ -147,8 +142,8 @@ impl UiRenderMenuState {
             })
             .max()
             .unwrap_or(0);
-        let cursor = theme.symbol.cursor.width() + 1;
-        let width = (entries.max(CANCEL.width()) + cursor) as u16 + PAD_X * 2;
+        let cursor = theme.symbols.cursor.width() + 1;
+        let width = (entries.max(theme.texts.cancel.width()) + cursor) as u16 + PAD_X * 2;
         // The title sits in the top border with a space either side, and the
         // two corners are not room for anything.
         let width = width.max(self.title.width() as u16 + 2).max(MIN_WIDTH) + 2;
@@ -235,7 +230,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
             draw_row(
                 buffer,
                 self.theme,
-                CANCEL,
+                &self.theme.texts.cancel,
                 None,
                 row_at(row),
                 Style::new(),
@@ -270,7 +265,7 @@ fn draw_choice(
 
 /// A verb, and what it applies to, across one row of the box.
 ///
-/// Shared with [`CANCEL`], which is no [`UnitChoice`] but has to line up with
+/// Shared with the way out, which is no [`UnitChoice`] but has to line up with
 /// them to the column. The selection is the theme's cursor, the same mark the
 /// units list uses — one way of saying "here" for both lists.
 fn draw_row(
@@ -287,10 +282,10 @@ fn draw_row(
         false => style,
     };
     let right = area.right().saturating_sub(PAD_X);
-    let mark = &theme.symbol.cursor;
+    let mark = &theme.symbols.cursor;
     let x = area.x + PAD_X;
     if selected {
-        let cursor = Style::new().fg(theme.color.cursor);
+        let cursor = Style::new().fg(theme.colors.cursor);
         buffer.set_stringn(x, area.y, mark, mark.width(), cursor);
     }
     let left = x + mark.width() as u16 + 1;

@@ -11,7 +11,7 @@ use crate::{
     ui::{
         client::UiUnit,
         render::{DIGITS_MAX, decimal, room, set_clipped},
-        theme::{UiTheme, UiThemeUnits},
+        theme::{UiTheme, UiThemeMenuLayout},
     },
 };
 
@@ -35,10 +35,10 @@ const COMPACT_HEIGHT: u16 = 1;
 const COMFORTABLE_HEIGHT: u16 = 3;
 
 /// How many lines `layout` spends on one unit.
-fn row_height(layout: UiThemeUnits) -> u16 {
+fn row_height(layout: UiThemeMenuLayout) -> u16 {
     match layout {
-        UiThemeUnits::Compact => COMPACT_HEIGHT,
-        UiThemeUnits::Comfortable => COMFORTABLE_HEIGHT,
+        UiThemeMenuLayout::Compact => COMPACT_HEIGHT,
+        UiThemeMenuLayout::Comfortable => COMFORTABLE_HEIGHT,
     }
 }
 
@@ -116,11 +116,11 @@ impl<'a> UiRenderUnits<'a> {
     /// The fallback is one way: a comfortable row wants three lines, and a pane that
     /// cannot give one row all three would show a list of one unit. Compact
     /// asks for one line and so never has to fall back to anything.
-    fn layout(&self, height: u16) -> UiThemeUnits {
-        let wanted = self.theme.units;
+    fn layout(&self, height: u16) -> UiThemeMenuLayout {
+        let wanted = self.theme.menu_layout;
         match height >= row_height(wanted) {
             true => wanted,
-            false => UiThemeUnits::Compact,
+            false => UiThemeMenuLayout::Compact,
         }
     }
 }
@@ -144,8 +144,10 @@ impl StatefulWidget for UiRenderUnits<'_> {
             let unit = &self.units[index];
             let selected = index == state.cursor;
             match layout {
-                UiThemeUnits::Compact => draw_compact(buffer, self.theme, unit, area, selected),
-                UiThemeUnits::Comfortable => {
+                UiThemeMenuLayout::Compact => {
+                    draw_compact(buffer, self.theme, unit, area, selected)
+                }
+                UiThemeMenuLayout::Comfortable => {
                     draw_comfortable(buffer, self.theme, unit, area, selected)
                 }
             }
@@ -162,22 +164,21 @@ fn draw_gutter(
     area: Rect,
     selected: bool,
 ) -> u16 {
-    let cursor = &theme.symbol.cursor;
+    let cursor = &theme.symbols.cursor;
     let x = area.x + PAD_X;
     if selected {
-        let style = Style::new().fg(theme.color.cursor);
+        let style = Style::new().fg(theme.colors.cursor);
         buffer.set_stringn(x, area.y, cursor, cursor.width(), style);
     }
 
-    let status = theme.status.get(unit.state);
-    let mark = &status.mark;
+    let mark = theme.symbols.status(unit.state);
     let x = buffer
         .set_stringn(
             x + cursor.width() as u16 + 1,
             area.y,
             mark,
             mark.width(),
-            Style::new().fg(status.color),
+            Style::new().fg(theme.colors.status(unit.state)),
         )
         .0;
     x + 1
@@ -292,10 +293,10 @@ fn draw_comfortable(
     let mode = unit.mode.as_deref().unwrap_or("");
     let status_right = set_right(buffer, y, left, right, mode, "", dim);
 
-    let status = theme.status.get(unit.state);
-    let style = Style::new().fg(status.color);
+    let style = Style::new().fg(theme.colors.status(unit.state));
+    let label = theme.texts.status(unit.state);
     let x = buffer
-        .set_stringn(left, y, &status.label, room(left, status_right), style)
+        .set_stringn(left, y, label, room(left, status_right), style)
         .0;
     if let RunnerState::ExitError(Some(code)) = unit.state {
         let mut digits = [0u8; DIGITS_MAX];
@@ -316,16 +317,15 @@ fn detail<'a>(
     unit: &'a UiUnit,
     digits: &'a mut [u8; DIGITS_MAX],
 ) -> (&'a str, &'a str, Option<Color>) {
-    let status = theme.status.get(unit.state);
+    let label = theme.texts.status(unit.state);
+    let color = theme.colors.status(unit.state);
     match unit.state {
         RunnerState::ExitError(Some(code)) => (
-            &status.label,
+            label.as_str(),
             decimal(code.get() as usize, digits),
-            Some(status.color),
+            Some(color),
         ),
-        RunnerState::ExitError(None) | RunnerState::Killed(_) => {
-            (&status.label, "", Some(status.color))
-        }
+        RunnerState::ExitError(None) | RunnerState::Killed(_) => (label.as_str(), "", Some(color)),
         _ => (
             unit.mode_short
                 .as_deref()

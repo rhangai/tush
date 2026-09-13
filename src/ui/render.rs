@@ -17,8 +17,7 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Constraint, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Widget},
 };
 use unicode_width::UnicodeWidthStr;
@@ -27,6 +26,7 @@ use crate::{
     log::LogRegion,
     ui::{client::UiClient, theme::UiTheme},
     unit::UnitChoice,
+    util::str::SmallStr,
 };
 
 #[allow(unused_imports)]
@@ -39,7 +39,6 @@ pub use menu::{UiMenuChoice, UiRenderMenu, UiRenderMenuState};
 pub use units::{Move, UiRenderUnits, UiRenderUnitsState};
 
 use crate::ui::client::UiUnit;
-use crate::util::str::SmallStr;
 
 /// How wide the units column is.
 ///
@@ -69,14 +68,13 @@ pub struct UiRender {
     body: Layout,
     panes: Layout,
     /// The border the log pane and the menu are drawn in. Untitled, because
-    /// a block's title is a [`Line`] and rendering one allocates — they write
+    /// a block's title is a [`Line`](ratatui::text::Line) and rendering one
+    /// allocates — they write
     /// their own over the border instead.
     border: Block<'static>,
     /// The same, less the right hand side: that wall is the log pane's left
     /// one, and one line is drawn once.
     units_border: Block<'static>,
-    /// The line of key bindings, which never changes at all.
-    hints: Line<'static>,
     /// Every fixed character and colour the panes draw with.
     ///
     /// Owned rather than borrowed, so that a screen is one thing to hold and
@@ -96,9 +94,10 @@ impl UiRender {
             areas: (Rect::ZERO, [Rect::ZERO; 3]),
             body: Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]),
             panes: Layout::horizontal([Constraint::Length(UNITS_WIDTH), Constraint::Fill(1)]),
-            border: Block::bordered(),
-            units_border: Block::new().borders(Borders::TOP | Borders::BOTTOM | Borders::LEFT),
-            hints: key_hints(&theme),
+            border: Block::bordered().border_set(theme.symbols.border),
+            units_border: Block::new()
+                .borders(Borders::TOP | Borders::BOTTOM | Borders::LEFT)
+                .border_set(theme.symbols.border),
             theme,
         }
     }
@@ -111,7 +110,7 @@ impl UiRender {
     pub fn draw<C: UiClient>(&mut self, frame: &mut Frame, client: &C) {
         let [footer, units_area, log_area] = self.areas(frame.area());
 
-        frame.render_widget(UiRenderHints(&self.hints), footer);
+        frame.render_widget(UiRenderHints(&self.theme), footer);
         frame.render_stateful_widget(
             UiRenderLog::new(
                 self.selected_unit(client),
@@ -225,21 +224,52 @@ impl Default for UiRender {
     }
 }
 
-/// The footer: a line put down span by span, because [`Line`]'s own
-/// rendering allocates and this one never changes.
-struct UiRenderHints<'a>(&'a Line<'a>);
+/// The footer: what the keys do, written straight into the buffer like every
+/// other pane.
+///
+/// It used to be a [`Line`](ratatui::text::Line) built once, which is what a
+/// line that never
+/// changes wants to be — until its words came from the theme, which the
+/// screen owns alongside it and so cannot be borrowed from for a `'static`.
+struct UiRenderHints<'a>(&'a UiTheme);
 
 impl Widget for UiRenderHints<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
-        let mut x = area.x;
-        for span in &self.0.spans {
-            let room = room(x, area.right());
-            if room == 0 {
-                return;
+        let theme = self.0;
+        let key = Style::new().fg(theme.colors.statusbar_key);
+        let what = Style::new().add_modifier(Modifier::DIM);
+        let mut x = area.x + 1;
+        for (symbol, text) in hints(theme) {
+            for (piece, style, gap) in [(symbol, key, " "), (text, what, "   ")] {
+                let left = room(x, area.right());
+                if left == 0 {
+                    return;
+                }
+                x = buffer.set_stringn(x, area.y, piece, left, style).0;
+                x = buffer
+                    .set_stringn(x, area.y, gap, room(x, area.right()), style)
+                    .0;
             }
-            (x, _) = buffer.set_stringn(x, area.y, &span.content, room, span.style);
         }
     }
+}
+
+/// The bindings the footer lists, in the order it lists them: the symbol that
+/// names each key, and the text that says what it does.
+///
+/// The two halves come from different lists because they are different kinds
+/// of thing — `⏎` is a character a terminal may not have, `actions` is a word.
+fn hints(theme: &UiTheme) -> [(&SmallStr, &SmallStr); 7] {
+    let (symbols, texts) = (&theme.symbols, &theme.texts);
+    [
+        (&symbols.statusbar_move, &texts.statusbar_move),
+        (&symbols.statusbar_actions, &texts.statusbar_actions),
+        (&symbols.statusbar_start, &texts.statusbar_start),
+        (&symbols.statusbar_stop, &texts.statusbar_stop),
+        (&symbols.statusbar_scroll, &texts.statusbar_scroll),
+        (&symbols.statusbar_follow, &texts.statusbar_follow),
+        (&symbols.statusbar_quit, &texts.statusbar_quit),
+    ]
 }
 
 /// Turn the log pane's two left hand corners into the tees they are.
@@ -251,8 +281,8 @@ impl Widget for UiRenderHints<'_> {
 fn join_borders(buffer: &mut Buffer, log: Rect, theme: &UiTheme) {
     let bottom = log.bottom().saturating_sub(1);
     let joins = [
-        (log.y, &theme.symbol.join_top),
-        (bottom, &theme.symbol.join_bottom),
+        (log.y, &theme.symbols.join_top),
+        (bottom, &theme.symbols.join_bottom),
     ];
     for (y, symbol) in joins {
         if let Some(cell) = buffer.cell_mut(Position::new(log.x, y)) {
@@ -297,7 +327,7 @@ fn set_clipped(
     }
     // The mark takes its own columns, so anything narrower has room for the
     // mark and nothing else.
-    let mark = &theme.symbol.ellipsis;
+    let mark = &theme.symbols.ellipsis;
     let width = mark.width();
     let (end, _) = buffer.set_stringn(x, y, text, room.saturating_sub(width), style);
     buffer.set_stringn(end, y, mark, width, style).0
@@ -323,34 +353,4 @@ fn decimal(value: usize, digits: &mut [u8; DIGITS_MAX]) -> &str {
     }
     // Every byte written is an ASCII digit.
     std::str::from_utf8(&digits[start..]).unwrap_or("?")
-}
-
-/// The bottom line: what the keys do. When a command can report having been
-/// refused, this is the line it will have to share.
-fn key_hints(theme: &UiTheme) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
-    for (key, what) in [
-        ("↑↓", "move"),
-        ("⏎", "actions"),
-        ("r", "(re)start"),
-        ("⌫", "stop"),
-        ("pgup/dn", "scroll"),
-        ("end", "follow"),
-        ("q", "quit"),
-    ] {
-        key_hint(&mut spans, key, what, theme.color.key);
-    }
-    Line::from(spans)
-}
-
-/// `key` in a colour, what it does dimmed beside it, and a gap before the
-/// next one.
-///
-/// Two styles rather than one, because a line of evenly dim text is a line
-/// nobody picks a key out of.
-fn key_hint(spans: &mut Vec<Span<'static>>, key: &'static str, what: &'static str, color: Color) {
-    spans.push(Span::styled(key, Style::new().fg(color)));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(what, Style::new().add_modifier(Modifier::DIM)));
-    spans.push(Span::raw("   "));
 }
