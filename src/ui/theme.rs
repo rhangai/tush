@@ -24,12 +24,12 @@ pub enum UiThemeUnits {
     ///
     /// Short names wherever the config gave one — this is the row they were
     /// asked for.
-    #[default]
     Compact,
-    /// Two lines and a gap: the name, then its state spelled out under it.
+    /// Two lines and a gap: the name on its own, then its state under it.
     ///
     /// Full names and full mode names, there being room for them here.
-    Roomy,
+    #[default]
+    Comfortable,
 }
 
 /// How one run state is shown.
@@ -169,7 +169,7 @@ pub struct UiThemeSymbols {
 impl Default for UiThemeSymbols {
     fn default() -> Self {
         Self {
-            cursor: SmallStr::literal(">"),
+            cursor: SmallStr::literal("▶"),
             separator: SmallStr::literal(" · "),
             join_top: SmallStr::literal("┬"),
             join_bottom: SmallStr::literal("┴"),

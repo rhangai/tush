@@ -26,23 +26,19 @@ const DETAIL_GAP: u16 = 2;
 /// dropped instead. A name is what the list is for; the mode is a reminder.
 const NAME_MIN: u16 = 8;
 
-/// How far the second line of a roomy row sits in from the name above it,
-/// which is what makes the two lines read as one row.
-const DETAIL_INDENT: &str = "  ";
-
 /// How many lines a row of each layout takes.
 ///
-/// A roomy row is two lines and the gap after them: two lines with nothing
-/// between them read as four rows rather than two. The theme picks between
-/// the layouts; what a layout costs in lines is this pane's to know.
+/// A comfortable row is two lines and the gap after them: two lines with
+/// nothing between them read as four rows rather than two. The theme picks
+/// between the layouts; what a layout costs in lines is this pane's to know.
 const COMPACT_HEIGHT: u16 = 1;
-const ROOMY_HEIGHT: u16 = 3;
+const COMFORTABLE_HEIGHT: u16 = 3;
 
 /// How many lines `layout` spends on one unit.
 fn row_height(layout: UiThemeUnits) -> u16 {
     match layout {
         UiThemeUnits::Compact => COMPACT_HEIGHT,
-        UiThemeUnits::Roomy => ROOMY_HEIGHT,
+        UiThemeUnits::Comfortable => COMFORTABLE_HEIGHT,
     }
 }
 
@@ -117,7 +113,7 @@ impl<'a> UiRenderUnits<'a> {
     /// Which layout to actually use, which is the theme's unless the pane is
     /// too short for it.
     ///
-    /// The fallback is one way: a roomy row wants three lines, and a pane that
+    /// The fallback is one way: a comfortable row wants three lines, and a pane that
     /// cannot give one row all three would show a list of one unit. Compact
     /// asks for one line and so never has to fall back to anything.
     fn layout(&self, height: u16) -> UiThemeUnits {
@@ -149,7 +145,9 @@ impl StatefulWidget for UiRenderUnits<'_> {
             let selected = index == state.cursor;
             match layout {
                 UiThemeUnits::Compact => draw_compact(buffer, self.theme, unit, area, selected),
-                UiThemeUnits::Roomy => draw_roomy(buffer, self.theme, unit, area, selected),
+                UiThemeUnits::Comfortable => {
+                    draw_comfortable(buffer, self.theme, unit, area, selected)
+                }
             }
         }
     }
@@ -194,12 +192,43 @@ fn name_style(selected: bool) -> Style {
     }
 }
 
+/// Put `first` and `second` against the right edge of row `y`, so long as
+/// doing so still leaves [`NAME_MIN`] columns for the text coming from the
+/// left, and report where that text now has to stop.
+///
+/// Two pieces because the one case that needs two is a failure with a code,
+/// whose number is written straight out of a digit buffer rather than joined
+/// onto the label.
+fn set_right(
+    buffer: &mut Buffer,
+    y: u16,
+    left: u16,
+    right: u16,
+    first: &str,
+    second: &str,
+    style: Style,
+) -> u16 {
+    let width = (first.width() + second.width()) as u16;
+    if width == 0 {
+        return right;
+    }
+    let start = right.saturating_sub(width);
+    if start < left + NAME_MIN {
+        return right;
+    }
+    let x = buffer
+        .set_stringn(start, y, first, room(start, right), style)
+        .0;
+    buffer.set_stringn(x, y, second, room(x, right), style);
+    start.saturating_sub(DETAIL_GAP)
+}
+
 /// One unit on one line: the status mark, the name, and the right hand
 /// column — set down in that order because the name takes whatever the other
 /// two leave.
 ///
 /// The short names are taken wherever the config wrote one. This is the
-/// narrowest row on the screen and the one they were asked for; the roomy
+/// narrowest row on the screen and the one they were asked for; the other
 /// layout and the log pane's title spell everything out instead.
 fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect, selected: bool) {
     let left = draw_gutter(buffer, theme, unit, area, selected);
@@ -211,18 +240,7 @@ fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect,
         Some(color) => Style::new().fg(color),
         None => Style::new().add_modifier(Modifier::DIM),
     };
-    let width = (label.width() + number.width()) as u16;
-    let mut name_right = right;
-    if width > 0 {
-        let start = right.saturating_sub(width);
-        if start >= left + NAME_MIN {
-            let x = buffer
-                .set_stringn(start, area.y, label, room(start, right), style)
-                .0;
-            buffer.set_stringn(x, area.y, number, room(x, right), style);
-            name_right = start.saturating_sub(DETAIL_GAP);
-        }
-    }
+    let name_right = set_right(buffer, area.y, left, right, label, number, style);
 
     let name = unit.name_short.as_ref().unwrap_or(&unit.name);
     let style = name_style(selected);
@@ -237,13 +255,25 @@ fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect,
     );
 }
 
-/// One unit over two lines and a gap: the name, then its state spelled out
+/// One unit over two lines and a gap: the name on its own, then its state
 /// under it.
 ///
-/// Full names on both lines. Two lines is the layout you pick when you would
+/// Both lines are anchored, which is what makes a column of these read as a
+/// list rather than as text of ragged lengths: the name has the whole width
+/// of the first line, and the second is the status word at the name's own
+/// column with the mode against the right edge. Every row is those same two
+/// marks in those same two places, whatever it has to say between them.
+///
+/// Full names and full modes. Two lines is the layout you pick when you would
 /// rather read the list than fit it, so it takes the long form of everything
 /// the config gave a short one for.
-fn draw_roomy(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect, selected: bool) {
+fn draw_comfortable(
+    buffer: &mut Buffer,
+    theme: &UiTheme,
+    unit: &UiUnit,
+    area: Rect,
+    selected: bool,
+) {
     let left = draw_gutter(buffer, theme, unit, area, selected);
     let right = area.right().saturating_sub(PAD_X);
     set_clipped(
@@ -256,29 +286,22 @@ fn draw_roomy(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect, s
         name_style(selected),
     );
 
+    // The gutter stays empty on the second line, so the two read as one row.
     let y = area.y + 1;
-    let mut x = buffer
-        .set_stringn(left, y, DETAIL_INDENT, DETAIL_INDENT.width(), Style::new())
-        .0;
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let mode = unit.mode.as_deref().unwrap_or("");
+    let status_right = set_right(buffer, y, left, right, mode, "", dim);
 
     let status = theme.status.get(unit.state);
     let style = Style::new().fg(status.color);
-    x = buffer
-        .set_stringn(x, y, &status.label, room(x, right), style)
+    let x = buffer
+        .set_stringn(left, y, &status.label, room(left, status_right), style)
         .0;
     if let RunnerState::ExitError(Some(code)) = unit.state {
         let mut digits = [0u8; DIGITS_MAX];
         let number = decimal(code.get() as usize, &mut digits);
-        x = buffer.set_stringn(x, y, number, room(x, right), style).0;
+        buffer.set_stringn(x, y, number, room(x, status_right), style);
     }
-
-    let Some(mode) = unit.mode.as_deref() else {
-        return;
-    };
-    let dim = Style::new().add_modifier(Modifier::DIM);
-    let separator = &theme.symbol.separator;
-    x = buffer.set_stringn(x, y, separator, room(x, right), dim).0;
-    set_clipped(buffer, theme, x, y, mode, room(x, right), dim);
 }
 
 /// A compact row's right hand column, in the two pieces it is written in: the
