@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
+use arcstr::ArcStr;
 
 use crate::{
     app::error::{AppError, AppErrors},
@@ -31,7 +32,7 @@ pub struct App {
     /// Built while the units are, so a group only ever names units that were
     /// added — and inverted from how the config writes it, because a config
     /// is written per proc and a group is used per group.
-    groups: HashMap<String, Vec<String>>,
+    groups: HashMap<ArcStr, Vec<ArcStr>>,
 }
 
 impl App {
@@ -59,8 +60,8 @@ impl App {
             return Err(error.into());
         }
 
-        let mut behaviors: HashMap<String, UnitBehavior> = HashMap::new();
-        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        let mut behaviors: HashMap<ArcStr, UnitBehavior> = HashMap::new();
+        let mut groups: HashMap<ArcStr, Vec<ArcStr>> = HashMap::new();
 
         for proc in &config.procs {
             let behavior = Self::get_behavior(proc);
@@ -122,7 +123,7 @@ impl App {
     }
 
     /// The keys belonging to each group.
-    pub fn groups(&self) -> &HashMap<String, Vec<String>> {
+    pub fn groups(&self) -> &HashMap<ArcStr, Vec<ArcStr>> {
         &self.groups
     }
 
@@ -134,13 +135,13 @@ impl App {
     /// completion means the second never has to wonder.
     fn validate_config(config: &Config) -> Option<AppErrors> {
         let mut errors = Vec::new();
-        let declared: HashSet<&str> = config.procs.iter().map(|proc| proc.key.as_str()).collect();
+        let declared: HashSet<&ArcStr> = config.procs.iter().map(|proc| &proc.key).collect();
 
-        let mut graph = DependencyGraph::new();
+        let mut graph: DependencyGraph<&ArcStr> = DependencyGraph::new();
         for proc in &config.procs {
             // Even a proc nothing mentions has to be in the graph, or it
             // would not be in the order that comes out of it.
-            graph.insert(proc.key.as_str());
+            graph.insert(&proc.key);
 
             if proc.run.is_some() && proc.modes.is_some() {
                 errors.push(AppError::RunAndModes {
@@ -149,7 +150,7 @@ impl App {
             }
 
             for depends in &proc.depends {
-                if !declared.contains(depends.as_str()) {
+                if !declared.contains(&depends) {
                     errors.push(AppError::UnknownDependency {
                         proc: proc.key.clone(),
                         depends: depends.clone(),
@@ -159,7 +160,7 @@ impl App {
                     // order as a proc nobody declared.
                     continue;
                 }
-                graph.add_dependency(proc.key.as_str(), depends.as_str());
+                graph.add_dependency(&proc.key, depends);
             }
         }
 
@@ -168,7 +169,7 @@ impl App {
         // what `App` keeps once there is something to start.
         let resolved = graph.resolve();
         errors.extend(resolved.cycles().map(|cycle| AppError::Cycle {
-            procs: cycle.iter().map(|key| (*key).to_owned()).collect(),
+            procs: cycle.iter().map(|i| (*i).clone()).collect(),
         }));
 
         if errors.is_empty() {

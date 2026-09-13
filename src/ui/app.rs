@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
+
 use crate::{
     app::App,
     log::{LogReader, LogRegion},
@@ -24,7 +26,7 @@ struct AppLog {
     /// Which unit it belongs to. A pane moving to another one throws this
     /// away rather than re-pointing it: a reader is a copy of one log's
     /// chunks, and the revision counted against it means nothing elsewhere.
-    key: String,
+    key: ArcStr,
     /// A reader over that unit's log, which is to say a mirror of it.
     ///
     /// The size is the reader's business and not the pane's — what bounds
@@ -147,7 +149,7 @@ impl UiClient for UiApp {
     ///
     /// The revision starts at zero for a new log, which no reader reports
     /// after a sync, so the first one always resolves.
-    fn set_log(&mut self, key: Option<&str>, region: LogRegion) {
+    fn set_log(&mut self, key: Option<ArcStr>, region: LogRegion) {
         let Some(key) = key else {
             self.log = None;
             return;
@@ -155,12 +157,12 @@ impl UiClient for UiApp {
         match &mut self.log {
             Some(log) if log.key == key => log.wanted = region,
             _ => {
-                let Some(reader) = self.app.units().log_reader(key) else {
+                let Some(reader) = self.app.units().log_reader(key.as_str()) else {
                     self.log = None;
                     return;
                 };
                 self.log = Some(AppLog {
-                    key: key.to_owned(),
+                    key,
                     reader,
                     region,
                     wanted: region,

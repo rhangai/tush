@@ -45,13 +45,13 @@ use crate::{
 /// lock is held for that and no longer, and never across an await.
 pub struct UnitMap {
     /// The units, by name.
-    units: HashMap<String, Unit>,
+    units: HashMap<ArcStr, Unit>,
 }
 
 impl UnitMap {
     /// Create an empty map, self referencing through a weak pointer.
-    pub fn new(behaviors: HashMap<String, UnitBehavior>) -> Arc<Self> {
-        let mut units: HashMap<String, Unit> = HashMap::new();
+    pub fn new(behaviors: HashMap<ArcStr, UnitBehavior>) -> Arc<Self> {
+        let mut units: HashMap<ArcStr, Unit> = HashMap::new();
         for (key, behavior) in behaviors {
             units.insert(key, Unit::new(behavior));
         }
@@ -113,8 +113,8 @@ impl UnitMap {
     /// order did not survive being put into one. A caller that shows these to
     /// a person has to impose an order of its own, or the same session will
     /// list itself differently on every render.
-    pub fn keys(&self) -> impl Iterator<Item = &str> {
-        self.units.keys().map(String::as_str)
+    pub fn keys(&self) -> impl Iterator<Item = &ArcStr> {
+        self.units.keys()
     }
 
     /// Stop every unit, and wait until each one is really gone.
@@ -160,9 +160,9 @@ mod test {
 
     /// A map with `keys` declared, each running nothing.
     fn map(keys: &[&str]) -> Arc<UnitMap> {
-        let mut behaviors: HashMap<String, UnitBehavior> = HashMap::new();
+        let mut behaviors: HashMap<ArcStr, UnitBehavior> = HashMap::new();
         for key in keys {
-            behaviors.insert((*key).to_owned(), UnitBehavior::noop(*key));
+            behaviors.insert((*key).into(), UnitBehavior::noop(*key));
         }
         UnitMap::new(behaviors)
     }

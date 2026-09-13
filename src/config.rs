@@ -59,6 +59,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use figment::{
     Figment, Provider,
     providers::{Format, Yaml},
@@ -136,22 +137,22 @@ pub struct ConfigProc {
     /// `$key$` is not a key of the file: it is how [`KeyValueMap`] hands over
     /// the name this proc was declared under in the `procs` mapping.
     #[serde(rename = "$key$")]
-    pub key: String,
+    pub key: ArcStr,
     /// The name it is shown under. `None` for the procs with nothing better
     /// to say about themselves than their key, which is most of them — see
     /// [`display_name`](ConfigProc::display_name).
     #[serde(default)]
-    pub name: Option<String>,
+    pub name: Option<ArcStr>,
     /// The groups it belongs to, for starting several procs by one name.
     ///
     /// `group` in the file, singular, because that is how it reads at the
     /// declaration of one proc.
     #[serde(default, rename = "group")]
-    pub groups: Vec<String>,
+    pub groups: Vec<ArcStr>,
     /// What has to be up before it may start, and the edges of the
     /// dependency graph.
     #[serde(default)]
-    pub depends: Vec<String>,
+    pub depends: Vec<ArcStr>,
     /// `run:` — the one way this proc runs.
     #[serde(default)]
     pub run: Option<ConfigUnitRun>,
@@ -163,8 +164,15 @@ pub struct ConfigProc {
 
 impl ConfigProc {
     /// What to call it: its name, or its key when it did not give one.
-    pub fn display_name(&self) -> &str {
-        self.name.as_deref().unwrap_or(&self.key)
+    ///
+    /// By value rather than borrowed, because what it is for is being handed
+    /// to a [`UnitBehavior`](crate::unit::UnitBehavior) that keeps it — and
+    /// an [`ArcStr`] handed over is a refcount, while a `&str` handed to the
+    /// same place has to be allocated into one. Which would be a fresh copy
+    /// of text sitting right here, made at the one point in the path where
+    /// everything else travels for free.
+    pub fn display_name(&self) -> ArcStr {
+        self.name.clone().unwrap_or_else(|| self.key.clone())
     }
 }
 
@@ -172,7 +180,7 @@ impl ConfigProc {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigUnitMode {
-    pub name: String,
+    pub name: ArcStr,
     pub run: ConfigUnitRun,
 }
 
@@ -196,11 +204,11 @@ pub struct ConfigUnitMode {
 /// a list of lists is a command each, and either way this holds the list.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ConfigUnitRun(#[serde_as(as = "OneOrMany<_>")] pub Vec<Vec<String>>);
+pub struct ConfigUnitRun(#[serde_as(as = "OneOrMany<_>")] pub Vec<Vec<ArcStr>>);
 
 impl ConfigUnitRun {
     /// The commands, each an argv.
-    pub fn commands(&self) -> &[Vec<String>] {
+    pub fn commands(&self) -> &[Vec<ArcStr>] {
         &self.0
     }
 }

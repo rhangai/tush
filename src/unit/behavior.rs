@@ -52,7 +52,7 @@ pub struct UnitBehavior {
 
 impl UnitBehavior {
     /// One command, as its argv: the program, then its arguments.
-    pub fn run(name: impl Into<ArcStr>, command: Vec<String>) -> Self {
+    pub fn run(name: impl Into<ArcStr>, command: Vec<ArcStr>) -> Self {
         Self::run_many(name, vec![command])
     }
 
@@ -61,7 +61,7 @@ impl UnitBehavior {
     ///
     /// One unit still, with one log and one state — the sequence is a
     /// [`RunnerSerial`], which is itself a single runner.
-    pub fn run_many(name: impl Into<ArcStr>, commands: Vec<Vec<String>>) -> Self {
+    pub fn run_many(name: impl Into<ArcStr>, commands: Vec<Vec<ArcStr>>) -> Self {
         Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
     }
 
@@ -180,7 +180,7 @@ impl UnitBehaviorKind for BehaviorNoop {
 /// common case to drift away from.
 struct BehaviorRun {
     /// Each command as its argv, in the order they were written.
-    commands: Vec<Vec<String>>,
+    commands: Vec<Vec<ArcStr>>,
 }
 
 impl UnitBehaviorKind for BehaviorRun {
@@ -220,12 +220,12 @@ impl UnitBehaviorKind for BehaviorRun {
 /// The first word is the program and the rest are its arguments, handed to
 /// the OS as they are: no shell, so nothing re-splits them and no quoting
 /// rule applies.
-fn command(argv: &[String]) -> Result<Command> {
+fn command(argv: &[ArcStr]) -> Result<Command> {
     let Some((program, args)) = argv.split_first() else {
         bail!("a command with no program to run");
     };
-    let mut command = Command::new(program);
-    command.args(args);
+    let mut command = Command::new(program.as_str());
+    command.args(args.iter().map(|i| i.as_str()));
     Ok(command)
 }
 

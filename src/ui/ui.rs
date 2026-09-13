@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use arcstr::ArcStr;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, widgets::ListState};
 use tokio_stream::StreamExt;
@@ -137,7 +138,7 @@ impl<C: UiClient> Ui<C> {
         let (rows, columns) = self.log_size;
         let start = self.log_scroll.saturating_sub(LOG_MARGIN);
         let region = LogRegion::new(start..self.log_scroll + rows + LOG_MARGIN, 0..columns);
-        self.client.set_log(key.as_deref(), region);
+        self.client.set_log(key, region);
     }
 
     /// Pull the log scroll back to what there is to show.
@@ -211,7 +212,7 @@ impl<C: UiClient> Ui<C> {
 
     /// Send the command `command` builds for the selected unit's key, if
     /// there is one selected.
-    fn send(&mut self, command: impl FnOnce(String) -> UiCommand) {
+    fn send(&mut self, command: impl FnOnce(ArcStr) -> UiCommand) {
         let Some(unit) = self.selected() else {
             return;
         };

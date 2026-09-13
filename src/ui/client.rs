@@ -14,7 +14,7 @@ pub struct UiUnit {
     /// The name the unit was declared under, which is how a [`UiCommand`]
     /// addresses it — and nothing else. It is not shown; see
     /// [`name`](UiUnit::name).
-    pub key: String,
+    pub key: ArcStr,
     /// What to call it on screen.
     ///
     /// Separate from the key because the config lets a proc give itself one
@@ -48,12 +48,12 @@ pub struct UiUnit {
 #[derive(Clone, Debug)]
 pub enum UiCommand {
     /// Run it, restarting it if it was already running.
-    Start { key: String },
+    Start { key: ArcStr },
     /// Stop it.
-    Stop { key: String },
+    Stop { key: ArcStr },
     /// Hand it an event and let its behavior decide — the mode switch, for a
     /// unit that has modes.
-    Dispatch { key: String, event: UnitEvent },
+    Dispatch { key: ArcStr, event: UnitEvent },
 }
 
 /// What a client has for the pane: some lines, and what they are.
@@ -175,7 +175,7 @@ pub trait UiClient {
     /// Called every frame with the current region. Deciding whether anything
     /// has to happen is the client's: it is the one holding the region, the
     /// revision it was taken at, and the connection it would have to use.
-    fn set_log(&mut self, key: Option<&str>, region: LogRegion);
+    fn set_log(&mut self, key: Option<ArcStr>, region: LogRegion);
 
     /// The lines for the pane, as of the last [`sync`](UiClient::sync).
     ///
