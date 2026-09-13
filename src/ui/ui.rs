@@ -1,7 +1,13 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
+        KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    },
+    execute,
+};
 use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
@@ -12,6 +18,12 @@ use crate::{
     },
     unit::UnitEvent,
 };
+
+/// How many lines one notch of the wheel moves the log.
+///
+/// Three, which is what a terminal scrolls by and therefore what a hand
+/// expects from one.
+const WHEEL_LINES: isize = 3;
 
 /// The terminal UI: a list of units, and the keys that act on the selected one.
 ///
@@ -54,7 +66,16 @@ impl<C: UiClient> Ui<C> {
             running: true,
         };
         let mut terminal = ratatui::init();
+        // The wheel is not reported unless it is asked for. What asking costs
+        // is the terminal's own selection: with the mouse captured, dragging
+        // over the log no longer selects it, and copying out a line takes
+        // whatever the terminal's override is — `Shift` in nearly all of
+        // them.
+        let mouse = execute!(std::io::stdout(), EnableMouseCapture);
         let result = ui.main_loop(&mut terminal, refresh).await;
+        if mouse.is_ok() {
+            let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        }
         ratatui::restore();
         result
     }
@@ -115,8 +136,10 @@ impl<C: UiClient> Ui<C> {
     fn handle(&mut self, event: Event) {
         // A key press, and only a press: terminals that report releases and
         // repeats would otherwise run every binding two or three times.
-        let Event::Key(key) = event else {
-            return;
+        let key = match event {
+            Event::Key(key) => key,
+            Event::Mouse(mouse) => return self.handle_mouse(mouse),
+            _ => return,
         };
         if key.kind != KeyEventKind::Press {
             return;
@@ -125,18 +148,44 @@ impl<C: UiClient> Ui<C> {
             self.running = false;
             return;
         }
+        // Shift with an arrow scrolls the log a line at a time, which is the
+        // fine adjustment a page is too coarse for and the wheel is the mouse
+        // version of.
+        let fine = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
+            KeyCode::Up if fine => self.render.scroll_log_lines(1),
+            KeyCode::Down if fine => self.render.scroll_log_lines(-1),
             KeyCode::Down | KeyCode::Char('j') => self.select(Move::Next),
             KeyCode::Up | KeyCode::Char('k') => self.select(Move::Previous),
-            KeyCode::Home | KeyCode::Char('g') => self.select(Move::First),
-            KeyCode::End | KeyCode::Char('G') => self.select(Move::Last),
-            KeyCode::PageUp => self.render.scroll_log(1),
-            KeyCode::PageDown => self.render.scroll_log(-1),
+            KeyCode::PageUp => self.render.scroll_log_pages(1),
+            KeyCode::PageDown => self.render.scroll_log_pages(-1),
+            // `G` for the same reason vi has it: the end of the thing you
+            // are reading. It is free now that it no longer moves the list —
+            // which was the wrong thing for it to move.
+            KeyCode::End | KeyCode::Char('G') => self.render.follow_log(),
             KeyCode::Enter => self.send(|key| UiCommand::Dispatch {
                 key,
                 event: UnitEvent::Default,
             }),
+            // Not a dispatch: a behavior with modes answers an event by
+            // moving to the next one, and a restart is the same work in the
+            // same mode. `Start` is already that — it sees the old run out
+            // before the new one begins.
+            KeyCode::Char('r' | 'R') => self.send(|key| UiCommand::Start { key }),
             KeyCode::Backspace => self.send(|key| UiCommand::Stop { key }),
+            _ => {}
+        }
+    }
+
+    /// Act on the wheel.
+    ///
+    /// It scrolls the log wherever the pointer is. The list is four rows of
+    /// names that all fit; the log is the thing with more in it than the
+    /// screen, so it is the thing a wheel is for.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.render.scroll_log_lines(WHEEL_LINES),
+            MouseEventKind::ScrollDown => self.render.scroll_log_lines(-WHEEL_LINES),
             _ => {}
         }
     }

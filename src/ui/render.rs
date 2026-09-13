@@ -154,9 +154,24 @@ impl UiRender {
         self.log.follow();
     }
 
-    /// Scroll the log pane back by `pages`, or forward by a negative one.
-    pub fn scroll_log(&mut self, pages: isize) {
-        self.log.scroll(pages);
+    /// Scroll the log pane back by `lines`, or forward by a negative number.
+    pub fn scroll_log_lines(&mut self, lines: isize) {
+        self.log.scroll_lines(lines);
+    }
+
+    /// Scroll the log pane back by `pages`, or forward by a negative number.
+    pub fn scroll_log_pages(&mut self, pages: isize) {
+        self.log.scroll_pages(pages);
+    }
+
+    /// Put the log pane back at the end and follow it again.
+    pub fn follow_log(&mut self) {
+        self.log.follow();
+    }
+
+    /// Whether the log pane is showing the end as it arrives.
+    pub fn is_following_log(&self) -> bool {
+        self.log.is_following()
     }
 
     /// The rectangle the log pane wants.
@@ -223,10 +238,12 @@ fn set_clipped(buffer: &mut Buffer, x: u16, y: u16, text: &str, room: usize, sty
 fn key_hints() -> Line<'static> {
     Line::from(vec![
         Span::raw(" "),
-        key_hint("↑/↓", "move"),
-        key_hint("enter", "start / next mode"),
-        key_hint("backspace", "stop"),
-        key_hint("pgup/pgdn", "scroll log"),
+        key_hint("↑↓", "move"),
+        key_hint("⏎", "start"),
+        key_hint("r", "restart"),
+        key_hint("⌫", "stop"),
+        key_hint("pgup/dn", "scroll"),
+        key_hint("end", "follow"),
         key_hint("q", "quit"),
     ])
 }

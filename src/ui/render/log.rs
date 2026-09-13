@@ -42,27 +42,41 @@ pub struct UiRenderLogState {
 }
 
 impl UiRenderLogState {
-    /// Put the pane back at the end of the log.
+    /// Put the pane back at the end of the log, and follow it again.
     ///
-    /// For when the selection moves: the scroll is a position in one unit's
-    /// output and means nothing in another's, and a pane that opens in the
-    /// middle of a log for no reason the user can see reads as output having
-    /// gone missing.
+    /// Two callers, and they want it for the same reason from opposite ends.
+    /// The selection moving: a scroll is a position in one unit's output and
+    /// means nothing in another's, and a pane that opens in the middle of a
+    /// log for no reason the user can see reads as output having gone
+    /// missing. And the user asking: scrolled up, a log goes on without you,
+    /// and getting back to the end of it should not be a matter of holding a
+    /// key down.
     pub fn follow(&mut self) {
         self.scroll = 0;
     }
 
-    /// Scroll back by `pages`, or forward by a negative one.
+    /// Whether the pane is showing the end of the log as it arrives.
+    pub fn is_following(&self) -> bool {
+        self.scroll == 0
+    }
+
+    /// Scroll back by `lines`, or forward by a negative number of them.
+    pub fn scroll_lines(&mut self, lines: isize) {
+        let by = lines.unsigned_abs();
+        self.scroll = if lines < 0 {
+            self.scroll.saturating_sub(by)
+        } else {
+            self.scroll.saturating_add(by)
+        };
+    }
+
+    /// Scroll back by `pages`, or forward by a negative number of them.
     ///
     /// A page is the pane less a line of overlap, which is what makes a page
     /// turn readable: a line you have just read stays on screen to land on.
-    pub fn scroll(&mut self, pages: isize) {
-        let page = self.size.0.saturating_sub(1).max(1);
-        self.scroll = if pages < 0 {
-            self.scroll.saturating_sub(page)
-        } else {
-            self.scroll.saturating_add(page)
-        };
+    pub fn scroll_pages(&mut self, pages: isize) {
+        let page = self.size.0.saturating_sub(1).max(1) as isize;
+        self.scroll_lines(pages.saturating_mul(page));
     }
 
     /// The rectangle the pane wants: what it draws, plus [`LOG_MARGIN`] lines

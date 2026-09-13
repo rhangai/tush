@@ -43,8 +43,6 @@ const ROW_HEIGHT: usize = 3;
 pub enum Move {
     Next,
     Previous,
-    First,
-    Last,
 }
 
 /// Where the units pane is looking from.
@@ -72,8 +70,6 @@ impl UiRenderUnitsState {
         self.cursor = match movement {
             Move::Next => self.cursor.saturating_add(1).min(last),
             Move::Previous => self.cursor.saturating_sub(1),
-            Move::First => 0,
-            Move::Last => last,
         };
     }
 
