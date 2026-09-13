@@ -80,7 +80,7 @@ impl App {
                 name,
                 modes
                     .iter()
-                    .map(|mode| UnitBehavior::run_many(mode.name.as_str(), mode.run.0.clone()))
+                    .map(|mode| UnitBehavior::run_many(mode.name.clone(), mode.run.0.clone()))
                     .collect(),
             );
         }

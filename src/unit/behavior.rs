@@ -52,7 +52,7 @@ pub struct UnitBehavior {
 
 impl UnitBehavior {
     /// One command, as its argv: the program, then its arguments.
-    pub fn run(name: impl Into<ArcStr>, command: Vec<ArcStr>) -> Self {
+    pub fn run(name: ArcStr, command: Vec<ArcStr>) -> Self {
         Self::run_many(name, vec![command])
     }
 
@@ -61,7 +61,7 @@ impl UnitBehavior {
     ///
     /// One unit still, with one log and one state — the sequence is a
     /// [`RunnerSerial`], which is itself a single runner.
-    pub fn run_many(name: impl Into<ArcStr>, commands: Vec<Vec<ArcStr>>) -> Self {
+    pub fn run_many(name: ArcStr, commands: Vec<Vec<ArcStr>>) -> Self {
         Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
     }
 
@@ -75,7 +75,7 @@ impl UnitBehavior {
     /// moves only when a [`StartMode`](UnitEvent::StartMode) picks another —
     /// which is what the `&mut self` on [`dispatch`](UnitBehavior::dispatch)
     /// is for.
-    pub fn modes(name: impl Into<ArcStr>, modes: Vec<UnitBehavior>) -> Self {
+    pub fn modes(name: ArcStr, modes: Vec<UnitBehavior>) -> Self {
         Self::wrap(
             name,
             UnitBehaviorInner::Modes(BehaviorModes { index: 0, modes }),
@@ -83,7 +83,7 @@ impl UnitBehavior {
     }
 
     /// A behavior that does nothing and succeeds immediately.
-    pub fn noop(name: impl Into<ArcStr>) -> Self {
+    pub fn noop(name: ArcStr) -> Self {
         Self::wrap(name, UnitBehaviorInner::Noop(BehaviorNoop {}))
     }
 
@@ -96,11 +96,8 @@ impl UnitBehavior {
     }
 
     /// Put a kind behind the wrapper the rest of the crate sees.
-    fn wrap(name: impl Into<ArcStr>, inner: UnitBehaviorInner) -> Self {
-        Self {
-            name: name.into(),
-            inner,
-        }
+    fn wrap(name: ArcStr, inner: UnitBehaviorInner) -> Self {
+        Self { name, inner }
     }
 
     /// Which of its modes is current, for a behavior that has any.

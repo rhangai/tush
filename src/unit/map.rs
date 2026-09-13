@@ -151,7 +151,8 @@ mod test {
     fn map(keys: &[&str]) -> Arc<UnitMap> {
         let mut behaviors: HashMap<ArcStr, UnitBehavior> = HashMap::new();
         for key in keys {
-            behaviors.insert((*key).into(), UnitBehavior::noop(*key));
+            let key = ArcStr::from(*key);
+            behaviors.insert(key.clone(), UnitBehavior::noop(key));
         }
         UnitMap::new(behaviors)
     }
