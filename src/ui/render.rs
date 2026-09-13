@@ -3,16 +3,16 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, HighlightSpacing, List, ListItem, Paragraph},
+    widgets::{Block, HighlightSpacing, List, ListItem, ListState},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use arcstr::ArcStr;
+
 use crate::{
+    log::LogRegion,
     runner::RunnerState,
-    ui::{
-        client::{UiClient, UiLog, UiUnit},
-        ui::Ui,
-    },
+    ui::client::{UiClient, UiLog, UiUnit},
 };
 
 /// How far the detail line sits in from the name above it.
@@ -45,68 +45,280 @@ const CURSOR: &str = "> ";
 /// resize.
 const UNITS_WIDTH: u16 = 30;
 
-/// Draw one frame: the units on the left, their log on the right, and a line
-/// at the bottom.
-pub fn draw<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>) {
-    let [body, footer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
-    let [units_area, log_area] =
-        Layout::horizontal([Constraint::Length(UNITS_WIDTH), Constraint::Fill(1)]).areas(body);
-
-    frame.render_widget(key_hints(), footer);
-
-    draw_log(frame, ui, log_area);
-
-    // Two borders and the cursor's own column; what is left is what a row has
-    // to lay itself out inside, which is why the rows are built here rather
-    // than by a widget that never learns how wide it ended up.
-    let row_width = (units_area.width as usize)
-        .saturating_sub(2)
-        .saturating_sub(CURSOR.width());
-
-    let (units, list_state) = ui.frame();
-    let items: Vec<ListItem> = units.iter().map(|unit| item(unit, row_width)).collect();
-    let list = List::new(items)
-        .block(Block::bordered())
-        .highlight_symbol(CURSOR)
-        // Always, so the cursor's column is reserved on every row and a name
-        // does not shift sideways as the selection passes over it.
-        .highlight_spacing(HighlightSpacing::Always)
-        .highlight_style(Style::new().add_modifier(Modifier::BOLD));
-    frame.render_stateful_widget(list, units_area, list_state);
+/// What a frame is drawn from, kept between frames.
+///
+/// # Why anything is kept at all
+///
+/// A frame is a `List` of `ListItem`s of `Line`s of `Span`s, and building one
+/// allocates every part of it: a string per status, per name, per mode, and a
+/// vector per line. At four frames a second over a handful of units that is a
+/// few hundred allocations a second to redraw text that did not change — and
+/// it is text that mostly does not: a name never changes, a mode changes when
+/// somebody presses a key, a state when a process does something.
+///
+/// So the list is built once and rendered by reference, and rebuilt only when
+/// what it was built from is no longer what is being shown. A screen nobody
+/// is touching allocates nothing.
+///
+/// # What is not kept
+///
+/// The log pane. Its text is new every time it changes, so caching it would
+/// mean copying the client's strings instead of borrowing them — and it is
+/// drawn straight into the buffer rather than through a widget, which
+/// allocates nothing either way. See [`draw_log`].
+pub struct UiRender {
+    /// The list, owning its text so that it outlives the frame that drew it.
+    list: List<'static>,
+    /// What each row was built from, in order.
+    rows: Vec<RowKey>,
+    /// The pane width `list` was laid out for.
+    width: usize,
+    /// The cursor into the units, which the list widget scrolls with.
+    cursor: ListState,
+    /// How many lines back from the newest the log pane is showing.
+    ///
+    /// Zero follows the end of the log. Reset whenever the selection moves,
+    /// because it is a position in one unit's output and means nothing in
+    /// another's.
+    log_scroll: usize,
+    /// How many rows and columns of text the log pane had in the last frame.
+    ///
+    /// Measured while drawing and used by the *next* frame's request, since
+    /// the size of a pane is not known until the layout that makes it. A
+    /// frame of lag, and invisible: it sizes a region that already has
+    /// [`LOG_MARGIN`] lines of slack either way, so a pane that just grew is
+    /// still covered by what was fetched for the old one.
+    log_size: (usize, usize),
 }
 
-/// The right hand pane: the selected unit's output.
+/// How many lines beyond the log pane are asked for, on each side of it.
 ///
-/// Titled with the unit rather than with the word "log", so the pane says
-/// which output it is about before it has any. A list with nothing selected
-/// has no unit to name, which only happens when there are no units at all.
+/// The part of the region that is a buffer rather than a request: with this
+/// much slack either way, a page of scrolling in either direction is already
+/// in hand and costs no round trip. Clipped to the pane's width it is a few
+/// tens of kibibytes, whatever the log behind it is.
 ///
-/// # Measuring before drawing
-///
-/// A pane's size is not known until the layout that makes it, and the region
-/// it needs was asked for a frame earlier. So the size is recorded here for
-/// the next request — a frame of lag that the margin in the region absorbs.
-fn draw_log<C: UiClient>(frame: &mut Frame, ui: &mut Ui<C>, area: Rect) {
-    let title = match ui.selected() {
-        Some(unit) => format!(" {} ", unit.name),
-        None => " log ".to_owned(),
-    };
-    let block = Block::bordered().title(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+/// On both sides because scrolling goes both ways: a region that only
+/// stretched backwards would make scrolling up free and scrolling down cost
+/// exactly what it was meant to save.
+const LOG_MARGIN: usize = 100;
 
-    ui.set_log_size(inner.height as usize, inner.width as usize);
+/// What a row was built from.
+///
+/// Everything the drawing of one reads, and nothing else — so two of these
+/// being equal means the row would come out identical, and there is no reason
+/// to build it again. The name is in here even though a unit is never
+/// renamed: a cache that depends on an invariant declared somewhere else is a
+/// cache that goes wrong when that somewhere else changes.
+#[derive(PartialEq)]
+struct RowKey {
+    name: ArcStr,
+    mode: Option<ArcStr>,
+    state: RunnerState,
+}
 
-    let scroll = ui.log_scroll();
-    let Some(log) = ui.log() else {
-        return;
-    };
-    let lines: Vec<Line> = visible(&log, scroll, inner.height as usize)
-        .iter()
-        .map(|text| Line::raw(text.as_str()))
-        .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
+impl RowKey {
+    fn of(unit: &UiUnit) -> Self {
+        Self {
+            name: unit.name.clone(),
+            mode: unit.mode.clone(),
+            state: unit.state,
+        }
+    }
+}
+
+impl UiRender {
+    /// A cache with nothing in it, which the first frame replaces.
+    pub fn new() -> Self {
+        Self {
+            list: List::default(),
+            rows: Vec::new(),
+            width: 0,
+            cursor: ListState::default().with_selected(Some(0)),
+            log_scroll: 0,
+            log_size: (0, 0),
+        }
+    }
+
+    /// Draw one frame: the units on the left, their log on the right, and a
+    /// line at the bottom.
+    ///
+    /// A method rather than a free function because of what drawing a frame
+    /// needs: the cached list, the cursor, the scroll and the measured pane
+    /// size are all here, and a function outside would have to be handed each
+    /// of them through an accessor written for no other caller.
+    ///
+    /// What it takes from outside is the client, and only to read: the units
+    /// to lay out, and the log lines to put in the pane.
+    pub fn draw<C: UiClient>(&mut self, frame: &mut Frame, client: &C) {
+        let [body, footer] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let [units_area, log_area] =
+            Layout::horizontal([Constraint::Length(UNITS_WIDTH), Constraint::Fill(1)]).areas(body);
+
+        frame.render_widget(key_hints(), footer);
+        self.draw_log(frame, client, log_area);
+
+        // Brought up to date first, then borrowed: the widget wants the list
+        // and the cursor at once, and they are different fields.
+        self.sync_list(client.units(), units_area.width as usize);
+        frame.render_stateful_widget(&self.list, units_area, &mut self.cursor);
+    }
+
+    /// The right hand pane: the selected unit's output.
+    ///
+    /// Titled with the unit rather than with the word "log", so the pane says
+    /// which output it is about before it has any. A list with nothing
+    /// selected has no unit to name, which only happens when there are no
+    /// units at all.
+    fn draw_log<C: UiClient>(&mut self, frame: &mut Frame, client: &C, area: Rect) {
+        let title = match self.selected_unit(client) {
+            Some(unit) => format!(" {} ", unit.name),
+            None => " log ".to_owned(),
+        };
+        let block = Block::bordered().title(title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        self.log_size = (inner.height as usize, inner.width as usize);
+
+        let Some(log) = client.log() else {
+            return;
+        };
+
+        // Straight into the buffer rather than through a `Paragraph`, which
+        // would want a `Line` per row and a `Span` per line to hold what are
+        // already plain strings. Nothing here is styled per row, nothing
+        // wraps, and the buffer is cleared between frames — so there is
+        // nothing a widget would do that a write does not, and a write
+        // allocates nothing.
+        let buffer = frame.buffer_mut();
+        for (row, text) in visible(&log, self.log_scroll, inner.height as usize)
+            .iter()
+            .enumerate()
+        {
+            buffer.set_stringn(
+                inner.x,
+                inner.y + row as u16,
+                text,
+                inner.width as usize,
+                Style::new(),
+            );
+        }
+    }
+
+    /// The unit the cursor is on.
+    pub fn selected_unit<'a, C: UiClient>(&self, client: &'a C) -> Option<&'a UiUnit> {
+        client.units().get(self.cursor.selected()?)
+    }
+
+    /// Move the cursor, and put the log pane back at the end.
+    ///
+    /// The scroll is a position in one unit's output. Carrying it over would
+    /// land at an offset that means nothing in the next one — and a pane that
+    /// opens in the middle of a log, for no reason the user can see, reads as
+    /// output having gone missing.
+    ///
+    /// The cursor is pulled back inside the list afterwards:
+    /// [`select_next`](ListState::select_next) and
+    /// [`select_last`](ListState::select_last) do not bound what they set —
+    /// `select_last` is literally `usize::MAX` — and leave it to the widget to
+    /// correct while rendering. Which happens, but it would mean the
+    /// selection is only right if a frame was drawn since the key that moved
+    /// it.
+    pub fn select(&mut self, movement: impl FnOnce(&mut ListState), units: usize) {
+        movement(&mut self.cursor);
+        let last = units.saturating_sub(1);
+        match self.cursor.selected() {
+            Some(index) if index > last => self.cursor.select(Some(last)),
+            None => self.cursor.select(Some(0)),
+            _ => {}
+        }
+        self.log_scroll = 0;
+    }
+
+    /// Scroll the log pane back by `pages`, or forward by a negative one.
+    ///
+    /// A page is the pane less a line of overlap, which is what makes a page
+    /// turn readable: a line you have just read stays on screen to land on.
+    pub fn scroll_log(&mut self, pages: isize) {
+        let page = self.log_size.0.saturating_sub(1).max(1);
+        self.log_scroll = if pages < 0 {
+            self.log_scroll.saturating_sub(page)
+        } else {
+            self.log_scroll.saturating_add(page)
+        };
+    }
+
+    /// The rectangle the log pane wants: what it draws, plus
+    /// [`LOG_MARGIN`] lines either side and clipped to its width.
+    pub fn log_region(&self) -> LogRegion {
+        let (rows, columns) = self.log_size;
+        let start = self.log_scroll.saturating_sub(LOG_MARGIN);
+        LogRegion::new(start..self.log_scroll + rows + LOG_MARGIN, 0..columns)
+    }
+
+    /// Pull the log scroll back to what there is to show.
+    ///
+    /// `held` is how far back the lines that came in actually reach. The
+    /// client never says how much history it has; it says what it found, and
+    /// coming back with fewer lines than were asked for is how a view learns
+    /// it reached the top.
+    ///
+    /// The limit is where the oldest line reaches the top of the pane, not
+    /// the bottom: past that the window hangs off the end of the history and
+    /// every further line of scroll buys a blank row. A log shorter than the
+    /// pane therefore does not scroll at all.
+    pub fn clamp_log(&mut self, held: usize) {
+        self.log_scroll = self.log_scroll.min(held.saturating_sub(self.log_size.0));
+    }
+
+    /// The list to render, rebuilt first if it is no longer what it should
+    /// be.
+    ///
+    /// The comparison is the whole point: it is a length, a width and a few
+    /// short fields per row, against a rebuild that is a few dozen
+    /// allocations. It is also the only place that decides — nothing else
+    /// needs to know when to invalidate, because the answer is derived from
+    /// the units themselves rather than signalled.
+    ///
+    fn sync_list(&mut self, units: &[UiUnit], width: usize) {
+        if self.width != width || !self.is_current(units) {
+            self.rebuild(units, width);
+        }
+    }
+
+    /// Whether the rows already built are the rows these units want.
+    fn is_current(&self, units: &[UiUnit]) -> bool {
+        self.rows.len() == units.len()
+            && std::iter::zip(&self.rows, units).all(|(row, unit)| *row == RowKey::of(unit))
+    }
+
+    fn rebuild(&mut self, units: &[UiUnit], width: usize) {
+        // Two borders and the cursor's own column; what is left is what a row
+        // has to lay itself out inside, which is why the rows are built here
+        // rather than by a widget that never learns how wide it ended up.
+        let row_width = width.saturating_sub(2).saturating_sub(CURSOR.width());
+
+        let items: Vec<ListItem> = units.iter().map(|unit| item(unit, row_width)).collect();
+        self.list = List::new(items)
+            .block(Block::bordered())
+            .highlight_symbol(CURSOR)
+            // Always, so the cursor's column is reserved on every row and a
+            // name does not shift sideways as the selection passes over it.
+            .highlight_spacing(HighlightSpacing::Always)
+            .highlight_style(Style::new().add_modifier(Modifier::BOLD));
+
+        self.rows.clear();
+        self.rows.extend(units.iter().map(RowKey::of));
+        self.width = width;
+    }
+}
+
+impl Default for UiRender {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// The part of a fetched region the pane is actually showing.
@@ -273,6 +485,78 @@ fn status(state: &RunnerState) -> (String, Color) {
 mod test {
     use super::*;
     use crate::log::LogRegion;
+
+    fn unit(name: &str, mode: Option<&str>, state: RunnerState) -> UiUnit {
+        UiUnit {
+            key: name.into(),
+            name: name.into(),
+            mode: mode.map(Into::into),
+            state,
+        }
+    }
+
+    fn units() -> Vec<UiUnit> {
+        vec![
+            unit("server", Some("Build"), RunnerState::Running),
+            unit("setup", None, RunnerState::ExitSuccess),
+        ]
+    }
+
+    /// Nothing changed, so nothing is rebuilt — which is the whole point:
+    /// four frames a second over a still screen should allocate nothing.
+    #[test]
+    fn a_drawn_list_stays_current_while_its_units_do() {
+        let mut render = UiRender::new();
+        let units = units();
+        render.sync_list(&units, 30);
+        assert!(render.is_current(&units));
+    }
+
+    /// Every field a row reads has to invalidate it, or the screen goes on
+    /// showing something that stopped being true.
+    #[test]
+    fn every_field_a_row_shows_invalidates_it() {
+        let mut render = UiRender::new();
+        render.sync_list(&units(), 30);
+
+        for changed in [
+            unit("server", Some("Build"), RunnerState::Killed(None)),
+            unit("server", Some("Watch"), RunnerState::Running),
+            unit("server", None, RunnerState::Running),
+            unit("renamed", Some("Build"), RunnerState::Running),
+        ] {
+            let mut units = units();
+            units[0] = changed;
+            assert!(!render.is_current(&units), "{:?}", units[0]);
+        }
+    }
+
+    /// A unit appearing or going away is a different list, even if every unit
+    /// that stayed is untouched.
+    #[test]
+    fn a_different_number_of_units_is_not_current() {
+        let mut render = UiRender::new();
+        render.sync_list(&units(), 30);
+
+        let mut more = units();
+        more.push(unit("extra", None, RunnerState::Stopped));
+        assert!(!render.is_current(&more));
+        assert!(!render.is_current(&units()[..1]));
+    }
+
+    /// The rows are laid out to a width, so a resize rebuilds them even
+    /// though no unit moved.
+    #[test]
+    fn a_resize_rebuilds_the_rows() {
+        let mut render = UiRender::new();
+        let units = units();
+        render.sync_list(&units, 30);
+        assert_eq!(render.width, 30);
+
+        render.sync_list(&units, 44);
+        assert_eq!(render.width, 44, "the new width should have been taken");
+        assert!(render.is_current(&units));
+    }
 
     /// A fetched region of `held` lines, the oldest of them at distance
     /// `start + held - 1` from the end of the log.

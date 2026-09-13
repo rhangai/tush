@@ -11,7 +11,7 @@ use crate::base::ExitReason;
 /// [`RunnerStateAtomic::store_next`] relies on that to make progress
 /// monotonic. Everything from [`ExitSuccess`](RunnerState::ExitSuccess) down
 /// is terminal.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RunnerState {
     /// Nothing was ever started (the state a unit reports with no handle).
     Stopped,
