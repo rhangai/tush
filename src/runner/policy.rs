@@ -2,14 +2,10 @@ use crate::base::ExitReason;
 
 /// What a sequence of runners does when one of them does not succeed.
 ///
-/// An enum with two variants today, and an enum rather than a `bool` because
-/// it will not stay at two: retrying a failed step, tolerating a specific
-/// exit code, treating a [`Killed`](ExitReason::Killed) differently from an
-/// [`Error`](ExitReason::Error) — each of those is a variant here, and none
-/// of them is a second boolean parameter at every call site.
-///
-/// A success never ends a sequence, whatever the policy says; the policy only
-/// gets asked about the reasons that are not.
+/// An enum and not a `bool` because it will not stay at two: retrying a
+/// failed step, tolerating a specific exit code, telling a
+/// [`Killed`](ExitReason::Killed) from an [`Error`](ExitReason::Error) — each
+/// is a variant here rather than a second boolean at every call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RunnerPolicy {
     /// Stop at the first runner that does not succeed, and leave the rest
@@ -29,10 +25,9 @@ pub enum RunnerPolicy {
 impl RunnerPolicy {
     /// Whether `reason` should end the sequence it came from.
     ///
-    /// Success never does, so the policy is only consulted about the rest.
-    /// Note that a [`Killed`](ExitReason::Killed) is currently weighed the
-    /// same as an [`Error`](ExitReason::Error): if the two ever need to part
-    /// ways, this match is where it happens.
+    /// Success never does. [`Killed`](ExitReason::Killed) currently weighs
+    /// the same as [`Error`](ExitReason::Error); this match is where they
+    /// would part ways.
     pub fn is_abort(&self, reason: ExitReason) -> bool {
         if matches!(reason, ExitReason::Success) {
             return false;

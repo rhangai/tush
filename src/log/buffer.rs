@@ -269,7 +269,7 @@ impl<W: LogBufferWriter> LogBufferAny<W> {
     ///   flushed, and the pipe is left undrained — dropping the reader closes
     ///   it, so a process still writing gets a `SIGPIPE`. That is a backstop,
     ///   not the way a run is meant to end; see
-    ///   [`LogWriterRef`](super::LogWriterRef).
+    ///   [`super::LogWriterRef`].
     /// - `Err` — something went wrong that reading cannot make sense of,
     ///   for the caller to decide about. The error comes back untouched, so
     ///   its [`kind`](io::Error::kind) is still there to match on.
@@ -277,28 +277,22 @@ impl<W: LogBufferWriter> LogBufferAny<W> {
     /// # Which errors are which
     ///
     /// A child's output normally ends by the other end disappearing, so a
-    /// broken pipe or a reset connection is reported as the end of the
-    /// stream, not as a failure — the process's exit status is what carries
-    /// that news. `Interrupted` means a signal cut the syscall short before
-    /// anything was read, so it asks for another call. Anything else is
-    /// genuinely unexpected and comes back as `Err`, leaving the buffer
-    /// untouched so a caller that wants to retry can.
+    /// broken pipe or a reset connection is the end of the stream and not a
+    /// failure — the exit status is what carries that news. `Interrupted`
+    /// asks for another call. Anything else comes back as `Err` with the
+    /// buffer untouched, so a caller that wants to retry can.
     ///
-    /// `WouldBlock` is deliberately *not* in that list. An `AsyncRead` is
-    /// supposed to answer "not yet" with `Poll::Pending`, and tokio's own
-    /// readers turn the syscall's `WouldBlock` into exactly that before it
-    /// could reach here. A reader that returns it as an error is broken,
-    /// and saying "call again" to that would spin the caller at full tilt;
-    /// surfacing it is the honest answer.
+    /// `WouldBlock` is deliberately not in that list: an `AsyncRead` answers
+    /// "not yet" with `Poll::Pending`, so a reader that returns it here is
+    /// broken, and "call again" would spin the caller at full tilt.
     ///
     /// # What carries over
     ///
-    /// Reading lands wherever the pipe happens to break, which is regularly
-    /// in the middle of a character. Those bytes stay in `buf` and the next
-    /// read appends after them, so the chunk only ever sees whole
-    /// characters. At most three bytes are ever held: past four, an
-    /// undecodable sequence is broken rather than unfinished, and the chunk
-    /// takes it as replacement characters.
+    /// Reading lands wherever the pipe breaks, regularly mid character. Those
+    /// bytes stay in `buf` and the next read appends after them, so the chunk
+    /// only ever sees whole characters. At most three are held: past four, an
+    /// undecodable sequence is broken rather than unfinished, and becomes
+    /// replacement characters.
     pub async fn read<R>(&mut self, read: &mut R) -> io::Result<bool>
     where
         R: AsyncRead + Unpin,

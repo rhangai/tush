@@ -1,16 +1,12 @@
 use crate::base::{ExitReason, Process};
 
-/// A runner
+/// Something a [`RunnerHandle`](crate::runner::RunnerHandle) can drive to
+/// completion. Moved into a Tokio task, hence `Send + 'static`.
 ///
-/// Something that can be driven to completion by a
-/// [`RunnerHandle`](crate::runner::RunnerHandle). Implementors are moved into
-/// a Tokio task, hence the `Send + 'static` bound.
-///
-/// The two methods are always used together, and only one of them wins:
-/// `run` is polled inside a `select!` against the abort signal, and if the
-/// abort fires first, `run` is dropped and `shutdown` is called on the same
-/// value. So `run` must be cancel safe in the weak sense that dropping it
-/// mid-flight has to leave the runner in a state `shutdown` can still clean up.
+/// The two methods are used together and only one wins: `run` is polled in a
+/// `select!` against the abort signal, and if the abort fires first, `run` is
+/// dropped and `shutdown` is called on the same value. So dropping `run`
+/// mid-flight must leave something `shutdown` can still clean up.
 pub trait Runner: Send + 'static {
     /// Run to completion, reporting how it ended.
     fn run(&mut self) -> impl Future<Output = anyhow::Result<ExitReason>> + Send;
@@ -18,10 +14,8 @@ pub trait Runner: Send + 'static {
     fn shutdown(&mut self) -> impl Future<Output = anyhow::Result<ExitReason>> + Send;
 }
 
-/// A process is a runner
-///
-/// `run` spawns the child and waits for it; `shutdown` is the `SIGTERM`,
-/// then `SIGKILL` sequence from [`Process::shutdown`].
+/// `run` spawns the child and waits; `shutdown` is the `SIGTERM` then
+/// `SIGKILL` sequence from [`Process::shutdown`].
 impl Runner for Process {
     async fn run(&mut self) -> anyhow::Result<ExitReason> {
         self.start().await?;
@@ -33,9 +27,8 @@ impl Runner for Process {
     }
 }
 
-/// The unit type is the no-op runner: it succeeds immediately. Useful as a
-/// placeholder for behaviors that have nothing to execute, and as the
-/// simplest thing to test the handle's state machine against.
+/// The no-op runner: succeeds immediately. A placeholder for behaviors with
+/// nothing to execute, and the simplest thing to test the handle against.
 impl Runner for () {
     async fn run(&mut self) -> anyhow::Result<ExitReason> {
         Ok(ExitReason::Success)

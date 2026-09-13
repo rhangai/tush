@@ -46,6 +46,7 @@ pub struct LocalRingBuffer<T> {
 }
 
 impl<T> LocalRingBuffer<T> {
+    /// A ring of `capacity` slots, every one already built.
     pub fn new(capacity: usize) -> Self
     where
         T: Default,
@@ -195,6 +196,7 @@ impl<'a, T> IntoIterator for &'a mut LocalRingBuffer<T> {
     }
 }
 
+/// Oldest to newest, in two slices because the contents may wrap.
 pub struct LocalRingBufferIter<'a, T> {
     /// From the oldest element to the end of the array.
     head: std::slice::Iter<'a, T>,
@@ -216,6 +218,7 @@ impl<'a, T> Iterator for LocalRingBufferIter<'a, T> {
 
 impl<T> ExactSizeIterator for LocalRingBufferIter<'_, T> {}
 
+/// The same, borrowing each element mutably.
 pub struct LocalRingBufferIterMut<'a, T> {
     /// From the oldest element to the end of the array.
     head: std::slice::IterMut<'a, T>,

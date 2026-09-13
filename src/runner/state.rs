@@ -76,15 +76,12 @@ impl TryFrom<RunnerState> for ExitReason {
     }
 }
 
-// Atomic RunnerState
-//
-// RunnerState intended to be set atomically between tasks, it is Sync so it can
-// be send across threads in an Arc
-//
-// The whole state fits in a u16: the low byte is the variant tag and the high
-// byte is the exit code (0 meaning "no code", which is why the code is a
-// NonZeroU8). Packing it this way keeps reads to a single atomic load, so any
-// task can poll the state without a lock or a channel.
+/// A [`RunnerState`] readable and writable from any task without a lock.
+///
+/// The whole state fits in a `u16`: the low byte is the variant tag and the
+/// high byte the exit code, with `0` meaning "no code" — which is why the
+/// code is a [`NonZeroU8`]. That keeps a read to one atomic load, so the
+/// render loop can poll a run's state without a lock or a channel.
 pub struct RunnerStateAtomic {
     inner: AtomicU16,
 }

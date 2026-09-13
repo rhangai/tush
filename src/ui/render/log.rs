@@ -15,25 +15,18 @@ use crate::{
     },
 };
 
-/// How many lines beyond the pane are asked for, on each side of it.
+/// How many lines beyond the pane are asked for, on each side.
 ///
-/// The part of the region that is a buffer rather than a request: with this
-/// much slack either way, a page of scrolling in either direction is already
-/// in hand and costs no round trip. Clipped to the pane's width it is a few
-/// tens of kibibytes, whatever the log behind it is.
-///
-/// On both sides because scrolling goes both ways: a region that only
-/// stretched backwards would make scrolling up free and scrolling down cost
-/// exactly what it was meant to save.
+/// The slack that makes a page of scrolling cost no round trip. On both sides
+/// because scrolling goes both ways — stretched backwards only, it would make
+/// scrolling down cost exactly what it was meant to save.
 const LOG_MARGIN: usize = 100;
 
 /// Where the log pane is looking from, and how big it turned out.
 ///
-/// The size is written back by the drawing and read by the *next* frame's
-/// request, since the size of a pane is not known until the layout that makes
-/// it. A frame of lag, and invisible: it sizes a region that already has
-/// [`LOG_MARGIN`] lines of slack either way, so a pane that just grew is
-/// still covered by what was fetched for the old one.
+/// The size is written by the drawing and read by the *next* frame's request,
+/// a pane's size not being known until the layout that makes it. The frame of
+/// lag is invisible: [`LOG_MARGIN`] covers a pane that just grew.
 #[derive(Default)]
 pub struct UiRenderLogState {
     /// How many lines back from the newest the pane is showing. Zero follows
@@ -46,13 +39,9 @@ pub struct UiRenderLogState {
 impl UiRenderLogState {
     /// Put the pane back at the end of the log, and follow it again.
     ///
-    /// Two callers, and they want it for the same reason from opposite ends.
-    /// The selection moving: a scroll is a position in one unit's output and
-    /// means nothing in another's, and a pane that opens in the middle of a
-    /// log for no reason the user can see reads as output having gone
-    /// missing. And the user asking: scrolled up, a log goes on without you,
-    /// and getting back to the end of it should not be a matter of holding a
-    /// key down.
+    /// Called when the selection moves — a scroll is a position in one unit's
+    /// output and means nothing in another's — and when the user asks,
+    /// because getting back to the end should not mean holding a key down.
     pub fn follow(&mut self) {
         self.scroll = 0;
     }
@@ -74,8 +63,8 @@ impl UiRenderLogState {
 
     /// Scroll back by `pages`, or forward by a negative number of them.
     ///
-    /// A page is the pane less a line of overlap, which is what makes a page
-    /// turn readable: a line you have just read stays on screen to land on.
+    /// A page is the pane less one line, so a line you just read stays on
+    /// screen to land on.
     pub fn scroll_pages(&mut self, pages: isize) {
         let page = self.size.0.saturating_sub(1).max(1) as isize;
         self.scroll_lines(pages.saturating_mul(page));
@@ -91,24 +80,20 @@ impl UiRenderLogState {
 
     /// Pull the scroll back to what there is to show.
     ///
-    /// `held` is how far back the lines that came in actually reach. The
-    /// client never says how much history it has; it says what it found, and
-    /// coming back with fewer lines than were asked for is how a view learns
-    /// it reached the top.
+    /// `held` is how far back the lines that came in reach. The client never
+    /// says how much history it has — coming back with fewer lines than were
+    /// asked for is how a view learns it hit the top.
     ///
-    /// The limit is where the oldest line reaches the top of the pane, not
-    /// the bottom: past that the window hangs off the end of the history and
-    /// every further line of scroll buys a blank row. A log shorter than the
-    /// pane therefore does not scroll at all.
+    /// The limit puts the oldest line at the top of the pane, not the bottom:
+    /// past that every further line of scroll buys a blank row, so a log
+    /// shorter than the pane does not scroll at all.
     pub fn clamp(&mut self, held: usize) {
         self.scroll = self.scroll.min(held.saturating_sub(self.size.0));
     }
 }
 
-/// The log pane: a unit's output, and its name over the top border.
-///
-/// Titled with the unit rather than with the word "log", so the pane says
-/// which output it is about before it has any.
+/// The log pane: a unit's output, titled with the unit rather than with the
+/// word "log", so it says which output it is about before it has any.
 pub struct UiRenderLog<'a> {
     title: &'a str,
     log: Option<UiLog<'a>>,
@@ -166,23 +151,14 @@ impl StatefulWidget for UiRenderLog<'_> {
 
 /// Say how far below the pane the end of the log is, when it is not the pane.
 ///
-/// # Why it is worth a corner of the border
+/// Scrolled up, a log goes on without you and the pane stops changing —
+/// which looks exactly like a process that has gone quiet. The confusion is
+/// the wrong way round, since the one that looks broken is the one where
+/// everything is working.
 ///
-/// Scrolled up, a log goes on without you and the pane stops changing.
-/// Nothing about that looks different from a process that has gone quiet, so
-/// the two get confused — and the confusion is the wrong way round, because
-/// the one that looks broken is the one where everything is working.
-///
-/// Only there when it is true, so its being there is the message and the
-/// number is the detail. Nothing is drawn at all while the pane is following,
-/// which is nearly always.
-///
-/// # Why the bottom, and why that number
-///
-/// The bottom because that is the edge you are away from. And the number is
-/// exact rather than a guess at one: the scroll *is* how many lines sit
-/// between the pane's last row and the newest line, so `42` means forty two
-/// lines, not roughly that many.
+/// Drawn only while scrolled, at the bottom because that is the edge you are
+/// away from. The number is exact: the scroll *is* how many lines sit between
+/// the last row and the newest line.
 fn draw_behind(buffer: &mut Buffer, area: Rect, scroll: usize) {
     if scroll == 0 {
         return;
@@ -210,19 +186,14 @@ fn draw_behind(buffer: &mut Buffer, area: Rect, scroll: usize) {
 
 /// The part of a fetched region the pane is actually showing.
 ///
-/// The region is wider than the pane on both sides — that is the margin the
-/// view scrolls within without asking again — so the visible rows are a slice
-/// out of the middle of it, and finding them is arithmetic on distances from
-/// the end of the log.
-///
-/// The lines run oldest first and the last is at distance
-/// `region.line_start`, so the line at distance `d` sits
-/// `d - region.line_start` from the end of the slice. The pane wants
+/// The region is wider than the pane on both sides, so the visible rows are a
+/// slice out of the middle of it. The lines run oldest first and the last is
+/// at distance `region.line_start`, so the line at distance `d` sits
+/// `d - region.line_start` from the end of the slice; the pane wants
 /// distances from `scroll` upwards, so that is where its last row is.
 ///
 /// Everything saturates because the region that came back need not be the one
-/// asked for: a client behind a scroll hands back what it has, and the pane
-/// draws the overlap rather than nothing.
+/// asked for — the pane draws the overlap rather than nothing.
 fn visible<'a>(log: &'a UiLog<'a>, scroll: usize, rows: usize) -> &'a [String] {
     let from_end = scroll.saturating_sub(log.region.line_start);
     let end = log.lines.len().saturating_sub(from_end);

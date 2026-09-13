@@ -11,45 +11,22 @@ use crate::{
 
 /// Every [`Unit`] in a session, by name.
 ///
-/// This is what the CLI, and later the config loader, talk to: units are
-/// [`add`](UnitMap::add)ed once and then addressed by name —
-/// [`start`](UnitMap::start), [`stop`](UnitMap::stop),
-/// [`state`](UnitMap::state).
+/// **Shared, not owned.** Every method takes `&self`, so a map behind an
+/// `Arc` can be handed to the input task, the render loop and whatever
+/// supervises a start, and all of them can address units without owning one.
 ///
-/// # Shared, not owned
-///
-/// Every method takes `&self`. A map behind an `Arc` can be handed to the
-/// input task, the render loop and whatever supervises a start, and all of
-/// them can add and address units without any of them owning it — the same
-/// bargain a `DashMap` offers, which is what this is shaped after.
-///
-/// # One lock, not a sharded one
-///
-/// A real `DashMap` splits the map into shards so that writers to different
-/// keys do not meet. That buys nothing here. The writes are the units being
-/// declared — a config file's worth, at startup, and then a rare add — while
-/// the reads are a render loop asking for state. Readers do not exclude each
-/// other under an [`RwLock`], so the contention sharding exists to fix is
-/// contention this workload does not have, and one lock is less to reason
-/// about.
-///
-/// # The units live here
-///
-/// A unit is held by value, and reached only through the map. That is what
-/// keeps the three verbs honest: nothing hands out a unit that could outlive
-/// its name, and the log and the current run have exactly one owner.
-///
-/// It works because none of the three is slow or async. Asking for a state is
-/// an atomic load, stopping is a cancellation that does not wait, and
-/// starting hands the run to a task rather than performing it — so the read
-/// lock is held for that and no longer, and never across an await.
+/// **The units live here**, held by value and reached only through the map,
+/// so nothing hands out a unit that could outlive its name and the log and
+/// the current run have exactly one owner. That works because no method is
+/// slow or async: a state is an atomic load, stopping is a cancellation that
+/// does not wait, and starting hands the run to a task rather than doing it.
 pub struct UnitMap {
     /// The units, by name.
     units: HashMap<ArcStr, Unit>,
 }
 
 impl UnitMap {
-    /// Create an empty map, self referencing through a weak pointer.
+    /// A map holding one unit per behavior.
     pub fn new(behaviors: HashMap<ArcStr, UnitBehavior>) -> Arc<Self> {
         let mut units: HashMap<ArcStr, Unit> = HashMap::new();
         for (key, behavior) in behaviors {
@@ -75,6 +52,7 @@ impl UnitMap {
         self.with(key, Unit::stop)
     }
 
+    /// Hand `event` to the unit under `key`, and report what it asks for.
     pub fn dispatch(&self, key: &str, event: UnitEvent) -> Result<Option<UnitAction>> {
         self.with(key, |unit| Unit::dispatch(unit, event))
     }
@@ -84,6 +62,7 @@ impl UnitMap {
         self.with(key, |unit| Unit::choices(unit, out))
     }
 
+    /// The handle for the current run of `key`, if it has one.
     pub fn clone_handle(&self, key: &str) -> Result<Option<Arc<RunnerHandle>>> {
         self.with(key, Unit::clone_handle)
     }
@@ -107,7 +86,7 @@ impl UnitMap {
         self.with(key, Unit::state)
     }
 
-    /// Get a new LogReader for the unit
+    /// A new reader over the log of `key`.
     pub fn log_reader(&self, key: &str) -> Option<LogReader> {
         self.with(key, Unit::log_reader).ok()
     }
@@ -152,9 +131,9 @@ impl UnitMap {
 
     /// Run `f` on the unit under `key`, or fail naming what was asked for.
     ///
-    /// An unknown name is a mistake in a config or a command, not a state a
-    /// unit can be in, so it is reported as an error rather than silently
-    /// doing nothing — once, here, for all three verbs.
+    /// An unknown name is a mistake in a config or a command and not a state
+    /// a unit can be in, so it is an error rather than a quiet no-op — said
+    /// once, here, for every method.
     fn with<T>(&self, key: &str, f: impl FnOnce(&Unit) -> T) -> Result<T> {
         let unit = self
             .units

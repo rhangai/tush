@@ -7,19 +7,20 @@
 //!
 //! # Module layout
 //!
-//! - [`mod@app`] — a [`Config`](config::Config) that has been checked, and
+//! - [`mod@app`] — a [`config::Config`] that has been checked, and
 //!   the session built from it.
 //! - [`base`] — the low level pieces: child [`Process`](base::Process)
 //!   handling and the [`ExitReason`](base::ExitReason) of a finished process.
-//! - [`mod@config`] — the config file parsed into the [`Config`](config::Config)
+//! - [`mod@config`] — the config file parsed into the [`config::Config`]
 //!   the units are declared from.
 //! - [`mod@log`] — capture of a process's output into the bounded
 //!   [`Log`](log::Log) history.
 //! - [`runner`] — the async supervision layer: the [`Runner`](runner::Runner)
 //!   trait, its [`RunnerHandle`](runner::RunnerHandle) and the
 //!   [`RunnerState`](runner::RunnerState) machine.
-//! - [`mod@unit`] — the user facing concept: a [`Unit`] is a named,
-//!   restartable entry whose [`UnitBehavior`] decides what it does.
+//! - [`mod@unit`] — the user facing concept: a [`Unit`](unit::Unit) is a
+//!   named, restartable entry whose [`UnitBehavior`](unit::UnitBehavior)
+//!   decides what it does.
 //! - [`util`] — shared data structures, currently the recycling ring buffer
 //!   the logs keep their chunks in.
 //!

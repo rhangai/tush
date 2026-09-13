@@ -9,9 +9,9 @@
 //! tush attach                               the screen, over a socket
 //! ```
 //!
-//! Only `run` does anything yet. `serve` and `attach` parse, so that the
-//! shape of the thing is settled and the flags they will need are already
-//! spelled the way they will be spelled — and then say they are not built.
+//! Only `run` does anything yet. The other two parse — so the shape is
+//! settled and their flags are already spelled the way they will be — and
+//! then say they are not built.
 
 use std::{str::FromStr, time::Duration};
 
@@ -20,21 +20,19 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::app::Target;
 
-/// How often the screen is redrawn when nothing is being pressed, by default.
+/// How often the screen redraws when nothing is being pressed.
 ///
-/// A run changes state without anybody asking — a process exits, a line is
-/// half written — and with a client that cannot push, the only way to find
-/// out is to look. Ten a second is under what a person reads as lag and, now
-/// that a frame allocates nothing, costs about what the polling does.
+/// A run changes state without anybody asking and a client cannot push, so
+/// the only way to find out is to look. Ten a second is under what reads as
+/// lag and, a frame allocating nothing, costs about what the polling does.
 const DEFAULT_FPS: f64 = 10.0;
 
-/// The most and least often a screen may be redrawn.
-///
-/// Not a matter of taste: below the floor a `Duration` from a division starts
-/// rounding to nothing, and above the ceiling a redraw is slower than the
-/// thing it is redrawing for.
+/// The most and least often a screen may redraw. Not taste: below the floor
+/// a `Duration` from a division rounds to nothing, and above the ceiling a
+/// redraw is slower than what it redraws for.
 const FPS_RANGE: std::ops::RangeInclusive<f64> = 0.01..=1000.0;
 
+/// `tush`, as the command line spells it.
 #[derive(Parser, Debug)]
 #[command(
     name = "tush",
@@ -42,10 +40,12 @@ const FPS_RANGE: std::ops::RangeInclusive<f64> = 0.01..=1000.0;
     about = "A process manager built around log tailing"
 )]
 pub struct Cli {
+    /// Which of the three ways to run was asked for.
     #[command(subcommand)]
     pub command: Command,
 }
 
+/// The three ways to run, differing in where the session and the screen are.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run a session and show it, in one process.
@@ -59,6 +59,7 @@ pub enum Command {
     Attach(AttachArgs),
 }
 
+/// Session and screen both, in this process.
 #[derive(Args, Debug)]
 pub struct RunArgs {
     #[command(flatten)]
@@ -73,12 +74,14 @@ pub struct RunArgs {
     pub no_tui: bool,
 }
 
+/// A session with no screen. Not built yet.
 #[derive(Args, Debug)]
 pub struct ServeArgs {
     #[command(flatten)]
     pub session: SessionArgs,
 }
 
+/// A screen with no session of its own. Not built yet.
 #[derive(Args, Debug)]
 pub struct AttachArgs {
     #[command(flatten)]
@@ -102,11 +105,9 @@ pub struct SessionArgs {
 
 /// How often the screen redraws.
 ///
-/// Two ways of saying one number, and they are the same number read from
-/// either end: a rate of frames, or the time between them. Which one reads
-/// better depends on what you are thinking about — `--fps 60` for a screen
-/// that has to keep up, `--refresh-rate 5s` for one nobody is watching — so
-/// both are here and neither is the real one.
+/// Two spellings of one number, and neither is the real one: `--fps 60` reads
+/// better for a screen that has to keep up, `--refresh-rate 5s` for one
+/// nobody is watching.
 #[derive(Args, Debug)]
 pub struct ScreenArgs {
     /// Frames per second.
@@ -141,16 +142,16 @@ impl ScreenArgs {
 
 /// A length of time, written the way a person writes one.
 ///
-/// A newtype so that the parsing lives with the flag it belongs to and the
-/// error says what the flag accepts. Only the two units anybody would reach
-/// for here: a screen redraws in milliseconds or in seconds, and anything
-/// slower than that is a screen nobody is looking at.
+/// A newtype so the parsing lives with the flag and the error says what the
+/// flag accepts. Only `ms` and `s`: a screen redraws in one or the other.
 #[derive(Clone, Copy, Debug)]
 pub struct Period(pub Duration);
 
 impl FromStr for Period {
     type Err = anyhow::Error;
 
+    /// `100ms` or `2s`. A number with no unit is refused rather than guessed
+    /// at, since the two readings differ by a thousand.
     fn from_str(period: &str) -> Result<Self> {
         let period = period.trim();
         let (number, millis) = match period.strip_suffix("ms") {

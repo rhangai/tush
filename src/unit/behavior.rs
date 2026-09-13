@@ -115,10 +115,9 @@ impl UnitBehavior {
 
     /// Hand an event to the behavior, and take the action it asks for.
     ///
-    /// [`Stop`](UnitEvent::Stop) is answered here rather than passed down,
-    /// for the same reason it is offered here: ending a run is the same work
-    /// whatever the unit runs, so no kind has to know about it and none can
-    /// accidentally refuse it.
+    /// [`Stop`](UnitEvent::Stop) is answered here rather than passed down:
+    /// ending a run is the same work whatever the unit runs, so no kind has
+    /// to know about it and none can refuse it by mistake.
     pub fn dispatch(&mut self, event: UnitEvent, state: RunnerState) -> Option<UnitAction> {
         if let UnitEvent::Stop = event {
             return (!state.is_stopped()).then_some(UnitAction::Stop);
@@ -126,19 +125,13 @@ impl UnitBehavior {
         self.inner.dispatch(event, state)
     }
 
-    /// Everything that can be asked of this behavior right now, written into
-    /// `out`.
+    /// Everything that can be asked of this behavior right now.
     ///
-    /// Filled into a `Vec` the caller owns rather than returned, because the
-    /// caller is a menu that opens and closes over and over while keeping one
-    /// buffer: refilling it costs the [`ArcStr`] refcounts and nothing else.
-    /// Cleared here rather than by the caller, so that what comes back is the
-    /// list and not the list appended to whatever was there.
+    /// Into a `Vec` the caller owns and reuses, so a menu that opens over and
+    /// over costs the [`ArcStr`] refcounts and no allocation.
     ///
-    /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, because
-    /// ending a run is not a property of the recipe. Doing it once, here, is
-    /// also what makes it the last entry of every menu — in the same place
-    /// every time, for every unit.
+    /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, which is
+    /// also what makes it the last entry of every menu.
     pub fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
         out.clear();
         self.inner.choices(state, out);
@@ -191,13 +184,10 @@ trait UnitBehaviorKind {
         None
     }
 
-    /// The ways this behavior offers to be run, in the order a menu should
-    /// list them.
+    /// The ways this behavior offers to be run, in the order to list them.
     ///
-    /// Nothing by default, for the same reason: a proc with no way to run has
-    /// nothing to offer. Its menu is the dimmed [`Stop`](UnitEvent::Stop) the
-    /// wrapper appends, which is the honest picture of a proc that declared
-    /// no way to run.
+    /// Nothing by default: a proc with no way to run has nothing to offer,
+    /// and a menu of one dim `Stop` is the honest picture of it.
     fn choices(&self, _state: RunnerState, _out: &mut Vec<UnitChoice>) {}
 
     /// Which of its modes is current, for the kinds that have any.
@@ -228,13 +218,9 @@ struct BehaviorRun {
 }
 
 impl UnitBehaviorKind for BehaviorRun {
-    /// One way to run, so one entry — and it is always available, because a
-    /// run that is up restarts.
-    ///
-    /// That is a change from when this was <kbd>Enter</kbd>, which refused to
-    /// touch a live run on the grounds that the restart was what the user did
-    /// *not* ask for. Off a menu it is exactly what they asked for: the entry
-    /// says `Restart`, and they put the cursor on it and pressed.
+    /// One way to run, so one entry, always available: a run that is up
+    /// restarts. Blind <kbd>Enter</kbd> used to refuse that; off a menu the
+    /// entry says `Restart` and the cursor was put on it.
     fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
         out.push(UnitChoice {
             verb: verb(state),
@@ -245,16 +231,11 @@ impl UnitBehaviorKind for BehaviorRun {
         });
     }
 
-    /// Start it, whatever it was doing.
+    /// Start it, whatever it was doing: nothing sends this blind any more.
     ///
-    /// Nothing sends this blind any more — it is one entry of a list this
-    /// behavior wrote and the user read — so there is nothing left here to
-    /// protect a running unit from.
-    ///
-    /// [`StartMode`](UnitEvent::StartMode) is refused because there are no
-    /// modes to move between: inventing an index would run the one command
-    /// under a name it does not have. [`Stop`](UnitEvent::Stop) never arrives,
-    /// having been answered by the wrapper.
+    /// [`StartMode`](UnitEvent::StartMode) is refused for want of modes to
+    /// move between; [`Stop`](UnitEvent::Stop) never arrives, the wrapper
+    /// having answered it.
     fn dispatch(&mut self, event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         match event {
             UnitEvent::Start => Some(UnitAction::Start),
@@ -284,10 +265,7 @@ const START: &str = "start";
 const RESTART: &str = "restart";
 const STOP: &str = "stop";
 
-/// What starting is called from `state`.
-///
-/// `Restart` when there is a run to replace, which is the difference between
-/// an entry that warns you what it is about to do and one that does it.
+/// `Restart` when there is a run to replace, so the entry warns you.
 fn verb(state: RunnerState) -> &'static str {
     if state.is_stopped() { START } else { RESTART }
 }
@@ -322,15 +300,11 @@ impl UnitBehaviorKind for BehaviorModes {
         Some(self.modes.get(self.index)?.name())
     }
 
-    /// One entry per mode, in the order the config wrote them, each naming
-    /// the mode it would run.
+    /// One entry per mode, in the order the config wrote them.
     ///
-    /// The mode it is on reads `Restart` while a run is up and `Start`
-    /// otherwise. The others always read `Start`, even though picking one
-    /// does take the current run down: what the entry names is the run it is
-    /// about to make, and that one is starting. The run it replaces is named
-    /// by the entry above it, which says `Restart` and is where the cursor
-    /// already was.
+    /// The mode it is on reads `Restart` while a run is up. The others read
+    /// `Start` even though picking one takes that run down — the entry names
+    /// the run it is about to make, and that one is starting.
     fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
         for (index, mode) in self.modes.iter().enumerate() {
             let current = index == self.index;
@@ -346,15 +320,12 @@ impl UnitBehaviorKind for BehaviorModes {
 
     /// Move onto the mode that was picked, and run it.
     ///
-    /// Moving the index is the whole reason this is an event and not a
-    /// command: [`spawn`](UnitBehaviorKind::spawn) reads it, so picking a
-    /// mode and running it are one step and there is no window in which the
-    /// unit is on a mode it is not running.
+    /// Moving the index is why this is an event and not a command:
+    /// [`spawn`](UnitBehaviorKind::spawn) reads it, so there is no window in
+    /// which the unit is on a mode it is not running.
     ///
-    /// An index that is not a mode is refused rather than clamped. It cannot
-    /// have come from a list this behavior wrote, so it is a caller that made
-    /// one up — and running some other mode than the one asked for is a worse
-    /// answer than running none.
+    /// An index that is not a mode is refused rather than clamped — it cannot
+    /// have come from a list this behavior wrote.
     fn dispatch(&mut self, event: UnitEvent, _state: RunnerState) -> Option<UnitAction> {
         match event {
             UnitEvent::Start => (!self.modes.is_empty()).then_some(UnitAction::Start),

@@ -1,30 +1,13 @@
 //! The screen, as widgets.
 //!
-//! Each pane is a [`Widget`] of its own — [`UiRenderUnits`] and
-//! [`UiRenderLog`] — with whatever it has to remember between frames as its
-//! [`StatefulWidget::State`]. [`UiRender`] is the frame they sit in: it owns
-//! the layout, holds their states, and puts each one in its area.
+//! Each pane is a [`Widget`] of its own, with whatever it remembers between
+//! frames as its `StatefulWidget::State`. [`UiRender`] is the frame they
+//! sit in: it owns the layout, holds their states, and places each one.
 //!
-//! # Why they are widgets
-//!
-//! Because that is the seam ratatui already draws, and it is a good one: a
-//! pane that renders into an area and a buffer needs nothing else at all, so
-//! it can be drawn on its own in a test and read straight back. The
-//! alternative — one struct with a `draw_this` and a `draw_that` reaching
-//! into its own fields — composes with nothing and can only be tested through
-//! a whole terminal.
-//!
-//! # Why none of them build anything
-//!
-//! Every pane writes into the buffer rather than assembling text to hand to a
-//! widget that will. A `Line` of `Span`s allocates in the building and again
-//! in the rendering, several hundred times a second, to say what it said last
-//! frame. Written directly there is nothing to allocate and so nothing to
-//! cache — which is what took a cache, a copy of every row, and the
-//! comparison that decided when the copy went stale, back out of this module.
-//!
-//! `drawing_a_frame_allocates_nothing` is where that is checked rather than
-//! claimed.
+//! None of them build text to hand to a widget that would render it. A `Line`
+//! of `Span`s allocates in the building and again in the rendering, several
+//! hundred times a second, to say what it said last frame — writing into the
+//! buffer allocates nothing and so needs no cache either.
 
 mod log;
 mod menu;
@@ -55,33 +38,24 @@ pub use units::{Move, UiRenderUnits, UiRenderUnitsState};
 
 use crate::ui::client::UiUnit;
 
-/// How wide the units column is, in columns.
+/// How wide the units column is.
 ///
-/// A fixed width rather than a share of the terminal, because what has to fit
-/// is a name — which does not grow when the window does. A proportional split
-/// would spend half a wide terminal on whitespace that the log could have
-/// used.
-///
-/// It is also what makes the list stay put: a name lands in the same place
-/// whatever else is on screen, so the cursor is not somewhere new after a
-/// resize.
+/// Fixed rather than a share of the terminal, because what has to fit is a
+/// name and a name does not grow when the window does. It also keeps the list
+/// still: a name lands in the same place whatever else is on screen.
 const UNITS_WIDTH: u16 = 30;
 
-/// The mark on a selected row, and the column it lives in.
+/// The mark on a selected row. The trailing space is part of it, and every
+/// row is indented by its width so the text stays in one column.
 ///
-/// The trailing space is part of it: the mark needs to not touch what it
-/// marks, and every row is indented by however wide this is, selected or not,
-/// so the text stays in one column as the cursor moves over it.
-///
-/// Up here rather than in one of the panes because both lists use it, and one
-/// idiom drawn two ways is two idioms.
+/// Up here because both lists use it.
 const CURSOR: &str = "> ";
 
 /// The frame the panes are drawn in.
 ///
-/// What it holds is what a screen has to remember between frames and nothing
-/// else: the two pane states, the layout, and the two things that are built
-/// once because building them allocates.
+/// Holds what a screen must remember between frames and nothing else: the
+/// pane states, the layout, and the two things built once because building
+/// them allocates.
 pub struct UiRender {
     /// Where the units pane is looking from.
     units: UiRenderUnitsState,
@@ -89,24 +63,17 @@ pub struct UiRender {
     log: UiRenderLogState,
     /// What the action menu is showing, when it is open.
     menu: UiRenderMenuState,
-    /// The areas the frame was last laid out into, and the frame they came
-    /// from.
-    ///
-    /// [`Layout::areas`] allocates on every call even when its own solver
-    /// cache hits, so the answer is kept rather than asked for again: it only
-    /// changes when the terminal is resized.
+    /// The areas last laid out, and the frame they came from. Kept because
+    /// [`Layout::areas`] allocates on every call even when its solver cache
+    /// hits, and they only change on a resize.
     areas: (Rect, [Rect; 3]),
-    /// The two splits the frame is laid out with.
-    ///
-    /// Built once because a [`Layout`] owns a `Vec` of its constraints, so
-    /// constructing one per frame is two allocations to describe a split that
-    /// is the same split every time.
+    /// The two splits the frame is laid out with, built once: a [`Layout`]
+    /// owns a `Vec` of its constraints, and the split never changes.
     body: Layout,
     panes: Layout,
-    /// The border both panes are drawn in, lent to each of them.
-    ///
-    /// Untitled: a block's title is a [`Line`], and rendering one allocates,
-    /// so the log pane writes its own over the border.
+    /// The border every pane is drawn in. Untitled, because a block's title
+    /// is a [`Line`] and rendering one allocates — the panes write their own
+    /// over the border instead.
     border: Block<'static>,
     /// The line of key bindings, which never changes at all.
     hints: Line<'static>,
@@ -150,10 +117,8 @@ impl UiRender {
             &mut self.units,
         );
 
-        // Last, because it goes over the top of both panes. Centred rather
-        // than pinned to the row it acts on: anchoring would have to dodge
-        // the bottom of the frame and the edge of the pane, and the title
-        // says which unit it is for from anywhere on screen.
+        // Last, because it goes over both panes. Centred rather than pinned
+        // to the row it acts on: the title says which unit it is for.
         if self.menu.is_open() {
             let (width, height) = self.menu.size();
             frame.render_stateful_widget(
@@ -248,10 +213,8 @@ impl Default for UiRender {
     }
 }
 
-/// The footer: a line put down span by span.
-///
-/// A widget of its own because [`Line`]'s own rendering allocates, and this
-/// one never changes — so it is written the way the panes are.
+/// The footer: a line put down span by span, because [`Line`]'s own
+/// rendering allocates and this one never changes.
 struct UiRenderHints<'a>(&'a Line<'a>);
 
 impl Widget for UiRenderHints<'_> {
@@ -267,12 +230,8 @@ impl Widget for UiRenderHints<'_> {
     }
 }
 
-/// A box of `width` by `height` in the middle of `area`, never bigger than it.
-///
-/// Clamped rather than allowed to hang off the edge, because a popup drawn
-/// past the frame is a popup with no border on one side — and the terminal it
-/// happens in is the small one, where the menu was the only thing on screen
-/// worth reading.
+/// A box of `width` by `height` in the middle of `area`, clamped to it —
+/// a popup hanging off the frame is a popup missing a border.
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
@@ -292,9 +251,8 @@ fn room(x: u16, right: u16) -> usize {
 /// Put `text` down in at most `room` columns, ending in an ellipsis if it had
 /// to be cut, and report where it ended.
 ///
-/// The buffer clips on its own; what it will not do is say that it clipped.
-/// A name that simply stops looks like a name that is spelled that way, and
-/// the mark is the difference.
+/// The buffer clips on its own but will not say that it clipped, and a name
+/// that simply stops looks like a name spelled that way.
 fn set_clipped(buffer: &mut Buffer, x: u16, y: u16, text: &str, room: usize, style: Style) -> u16 {
     if text.width() <= room {
         return buffer.set_stringn(x, y, text, room, style).0;
@@ -310,10 +268,8 @@ const DIGITS_MAX: usize = 20;
 
 /// A number as decimal digits, written into a buffer the caller owns.
 ///
-/// Done this way because the alternative is a `format!` on paths that run per
-/// row per frame, to say numbers that mostly have not changed since the last
-/// one. Returns the used tail of `digits`, which is why it fills from the
-/// back.
+/// The alternative is a `format!` per row per frame. Returns the used tail of
+/// `digits`, which is why it fills from the back.
 fn decimal(value: usize, digits: &mut [u8; DIGITS_MAX]) -> &str {
     let mut start = DIGITS_MAX;
     let mut left = value;
@@ -329,10 +285,8 @@ fn decimal(value: usize, digits: &mut [u8; DIGITS_MAX]) -> &str {
     std::str::from_utf8(&digits[start..]).unwrap_or("?")
 }
 
-/// The bottom line: what the keys do.
-///
-/// There is nothing else competing for it yet. When a command can report
-/// having been refused, this is the line it will have to share.
+/// The bottom line: what the keys do. When a command can report having been
+/// refused, this is the line it will have to share.
 fn key_hints() -> Line<'static> {
     Line::from(vec![
         Span::raw(" "),

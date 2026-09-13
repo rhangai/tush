@@ -48,8 +48,8 @@
 //! uncontended lock — and the task took that same lock anyway, so the
 //! contention moved rather than went.
 //!
-//! What it did buy was shelter from a slow reader. That is bought instead by
-//! keeping the critical section to a single swap: nothing is decoded,
+//! What it did buy was shelter from a slow reader, and that is bought
+//! instead by keeping the critical section to one swap: nothing is decoded,
 //! allocated or printed while the lock is held, on either side.
 //!
 //! # Reading without getting in the way
@@ -69,15 +69,11 @@
 //!
 //! # Where the seam is
 //!
-//! Everything above the ring is assembling — splitting bytes into lines,
-//! packing lines into chunks, carrying a character across a read — and none
-//! of it needs a log to be worth testing. So [`LogBufferAny`] is generic over
-//! [`LogBufferWriter`], the three calls it actually makes on a log, and
-//! [`LogBuffer`] is that filled in with the real one.
-//!
-//! It is not a layer of indirection for its own sake: it is where the
-//! fiddliest code in the module stops needing an arena, a ring and a runtime
-//! to exercise.
+//! Everything above the ring is assembling, and none of it needs a log to be
+//! worth testing. So [`LogBufferAny`] is generic over [`LogBufferWriter`] —
+//! the three calls it actually makes on a log — and [`LogBuffer`] is that
+//! filled in with the real one. It is where the fiddliest code in the module
+//! stops needing an arena, a ring and a runtime to exercise.
 //!
 //! # Why swapping
 //!

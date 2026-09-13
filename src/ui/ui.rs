@@ -16,46 +16,36 @@ use crate::ui::{
     render::{Move, UiMenuChoice, UiRender},
 };
 
-/// How many lines one notch of the wheel moves the log.
-///
-/// Three, which is what a terminal scrolls by and therefore what a hand
-/// expects from one.
+/// How many lines one notch of the wheel moves the log: three, which is what
+/// a terminal scrolls by and so what a hand expects.
 const WHEEL_LINES: isize = 3;
 
-/// The terminal UI: a list of units, and the keys that act on the selected one.
+/// The terminal UI: the redraw loop, the keys, and the two things they act
+/// on — the client and the screen.
 ///
-/// Generic over its [`UiClient`] rather than holding a `dyn` one, so the
-/// in-process path stays direct calls. The day `tush attach` needs to choose
-/// an implementation at runtime, the choice is one match in `main` over which
-/// `Ui<_>` to run — not a change here.
-///
-/// # What it keeps
-///
-/// The loop, the keys, and the two things they act on: the client, and the
-/// screen. Nothing about the units is copied here — they belong to the client
-/// — and nothing about the drawing is either, which is [`UiRender`]'s.
+/// Generic over its [`UiClient`] and not `dyn`, so the in-process path stays
+/// direct calls. When `tush attach` has to choose at runtime, the choice is
+/// one match in `main` over which `Ui<_>` to run.
 pub struct Ui<C: UiClient> {
     /// Where the units are read from and where the commands go.
     client: C,
-    /// Everything about turning that into a screen: the cached list, the
-    /// cursor, the log scroll, and how big the log pane came out.
+    /// Everything about turning that into a screen: the cursor, the scroll,
+    /// the open menu, and how big the panes came out.
     render: UiRender,
-    /// Cleared by <kbd>q</kbd>, which is the only way out.
+    /// Cleared by <kbd>q</kbd>, <kbd>Esc</kbd> or <kbd>Ctrl-C</kbd>.
     running: bool,
 }
 
 impl<C: UiClient> Ui<C> {
     /// Take over the terminal, run until the user quits, and give it back.
     ///
-    /// `refresh` is how long to wait between frames when nothing is being
-    /// pressed. A run changes state without anybody asking — a process exits,
-    /// a line is half written — and with a [`UiClient`] that cannot push, the
-    /// only way to find out is to look.
+    /// `refresh` is how long to wait between frames when nothing is pressed:
+    /// a run changes state without anybody asking, and a [`UiClient`] cannot
+    /// push, so the only way to find out is to look.
     ///
-    /// The terminal is restored whatever the loop did — including on the
-    /// error path, which is the reason for the temporary rather than a `?` on
-    /// the loop. A failure that leaves the terminal in raw mode with no
-    /// cursor is a failure you cannot read the message of.
+    /// The terminal is restored whatever the loop did, error path included —
+    /// which is why the result is held rather than `?`-ed. A failure that
+    /// leaves raw mode on is a failure you cannot read the message of.
     pub async fn run(client: C, refresh: Duration) -> Result<()> {
         let mut ui = Self {
             client,
@@ -63,11 +53,10 @@ impl<C: UiClient> Ui<C> {
             running: true,
         };
         let mut terminal = ratatui::init();
-        // The wheel is not reported unless it is asked for. What asking costs
-        // is the terminal's own selection: with the mouse captured, dragging
-        // over the log no longer selects it, and copying out a line takes
-        // whatever the terminal's override is — `Shift` in nearly all of
-        // them.
+        // The wheel is not reported unless asked for, and asking costs the
+        // terminal's own selection: dragging over the log no longer selects
+        // it, and copying a line takes the terminal's override, `Shift` in
+        // nearly all of them.
         let mouse = execute!(std::io::stdout(), EnableMouseCapture);
         let result = ui.main_loop(&mut terminal, refresh).await;
         if mouse.is_ok() {
@@ -80,10 +69,9 @@ impl<C: UiClient> Ui<C> {
     /// Ask, sync, draw, wait for whichever comes first — a key or the next
     /// tick — and repeat.
     ///
-    /// Syncing at the top of the loop rather than after handling a key is
-    /// what makes a command's effect visible: `send` returns before the
-    /// session has acted on it, so the frame that shows the result is the
-    /// next one through here, not the one the key press was in.
+    /// Syncing at the top rather than after a key is what makes a command's
+    /// effect visible: `send` returns before the session has acted on it, so
+    /// the frame that shows the result is the next one through here.
     async fn main_loop(&mut self, terminal: &mut DefaultTerminal, refresh: Duration) -> Result<()> {
         let mut events = EventStream::new();
         let mut ticks = tokio::time::interval(refresh);
@@ -117,10 +105,6 @@ impl<C: UiClient> Ui<C> {
     }
 
     /// Pull the log scroll back to what the client actually found.
-    ///
-    /// The client never says how much history it has; it says what it found,
-    /// and coming back with fewer lines than were asked for is how a view
-    /// learns it reached the top.
     fn clamp_log(&mut self) {
         let Some(log) = self.client.log() else {
             return;
@@ -141,16 +125,13 @@ impl<C: UiClient> Ui<C> {
         if key.kind != KeyEventKind::Press {
             return;
         }
-        // Before anything else, the menu included: raw mode means the
-        // terminal no longer turns this into a signal, so if the UI does not
-        // quit on it, nothing does.
+        // Before anything else, the menu included.
         if Self::is_interrupt(&key) {
             self.running = false;
             return;
         }
-        // The menu takes every other key while it is up, which is what makes
-        // it one: `q` closes it rather than quitting the session, and `j`
-        // moves within it rather than under it.
+        // The menu takes every other key while it is up: `q` closes it
+        // rather than quitting, `j` moves within it rather than under it.
         if self.render.menu_open() {
             return self.handle_menu(key);
         }
@@ -174,10 +155,8 @@ impl<C: UiClient> Ui<C> {
             // which was the wrong thing for it to move.
             KeyCode::End | KeyCode::Char('G') => self.render.follow_log(),
             KeyCode::Enter => self.open_menu(),
-            // The accelerator for the entry the menu would open on: start it,
-            // or restart it in the mode it is already in. Not a dispatch,
-            // because it asks for no mode to change — `Start` sees the old
-            // run out before the new one begins, which is the whole of it.
+            // The accelerator for the entry the menu opens on: start, or
+            // restart in the mode it is already in.
             KeyCode::Char('r' | 'R') => self.send(|key| UiCommand::Start { key }),
             // Both, because they are one key to a hand: whichever of them the
             // keyboard put under the finger that means "get rid of this".
@@ -188,13 +167,8 @@ impl<C: UiClient> Ui<C> {
 
     /// Act on one key while the menu has them.
     ///
-    /// A chosen entry is sent and the menu closes. Leaving it open would
-    /// leave the cursor on a label that the press itself just made wrong —
-    /// `Start Watch` becomes the restart of a run that is now under way.
-    ///
-    /// <kbd>Esc</kbd> and <kbd>q</kbd> are the same answer as the `Cancel`
-    /// row, which is there so that this paragraph is not the only place the
-    /// way out is written down.
+    /// A chosen entry is sent and the menu closes: left open, the cursor
+    /// would sit on a label the press itself just made wrong.
     fn handle_menu(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.render.close_menu(),
@@ -213,17 +187,10 @@ impl<C: UiClient> Ui<C> {
 
     /// Open the action menu over the selected unit.
     ///
-    /// The entries are read out of the client once, here, and then held
-    /// still: a menu is a question about a moment, and one that rebuilt
-    /// itself per frame would renumber its entries when a process exited —
-    /// moving the one under the cursor between a finger going down and coming
-    /// up.
-    ///
     /// The buffer goes out to the client and comes back rather than being
-    /// filled through a `&mut`, because filling it in place means holding a
-    /// borrow of the screen across a read of the session, which is the one
-    /// shape the borrow checker will not have. It keeps its capacity either
-    /// way, so opening a menu again allocates nothing.
+    /// filled through a `&mut`: a borrow of the screen held across a read of
+    /// the session is the one shape the borrow checker will not have. It
+    /// keeps its capacity, so a second open allocates nothing.
     fn open_menu(&mut self) {
         let Some(unit) = self.selected() else {
             return;
@@ -234,11 +201,8 @@ impl<C: UiClient> Ui<C> {
         self.render.open_menu(key, title, items);
     }
 
-    /// Act on the wheel.
-    ///
-    /// It scrolls the log wherever the pointer is. The list is four rows of
-    /// names that all fit; the log is the thing with more in it than the
-    /// screen, so it is the thing a wheel is for.
+    /// Act on the wheel: it scrolls the log wherever the pointer is, that
+    /// being the only thing on screen with more in it than fits.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.render.scroll_log_lines(WHEEL_LINES),
@@ -268,9 +232,8 @@ impl<C: UiClient> Ui<C> {
 
     /// <kbd>Ctrl-C</kbd>, which quits from anywhere.
     ///
-    /// Apart from [`is_quit`](Self::is_quit) because it is the one key the
-    /// menu does not get to take: a popup that could swallow the only way out
-    /// of a raw mode terminal is a popup that can strand you in one.
+    /// Apart from [`is_quit`](Self::is_quit) because the menu does not get to
+    /// take it: raw mode means nothing else turns this into a signal.
     fn is_interrupt(key: &KeyEvent) -> bool {
         key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
     }

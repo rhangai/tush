@@ -11,10 +11,8 @@
 //! the config: build vs. watch.
 //!
 //! [`UnitMap`] is the layer above: every unit of a session, by name, shared
-//! rather than owned, so that anything holding the map can start, stop and
-//! ask after any of them. The `context` module — how a unit reaches back to
-//! the map it belongs to, for the groups and `pre-condition` dependencies in
-//! the config sketch — is still a placeholder.
+//! rather than owned, so anything holding the map can start, stop and ask
+//! after any of them.
 
 mod behavior;
 mod dispatch;

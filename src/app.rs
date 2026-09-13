@@ -8,16 +8,12 @@
 //!
 //! When it is not sound, what comes back is [`AppErrors`]: every problem
 //! found, not the first one, because a config with three mistakes in it is
-//! about to be fixed and three runs of the same discovery is a waste of
-//! somebody's afternoon.
+//! about to be fixed and one mistake per run is three runs of the same
+//! discovery.
 //!
-//! # Where the checking belongs
-//!
-//! Not in [`config`](crate::config), which reads one proc at a time and can
-//! only refuse the file. Every question here is about the procs *together* —
-//! a name means something because another proc is declared under it, a cycle
-//! is a property of the whole graph — so this is the first place any of them
-//! can be asked, and the first place a useful answer exists.
+//! The checking is here and not in [`config`](crate::config), which reads one
+//! proc at a time: every question is about the procs *together*, so this is
+//! the first place any of them can even be asked.
 
 mod app;
 mod error;

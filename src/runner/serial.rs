@@ -16,27 +16,18 @@ use crate::{
 ///
 /// # What a failure does
 ///
-/// Up to the [`RunnerPolicy`]. Under the default,
-/// [`Abort`](RunnerPolicy::Abort), the chain is an `&&`: a runner that does
-/// not come back [`Success`](ExitReason::Success) ends the sequence and the
-/// rest is left unrun — so a build that fails is reported as a failure and
-/// the test step that would have run against a stale build does not run at
-/// all. Under [`Continue`](RunnerPolicy::Continue) it is a `;`, and every
-/// runner gets its turn.
-///
-/// Either way the sequence is only a success if every runner was. Under
-/// `Continue` the reason reported is the *first* failure, not the last: a
-/// later one is usually a consequence of it, and the first is the one worth
-/// showing.
+/// Up to the [`RunnerPolicy`]: [`Abort`](RunnerPolicy::Abort) makes the chain
+/// an `&&`, [`Continue`](RunnerPolicy::Continue) a `;`. Either way the
+/// sequence succeeds only if every runner did, and the reason reported is the
+/// *first* failure — a later one is usually a consequence of it.
 ///
 /// # Aborting
 ///
-/// The index of the runner in flight is kept in a field rather than on the
-/// stack, and that is the whole trick. A cancelled
-/// [`run`](RunnerSerial::run) is *dropped*, taking its local state with it,
-/// and [`shutdown`](RunnerSerial::shutdown) is then called on the same value
-/// — so the field is the only thing that survives to say which of the runners
-/// was the one running. It is shut down, and nothing after it is started.
+/// The index of the runner in flight is kept in a field and not on the stack,
+/// which is the whole trick: a cancelled [`run`](RunnerSerial::run) is
+/// *dropped* along with its locals, and
+/// [`shutdown`](RunnerSerial::shutdown) is then called on the same value. The
+/// field is all that survives to say which runner to shut down.
 pub struct RunnerSerial<R: Runner> {
     /// The runners, in the order they were added.
     runners: Vec<R>,

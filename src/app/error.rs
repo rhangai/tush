@@ -4,13 +4,10 @@ use arcstr::ArcStr;
 
 /// Everything wrong with a config, reported at once.
 ///
-/// One error rather than many so it can travel as an error, and a list rather
-/// than a string so that whatever reports it — a line on stderr now, a panel
-/// in the interface later — can decide how each one is shown.
-///
-/// Only [`App::new`](crate::app::App::new) builds one, so an `AppErrors` in
-/// hand is always the full account of a config that was rejected, never a
-/// single problem that happened to be noticed first.
+/// One error so it can travel as one, and a list rather than a string so that
+/// whatever reports it decides how each one is shown. Only
+/// [`App::new`](crate::app::App::new) builds one, so this is always the full
+/// account and never the problem that happened to be noticed first.
 #[derive(Debug)]
 pub struct AppErrors {
     errors: Vec<AppError>,

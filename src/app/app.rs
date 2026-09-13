@@ -19,45 +19,29 @@ use crate::{
 
 /// A session that has been checked and is ready to be run.
 ///
-/// The type is the proof. A `Config` is whatever the file said; an `App` is a
-/// config that has survived [`new`](App::new), so anything holding one can
-/// stop asking whether the procs it names exist or whether their dependencies
-/// can be satisfied — the questions were answered once, at the door.
+/// The type is the proof: an `App` is a config that survived
+/// [`new`](App::new), so anything holding one can stop asking whether the
+/// procs it names exist or whether their dependencies can be satisfied.
 ///
-/// What it holds is the config turned into the things a run actually uses:
-/// the [`units`](App::units), and the [`groups`](App::groups) that address
-/// them in bulk. The start order is not here yet.
+/// The start order is not here yet.
 pub struct App {
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
     units: Arc<UnitMap>,
-    /// Group name to the keys declared under it.
-    ///
-    /// Built while the units are, so a group only ever names units that were
-    /// added — and inverted from how the config writes it, because a config
-    /// is written per proc and a group is used per group.
+    /// Group name to the keys declared under it — inverted from how the
+    /// config writes it, a config being written per proc and used per group.
     groups: HashMap<ArcStr, Vec<ArcStr>>,
 }
 
 impl App {
     /// Check a config, and build the session from it.
     ///
-    /// # What is checked
+    /// Checked: that no proc declares both `run` and `modes`, that every
+    /// `depends` names a proc that exists, and that nothing depends on itself
+    /// directly or through others.
     ///
-    /// - no proc declares both `run` and `modes`, which would leave it
-    ///   ambiguous what a plain start means;
-    /// - every `depends` names a proc that exists;
-    /// - nothing depends on itself, directly or through others.
-    ///
-    /// # Every problem, not the first one
-    ///
-    /// The checks do not stop at the first failure. A config with three
-    /// mistakes in it is a config somebody is about to fix, and telling them
-    /// about one mistake per run is three runs of the same discovery. The
-    /// error returned holds all of them — see [`AppErrors`].
-    ///
-    /// Which is also why a missing dependency does not prevent the cycle
-    /// check: the edge is simply not added, the graph stays honest about what
-    /// it knows, and both kinds of problem come back together.
+    /// None of it stops at the first failure — see [`AppErrors`]. Which is
+    /// also why a missing dependency does not prevent the cycle check: the
+    /// edge is simply not added, so both kinds of problem come back together.
     pub fn new(config: &Config) -> Result<Self> {
         if let Some(error) = Self::validate_config(config) {
             return Err(error.into());
@@ -103,7 +87,11 @@ impl App {
         UnitBehavior::noop(name)
     }
 
-    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    /// Hand `event` to the unit under `name` and carry out what it asks for.
+    ///
+    /// The behavior decides, which is why this is not two methods: an event
+    /// may move a unit onto another mode before the start it also asks for,
+    /// and only the behavior can do that.
     pub fn dispatch(&self, name: &str, event: UnitEvent) -> Result<Option<Arc<RunnerHandle>>> {
         let Some(action) = self.units().dispatch(name, event)? else {
             return Ok(None);
@@ -133,24 +121,16 @@ impl App {
     /// The units `targets` name, in the order they were named, without
     /// repeats.
     ///
-    /// A group expands to what was declared under it. Order is the command
-    /// line's, because that is the one the person who typed it has in mind;
-    /// within a group it is the order the config declared them, which is as
-    /// good an answer as any until there is a start order to ask instead.
+    /// A group expands to what was declared under it, in config order. The
+    /// order overall is the command line's, that being the one the person who
+    /// typed it has in mind.
     ///
-    /// # Named twice
+    /// A unit named twice is kept once: `group:web server-main` with
+    /// `server-main` in `web` would otherwise start it twice, and the second
+    /// start kills the first.
     ///
-    /// Kept once. `group:web server-main` where `server-main` is in `web` is
-    /// somebody naming a group and then a member of it, and starting it twice
-    /// would restart it — the second start would kill the first, which is the
-    /// opposite of what they asked for.
-    ///
-    /// # Named and not there
-    ///
-    /// An error, and all of them at once. A command line with two typos in it
-    /// is about to be retyped, and telling somebody about one typo per run is
-    /// two runs of the same discovery — the same reason
-    /// [`new`](App::new) reports every problem with a config.
+    /// A name that is not there is an error, and all of them at once — the
+    /// same reason [`new`](App::new) reports every problem with a config.
     pub fn resolve(&self, targets: &[Target]) -> Result<Vec<ArcStr>> {
         let mut keys: Vec<ArcStr> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
@@ -180,10 +160,9 @@ impl App {
 
     /// Everything wrong with `config`, in the order it was found.
     ///
-    /// Separate from [`new`](App::new) because the two halves want the config
-    /// differently: checking reads every proc and borrows their names to
-    /// build the graph, while building takes them apart. Doing the first to
-    /// completion means the second never has to wonder.
+    /// Apart from [`new`](App::new) because checking borrows every proc's
+    /// name to build the graph while building takes them apart. Finishing the
+    /// first means the second never has to wonder.
     fn validate_config(config: &Config) -> Option<AppErrors> {
         let mut errors = Vec::new();
         let declared: HashSet<&ArcStr> = config.procs.iter().map(|proc| &proc.key).collect();
@@ -246,9 +225,8 @@ impl App {
     }
 }
 
-/// Add `key` unless it is already there.
-///
-/// Linear, because the lists this is building are a command line long.
+/// Add `key` unless it is already there. Linear: these lists are a command
+/// line long.
 fn push_once(keys: &mut Vec<ArcStr>, key: &ArcStr) {
     if !keys.contains(key) {
         keys.push(key.clone());

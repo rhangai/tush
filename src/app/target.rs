@@ -5,11 +5,10 @@ use arcstr::ArcStr;
 
 /// What tells one kind of target from another.
 ///
-/// Reserved: a proc's key and a group's name may not contain it, which
-/// [`App::validate_config`](crate::app::App) refuses at the door. Without
-/// that, `group:web` is a group called `web` or a proc called `group:web`
-/// depending on what the file happens to declare, and which one a command
-/// line means would depend on a file it never mentioned.
+/// Reserved: keys and group names may not contain it, which
+/// [`App::validate_config`](crate::app::App) refuses at the door. Otherwise
+/// `group:web` means one thing or another depending on what the file happens
+/// to declare.
 pub const TARGET_SEPARATOR: char = ':';
 
 /// The prefix that means a group rather than a proc.
@@ -33,10 +32,9 @@ impl FromStr for Target {
 
     /// Read one target off a command line.
     ///
-    /// An unknown prefix is refused rather than read as a proc whose name
-    /// happens to contain a colon: those cannot exist, so a name with one in
-    /// it is a typo in a prefix and saying so is more use than looking for a
-    /// proc that could never have been declared.
+    /// An unknown prefix is refused rather than read as a proc name: those
+    /// cannot contain a colon, so a colon is always a prefix and a prefix
+    /// nobody knows is a typo worth naming.
     fn from_str(target: &str) -> Result<Self> {
         let Some((kind, name)) = target.split_once(TARGET_SEPARATOR) else {
             if target.is_empty() {

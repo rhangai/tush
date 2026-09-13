@@ -424,7 +424,7 @@ impl Log {
     /// so one writer's batch arrives whole before another's. Within a writer
     /// the order is exact. A line split across chunks is continued by that
     /// writer's next chunk and not by whatever sits next in the ring — see
-    /// [`LogChunkData`](super::chunk::LogChunkData).
+    /// [`super::chunk::LogChunkData`].
     pub fn writer(&self) -> LogWriterRef {
         LogWriterRef {
             inner: Arc::downgrade(&self.inner),
@@ -932,47 +932,30 @@ impl LogReader {
         take
     }
 
-    /// Walk the history a piece at a time, oldest first.
+    /// Walk the history a piece at a time, oldest first, fetching first.
     ///
-    /// Fetches first, so a render loop is one call and never shows a frame
-    /// staler than it had to be. The name carries the `&mut` rather than
-    /// leaving it to be discovered — which is also why there is no bare
-    /// `iter` here: between two walks that differ in exactly one thing, the
-    /// pair is clearer than a default and an exception.
-    ///
+    /// The name carries the `&mut` rather than leaving it to be discovered;
     /// [`iter_unsync`](LogReader::iter_unsync) is the other half.
     ///
-    /// Each step is a [`LogReaderRef`]: the text to put out, whether a line
-    /// ends after it, and which chunk it came from. So the whole of a plain
-    /// render is
-    ///
-    /// ```ignore
-    /// for piece in reader.iter_sync() {
-    ///     piece.print();
-    /// }
-    /// ```
-    ///
-    /// and nothing has to be joined, buffered or allocated to get there. A
-    /// line the chunk size cut in two arrives as two pieces, the first of
-    /// them saying "no newline", and the terminal puts it back together by
-    /// simply not breaking.
+    /// Each step is a [`LogReaderRef`]: the text, whether a line ends after
+    /// it, and which chunk it came from. Nothing has to be joined, buffered
+    /// or allocated to render — a line the chunk size cut in two arrives as
+    /// two pieces, the first saying "no newline", and the terminal puts it
+    /// back together by not breaking.
     ///
     /// # When a piece says no newline
     ///
     /// Only when the line really does carry on *in the very next piece*: the
-    /// chunk has to be one the room cut short, and the chunk after it has to
-    /// belong to the same writer.
+    /// chunk was cut short for room, and the chunk after it belongs to the
+    /// same writer.
     ///
-    /// That second condition is the one that matters. A log takes from every
-    /// process of a unit, so another writer's chunk can land between the two
-    /// halves of a split line. Printing sequentially there is a choice
-    /// between two flawed outputs, and this picks the lesser: the split line
-    /// is broken where it should not be, rather than having a stranger's line
-    /// run into the middle of it and vanish as a line of its own.
-    ///
-    /// A caller that wants split lines whole even then has to buffer per
-    /// writer, which is more than a `print!` can do and more than most views
-    /// need.
+    /// That second condition is the one that matters, because a log takes
+    /// from every process of a unit and another writer's chunk can land
+    /// between the halves of a split line. Both outputs are then wrong, and
+    /// this picks the lesser: the split line breaks where it should not,
+    /// rather than a stranger's line running into the middle of it and
+    /// vanishing as a line of its own. Wanting better means buffering per
+    /// writer, which is more than a `print!` can do.
     pub fn iter_sync(&mut self) -> LogReaderIter<'_> {
         self.sync();
         self.iter_unsync()
@@ -1003,32 +986,23 @@ impl LogReader {
 
     /// Copy a rectangle of the history into `out`, one line per entry.
     ///
-    /// A rectangle because that is what a pane is, and it is bounded in both
-    /// directions: `lines` of them, `columns` wide. So what this costs is the
-    /// size of what will be drawn and not the size of what is held — a
-    /// window of `2..20` by `0..512` is eighteen strings of at most five
-    /// hundred odd characters, whatever the log behind it looks like. That is
-    /// the difference between this and
-    /// [`iter_unsync`](LogReader::iter_unsync), which walks everything.
+    /// Bounded in both directions — `lines` of them, `columns` wide — so this
+    /// costs the size of what will be drawn and not the size of what is held.
+    /// That is the difference from [`iter_unsync`](LogReader::iter_unsync),
+    /// which walks everything.
     ///
-    /// Both are half open and both are counted from the edge the log grows
-    /// from: `lines` back from the newest line, the same as
-    /// [`tail_range`](LogReaderIter::tail_range) and through it, so there is
-    /// one place that decides where a line begins. What comes back is oldest
-    /// first, ready to draw down the pane.
+    /// Both ranges are half open and counted back from the newest line,
+    /// through [`tail_range`](LogReaderIter::tail_range) so that one place
+    /// decides where a line begins. What comes back is oldest first.
     ///
-    /// # Fewer lines than asked for
+    /// Fewer lines than asked for is not an error: three lines asked for
+    /// twenty gives three, and a range beginning past everything held gives
+    /// none. `out.len()` is how many there were, which is how a caller
+    /// scrolling up finds the top.
     ///
-    /// A log with three lines asked for twenty gives three, and a `lines`
-    /// range beginning past everything held gives none. `out.len()` is how
-    /// many there were, which is also how a caller scrolling up finds the
-    /// top.
-    ///
-    /// # What comes back
-    ///
-    /// `out` is filled from the start and truncated to what was written, so
-    /// the same `Vec` handed back on every call reuses the strings it already
-    /// has rather than allocating a pane's worth each time.
+    /// `out` is filled from the start and truncated, so the same `Vec` handed
+    /// back each call reuses its strings rather than allocating a pane's
+    /// worth every time.
     pub fn copy_region(&self, region: LogRegion, out: &mut Vec<String>) {
         // The lines still being written sit at the end of the log, so a
         // region counted back from the end runs into them first: they take
@@ -1296,54 +1270,36 @@ impl<'a> LogReaderIter<'a> {
     ///
     /// `lines` is a range of *distances from the end*, not positions: `0` is
     /// the last line, `1` the one before it. So `0..20` is the last twenty
-    /// lines, and `10..20` is the ten before those — which is what a view
-    /// scrolled ten lines up wants. What comes out is still oldest first,
-    /// like every other walk here; only the window moves.
+    /// lines and `10..20` the ten before those, which is what a view scrolled
+    /// ten lines up wants. What comes out is still oldest first.
     ///
-    /// # Why it narrows a walk rather than starting one
-    ///
-    /// Because then it composes with both of them, and the caller keeps
-    /// saying which it meant:
-    ///
-    /// ```ignore
-    /// reader.iter_sync().tail(20, 64)              // fetch, then the last 20 lines
-    /// reader.iter_unsync().tail_range(10..20, 64)  // another window of the same copy
-    /// ```
-    ///
-    /// The same pair on [`LogReader`] would have had to pick one of the two
-    /// and then grow a twin for the other. Building an iterator is two slices
-    /// and four numbers, so there is nothing to save by folding the fetch
-    /// into it — and the question of whether to sync stays where it already
-    /// had an answer.
+    /// It narrows a walk rather than starting one so that it composes with
+    /// both [`iter_sync`](LogReader::iter_sync) and
+    /// [`iter_unsync`](LogReader::iter_unsync), leaving the question of
+    /// whether to fetch where it already had an answer.
     ///
     /// # `max_chunks`
     ///
-    /// A ceiling on how far back it will look, in chunks. Finding where a
-    /// line begins means walking backwards until the newlines have been
-    /// counted, and with no bound that walk is the whole ring — which for a
-    /// log whose lines are mostly blank is a lot of work to render twenty of
-    /// them.
+    /// A ceiling on how far back it will look. Finding where a line begins
+    /// means walking backwards counting newlines, and unbounded that walk is
+    /// the whole ring — a lot of work to render twenty lines of a log that is
+    /// mostly blank ones. A view sets it from what it could possibly draw: a
+    /// pane `h` rows tall cannot show more than `h` chunks' worth of pieces.
     ///
-    /// So it is a budget, and a view sets it from what it could possibly
-    /// draw: a pane `h` rows tall cannot show more than `h` chunks' worth of
-    /// pieces, whatever the lines in them look like.
-    ///
-    /// Hitting it truncates rather than fails — the walk simply starts at the
-    /// oldest chunk it was allowed to reach, so the first line may come out
-    /// as its tail rather than whole, exactly as it would if the log had
-    /// discarded the rest. Pass [`usize::MAX`] for no ceiling.
+    /// Hitting it truncates rather than fails, starting at the oldest chunk
+    /// it was allowed to reach — so the first line may come out as its tail,
+    /// exactly as if the log had discarded the rest. [`usize::MAX`] for no
+    /// ceiling.
     ///
     /// # Fewer lines than asked for
     ///
-    /// Not an error and not distinguishable in the result: a log with three
-    /// lines asked for twenty gives three. A view that needs to know whether
-    /// there is more above it can ask for one line more than it means to
-    /// draw, and see whether it got it.
+    /// Not an error and not visible in the result: three lines asked for
+    /// twenty gives three. A view that needs to know whether there is more
+    /// above it asks for one line more than it draws and sees if it got it.
     ///
-    /// A range that starts past everything held is the other half of that,
-    /// and it comes back empty rather than clamped — a view scrolled above
-    /// the top of the history is showing nothing, not showing the oldest
-    /// lines a second time.
+    /// A range starting past everything held comes back empty rather than
+    /// clamped — scrolled above the top, a view is showing nothing, not
+    /// showing the oldest lines twice.
     ///
     /// # How the ends are found
     ///

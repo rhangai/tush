@@ -8,17 +8,18 @@ use crate::runner::{
     state::{RunnerState, RunnerStateAtomic},
 };
 
-/// A handle for the runner
+/// One run, supervised.
 ///
-/// Creating a handle immediately spawns the supervising task, but the runner
-/// itself may be held at the gate: [`RunnerHandle::new`] parks it until
-/// [`start`](RunnerHandle::start) is called, while
-/// [`new_running`](RunnerHandle::new_running) lets it go right away. The
-/// paused form is what makes an orderly restart possible — the replacement can
-/// exist, and be observable, before the outgoing one has finished dying.
+/// Creating a handle spawns the supervising task at once, but the runner is
+/// held at a gate until [`start`](RunnerHandle::start). That is what makes an
+/// orderly restart possible: the replacement can exist, and be observed,
+/// before the outgoing run has finished dying.
 ///
-/// A handle covers exactly one run: once it reaches a terminal state it stays
-/// there, and restarting means building a new handle.
+/// `new_inner` takes a flag for a handle that starts released, and nothing
+/// passes `false` yet — there is no constructor for it.
+///
+/// A handle covers exactly one run: once terminal it stays terminal, and
+/// restarting means a new handle.
 ///
 /// # Lifecycle
 ///
@@ -42,17 +43,16 @@ pub struct RunnerHandle {
 }
 
 impl RunnerHandle {
-    /// Create the handle from the runner
+    /// A handle parked at the start gate.
     ///
-    /// The runner stays [`Waiting`](RunnerState::Waiting) until
-    /// [`start`](RunnerHandle::start) — or anything else that opens the gate,
-    /// such as [`abort`](RunnerHandle::abort) or
-    /// [`wait`](RunnerHandle::wait) — is called.
+    /// It stays [`Waiting`](RunnerState::Waiting) until
+    /// [`start`](RunnerHandle::start), or anything else that opens the gate —
+    /// [`abort`](RunnerHandle::abort), [`wait`](RunnerHandle::wait).
     pub fn new(runner: impl Runner) -> Arc<Self> {
         Self::new_inner(runner, true, |_| ())
     }
 
-    /// Create the runner handle with a on_exit callback
+    /// The same, with `on_exit` run once the state is terminal.
     pub fn new_with_callback<F>(runner: impl Runner, on_exit: F) -> Arc<Self>
     where
         F: FnOnce(RunnerState) + Send + 'static,
@@ -60,11 +60,11 @@ impl RunnerHandle {
         Self::new_inner(runner, true, on_exit)
     }
 
-    /// Create the handle from the runner
+    /// Spawn the supervising task, which owns the runner for the rest of its
+    /// life.
     ///
-    /// Spawns the supervising task, which owns the runner for the rest of its
-    /// life. The task holds an `Arc` back to the handle, so it keeps reporting
-    /// state even if every external reference is dropped.
+    /// The task holds an `Arc` back to the handle, so it keeps reporting state
+    /// even once every external reference is dropped.
     fn new_inner<F>(runner: impl Runner, paused: bool, on_exit: F) -> Arc<Self>
     where
         F: FnOnce(RunnerState) + Send + 'static,
@@ -125,10 +125,8 @@ impl RunnerHandle {
         self.state.load()
     }
 
-    /// Start the handle
-    ///
-    /// Opens the start gate. Idempotent, and a no-op on a handle created with
-    /// [`new_running`](RunnerHandle::new_running).
+    /// Open the start gate. Idempotent, and a no-op on a handle that was
+    /// created already released.
     pub fn start(&self) {
         self.state.store_next(RunnerState::Started);
         self.notify_start();

@@ -18,43 +18,32 @@
 //!
 //! # Loading, not checking
 //!
-//! This turns the file into these structs and stops there. It does not ask
-//! whether a `depends` names a proc that exists, whether the dependencies
-//! form a cycle, whether a command has a program in it, or whether a proc
-//! that declared both `run` and `modes` meant to. Those are questions for the
-//! layer that builds the
-//! [`DependencyGraph`](crate::util::graph::DependencyGraph) and starts
-//! things, where there is a whole session to answer them against.
+//! This turns the file into these structs and stops. Whether a `depends`
+//! names a proc that exists, whether they form a cycle, whether a proc that
+//! declared both `run` and `modes` meant to — all of that belongs to
+//! [`app`](crate::app), which has a whole session to answer it against.
 //!
 //! Which is why `run` and `modes` are two options rather than the one enum
-//! they add up to. An enum decides between them here, at parse time, where
-//! the only way to object is to refuse the file; two options carry both
-//! answers forward and leave the deciding to whoever is in a position to
-//! report it properly.
+//! they add up to: an enum would decide here, where the only way to object is
+//! to refuse the file.
 //!
-//! A key nobody recognises *is* refused here, by `deny_unknown_fields`, and
-//! that is the one thing this layer is strict about. It can afford to be:
-//! unlike the questions above, a key that names nothing has no reading under
-//! which the file was meant to work.
+//! A key nobody recognises *is* refused here, by `deny_unknown_fields`. This
+//! layer can afford to be strict about that one thing, since a key that names
+//! nothing has no reading under which the file was meant to work.
 //!
 //! # Why `figment` reads it
 //!
-//! [`Figment`] is a layering loader: a config is assembled from providers —
-//! a file, then environment variables, then defaults — each one overriding
-//! the last, and the whole stack is deserialized once at the end. Only the
-//! file provider is used today, so what it buys right now is the error: a
-//! `figment::Error` carries the key path it went wrong at and the source it
-//! came from, which is most of what makes a config error actionable. The
-//! layering is what it is there for later.
+//! It is a layering loader — file, then environment, then defaults, each
+//! overriding the last — and only the file provider is used today. What it
+//! buys right now is the error, which carries the key path it went wrong at
+//! and the source it came from. The layering is for later.
 //!
-//! # Where the file's shape and the struct's shape disagree
+//! # Where the file's shape and the struct's disagree
 //!
-//! Twice, and both are covered by an attribute rather than by code:
-//!
-//! - the procs are *written* as a mapping keyed by name, and *used* as a list
-//!   — [`KeyValueMap`] moves the key into the struct as [`ConfigProc::key`];
-//! - `run` is written either as one command or as a list of them —
-//!   [`OneOrMany`] takes both and always yields the list.
+//! Twice, both covered by an attribute: the procs are written as a mapping
+//! and used as a list ([`KeyValueMap`] moves the key in as
+//! [`ConfigProc::key`]), and `run` is written as one command or a list of
+//! them ([`OneOrMany`] takes both and always yields the list).
 
 use std::path::Path;
 
@@ -69,26 +58,19 @@ use serde_with::{KeyValueMap, OneOrMany, serde_as};
 
 /// A parsed config file: every proc a session is made of.
 ///
-/// A list, though the file writes a mapping, because nothing downstream wants
-/// them by name — the units go into a [`UnitMap`](crate::unit::UnitMap),
-/// which is the lookup.
+/// A list though the file writes a mapping, because nothing downstream wants
+/// them by name — [`UnitMap`](crate::unit::UnitMap) is the lookup.
 ///
-/// # The order is by key, not as written
-///
-/// `figment`'s value tree is a `BTreeMap`, so by the time a provider's data
-/// reaches `serde` the mapping has been sorted and the order the procs were
-/// written in is gone. What comes out is sorted by key.
-///
-/// That order still has to be *stable*, because it is the tie breaker the
-/// dependency resolution falls back on between procs nothing else separates —
-/// and sorted is stable. What is lost is only the ability to influence it by
-/// moving lines around in the file, which is not a control worth keeping if
-/// the trade is layering and better errors. A config that cares about the
-/// order of two procs should say so with a `depends`.
+/// **The order is by key, not as written.** `figment`'s value tree is a
+/// `BTreeMap`, so the mapping is already sorted by the time `serde` sees it.
+/// Sorted is still *stable*, which is what dependency resolution needs as its
+/// tie breaker; what is lost is influencing the order by moving lines around,
+/// and a config that cares should say so with a `depends`.
 #[serde_as]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Every proc the file declared, sorted by key.
     #[serde(default)]
     #[serde_as(as = "KeyValueMap<_>")]
     pub procs: Vec<ConfigProc>,
@@ -97,11 +79,9 @@ pub struct Config {
 impl Config {
     /// Read and parse a config file.
     ///
-    /// The path is taken as given. [`Yaml::file`] would instead walk up from
-    /// the working directory looking for the name, which is a good way to
-    /// *find* a config and a bad way to load one that was named: a caller who
-    /// passed a path and got a file from three directories up has been
-    /// answered a question it did not ask.
+    /// The path is taken as given: [`Yaml::file`] would walk up looking for
+    /// the name, and a caller who passed a path and got a file from three
+    /// directories up has been answered a question it did not ask.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         Self::extract(Yaml::file_exact(path))
@@ -165,12 +145,10 @@ pub struct ConfigProc {
 impl ConfigProc {
     /// What to call it: its name, or its key when it did not give one.
     ///
-    /// By value rather than borrowed, because what it is for is being handed
-    /// to a [`UnitBehavior`](crate::unit::UnitBehavior) that keeps it — and
-    /// an [`ArcStr`] handed over is a refcount, while a `&str` handed to the
-    /// same place has to be allocated into one. Which would be a fresh copy
-    /// of text sitting right here, made at the one point in the path where
-    /// everything else travels for free.
+    /// By value, because it is handed to a
+    /// [`UnitBehavior`](crate::unit::UnitBehavior) that keeps it — an
+    /// [`ArcStr`] travels as a refcount, while a `&str` would have to be
+    /// allocated into one at the far end.
     pub fn display_name(&self) -> ArcStr {
         self.name.clone().unwrap_or_else(|| self.key.clone())
     }
@@ -180,18 +158,19 @@ impl ConfigProc {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigUnitMode {
+    /// What the mode is called, and what the menu lists it as.
     pub name: ArcStr,
+    /// What it runs.
     pub run: ConfigUnitRun,
 }
 
 /// What a unit executes: the commands, in the order they were written.
 ///
-/// A command is its argv — program and arguments already split — rather than
-/// a line for a shell, so [`Process`](crate::base::Process) can spawn it
-/// directly with no quoting rules in between.
+/// A command is its argv — already split — rather than a line for a shell, so
+/// [`Process`](crate::base::Process) spawns it with no quoting rules between.
 ///
-/// A newtype rather than a struct with a `commands` field because `run` in
-/// the file *is* the list, in either of two spellings:
+/// A newtype and not a struct with a `commands` field because `run` in the
+/// file *is* the list, in either of two spellings:
 ///
 /// ```yaml
 /// run: [bash, -c, "echo hi"]      # one command
