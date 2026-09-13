@@ -3,3 +3,4 @@
 pub mod arena;
 pub mod graph;
 pub mod localring;
+pub mod types;

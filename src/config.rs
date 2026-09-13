@@ -56,6 +56,8 @@ use figment::{
 use serde::Deserialize;
 use serde_with::{KeyValueMap, OneOrMany, serde_as};
 
+use crate::util::types::{SmallMatrixArcStr, SmallVecArcStr};
+
 /// A parsed config file: every proc a session is made of.
 ///
 /// A list though the file writes a mapping, because nothing downstream wants
@@ -136,11 +138,11 @@ pub struct ConfigProc {
     /// `group` in the file, singular, because that is how it reads at the
     /// declaration of one proc.
     #[serde(default, rename = "group")]
-    pub groups: Vec<ArcStr>,
+    pub groups: SmallVecArcStr,
     /// What has to be up before it may start, and the edges of the
     /// dependency graph.
     #[serde(default)]
-    pub depends: Vec<ArcStr>,
+    pub depends: SmallVecArcStr,
     /// `run:` — the one way this proc runs.
     #[serde(default)]
     pub run: Option<ConfigUnitRun>,
@@ -194,11 +196,8 @@ pub struct ConfigUnitMode {
 /// a list of lists is a command each, and either way this holds the list.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ConfigUnitRun(#[serde_as(as = "OneOrMany<_>")] pub Vec<Vec<ArcStr>>);
-
-impl ConfigUnitRun {
-    /// The commands, each an argv.
-    pub fn commands(&self) -> &[Vec<ArcStr>] {
-        &self.0
-    }
+pub struct ConfigUnitRun {
+    #[serde_as(as = "OneOrMany<_>")]
+    #[serde(flatten)]
+    pub commands: SmallMatrixArcStr,
 }

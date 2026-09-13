@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enum_dispatch::enum_dispatch;
+use smallvec::smallvec;
 use tokio::process::Command;
 
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
     log::LogWriterRef,
     runner::{RunnerHandle, RunnerSerial, RunnerState},
     unit::dispatch::{UnitAction, UnitChoice, UnitEvent},
+    util::types::{SmallMatrixArcStr, SmallVecArcStr},
 };
 
 /// What a [`Unit`](crate::unit::Unit) does: what it spawns when started, and
@@ -58,8 +60,8 @@ pub struct UnitBehavior {
 
 impl UnitBehavior {
     /// One command, as its argv: the program, then its arguments.
-    pub fn run(name: ArcStr, command: Vec<ArcStr>) -> Self {
-        Self::run_many(name, vec![command])
+    pub fn run(name: ArcStr, command: SmallVecArcStr) -> Self {
+        Self::run_many(name, smallvec![command])
     }
 
     /// Several commands, run one after the other, stopping at the first that
@@ -67,7 +69,7 @@ impl UnitBehavior {
     ///
     /// One unit still, with one log and one state — the sequence is a
     /// [`RunnerSerial`], which is itself a single runner.
-    pub fn run_many(name: ArcStr, commands: Vec<Vec<ArcStr>>) -> Self {
+    pub fn run_many(name: ArcStr, commands: SmallMatrixArcStr) -> Self {
         Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
     }
 
@@ -250,7 +252,7 @@ impl UnitBehaviorKind for BehaviorNoop {
 /// common case to drift away from.
 struct BehaviorRun {
     /// Each command as its argv, in the order they were written.
-    commands: Vec<Vec<ArcStr>>,
+    commands: SmallMatrixArcStr,
 }
 
 impl UnitBehaviorKind for BehaviorRun {

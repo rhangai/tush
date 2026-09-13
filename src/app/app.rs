@@ -14,7 +14,7 @@ use crate::{
     config::{Config, ConfigProc},
     runner::RunnerHandle,
     unit::{UnitAction, UnitBehavior, UnitEvent, UnitMap},
-    util::graph::DependencyGraph,
+    util::{graph::DependencyGraph, types::SmallVecArcStr},
 };
 
 /// A session that has been checked and is ready to be run.
@@ -29,7 +29,7 @@ pub struct App {
     units: Arc<UnitMap>,
     /// Group name to the keys declared under it — inverted from how the
     /// config writes it, a config being written per proc and used per group.
-    groups: HashMap<ArcStr, Vec<ArcStr>>,
+    groups: HashMap<ArcStr, SmallVecArcStr>,
 }
 
 impl App {
@@ -47,8 +47,9 @@ impl App {
             return Err(error.into());
         }
 
-        let mut behaviors: HashMap<ArcStr, UnitBehavior> = HashMap::new();
-        let mut groups: HashMap<ArcStr, Vec<ArcStr>> = HashMap::new();
+        let mut behaviors: HashMap<ArcStr, UnitBehavior> =
+            HashMap::with_capacity(config.procs.len());
+        let mut groups: HashMap<ArcStr, SmallVecArcStr> = HashMap::new();
 
         for proc in &config.procs {
             let behavior = Self::get_behavior(proc);
@@ -76,12 +77,12 @@ impl App {
 
         let behavior = {
             if let Some(run) = &proc.run {
-                UnitBehavior::run_many(name, run.0.clone())
+                UnitBehavior::run_many(name, run.commands.clone())
             } else if let Some(modes) = &proc.modes {
                 return UnitBehavior::modes(
                     name,
                     modes.iter().map(|mode| {
-                        UnitBehavior::run_many(mode.name.clone(), mode.run.0.clone())
+                        UnitBehavior::run_many(mode.name.clone(), mode.run.commands.clone())
                             .with_short(mode.name_short.clone())
                     }),
                 );
@@ -119,7 +120,7 @@ impl App {
     }
 
     /// The keys belonging to each group.
-    pub fn groups(&self) -> &HashMap<ArcStr, Vec<ArcStr>> {
+    pub fn groups(&self) -> &HashMap<ArcStr, SmallVecArcStr> {
         &self.groups
     }
 
@@ -136,8 +137,8 @@ impl App {
     ///
     /// A name that is not there is an error, and all of them at once — the
     /// same reason [`new`](App::new) reports every problem with a config.
-    pub fn resolve(&self, targets: &[Target]) -> Result<Vec<ArcStr>> {
-        let mut keys: Vec<ArcStr> = Vec::new();
+    pub fn resolve(&self, targets: &[Target]) -> Result<SmallVecArcStr> {
+        let mut keys: SmallVecArcStr = SmallVecArcStr::new();
         let mut unknown: Vec<String> = Vec::new();
 
         for target in targets {
@@ -232,7 +233,7 @@ impl App {
 
 /// Add `key` unless it is already there. Linear: these lists are a command
 /// line long.
-fn push_once(keys: &mut Vec<ArcStr>, key: &ArcStr) {
+fn push_once(keys: &mut SmallVecArcStr, key: &ArcStr) {
     if !keys.contains(key) {
         keys.push(key.clone());
     }

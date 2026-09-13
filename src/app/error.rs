@@ -2,6 +2,8 @@ use std::fmt;
 
 use arcstr::ArcStr;
 
+use crate::util::types::SmallVecArcStr;
+
 /// Everything wrong with a config, reported at once.
 ///
 /// One error so it can travel as one, and a list rather than a string so that
@@ -52,7 +54,7 @@ pub enum AppError {
     UnknownDependency { proc: ArcStr, depends: ArcStr },
     /// Procs that wait on each other in a circle, so none of them can be
     /// first. A cycle of one is a proc that depends on itself.
-    Cycle { procs: Vec<ArcStr> },
+    Cycle { procs: SmallVecArcStr },
 }
 
 impl fmt::Display for AppError {

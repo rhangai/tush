@@ -16,7 +16,8 @@ parking_lot = "0.12.5"
 petgraph = { version = "0.8", default-features = false, features = ["std"] }
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_with = "3.23.0"
+serde_with = { version = "3.23.0", features = ["smallvec_1"] }
+smallvec = { version = "1.16", features = ["serde"] }
 tokio = { version = "^1.52", features = ["full"] }
 tokio-stream = "0.1.19"
 tokio-util = "0.7"
