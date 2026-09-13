@@ -305,12 +305,39 @@ impl LogChunk {
     /// Taking a prefix means stopping on a character boundary, never inside
     /// one, so every piece on its own is still valid text.
     pub fn push_line(&mut self, line: &mut LogBufferLine) -> usize {
+        let taken = self.push_text(line.pending(), line.is_complete());
+        line.consume(taken);
+        taken
+    }
+
+    /// Take what fits of `text`, as a whole line.
+    ///
+    /// For a line that arrives already assembled rather than out of a pipe.
+    /// There is no [`LogBufferLine`] because there is nothing to assemble:
+    /// the caller has the line, and what is left is to pack it.
+    ///
+    /// Answers how much was taken, so the same loop a split line needs works
+    /// here too — everything taken means the line is closed, less than that
+    /// means this chunk is full and the rest goes in the next one.
+    pub fn push_line_str(&mut self, text: &str) -> usize {
+        self.push_text(text, true)
+    }
+
+    /// Take what fits of `text`, and say how much that was.
+    ///
+    /// `complete` is whether `text` runs to the end of its line, so that a
+    /// chunk taking all of it knows whether it has closed a line or is
+    /// holding the head of one that goes on.
+    ///
+    /// Private, and the whole of the packing: the two ways in differ only in
+    /// where the text comes from and how the end of a line is known, so this
+    /// is the one place that decides where a line is cut.
+    fn push_text(&mut self, text: &str, complete: bool) -> usize {
         if self.is_finished() {
             return 0;
         }
 
         let len = self.len();
-        let text = line.pending();
         let pending = text.len();
         // The room decides the cut, and it knows nothing about characters, so
         // it lands inside one regularly. Back off to a boundary: a piece
@@ -335,14 +362,13 @@ impl LogChunk {
         self.buf[len..len + taken].copy_from_slice(&text.as_bytes()[..taken]);
         // Extending the open piece moves its end; a new one gets its first.
         self.ends[self.count - 1] = (len + taken) as u16;
-        line.consume(taken);
 
         if taken < pending {
-            // Room ran out with the line unfinished. Whatever the line says
-            // about itself, what is stored here is only a head.
+            // Room ran out with the line unfinished. Whatever the caller says
+            // about it, what is stored here is only a head.
             self.trailing_open = true;
             self.finished = true;
-        } else if line.is_complete() {
+        } else if complete {
             self.trailing_open = false;
             if self.count == LOG_CHUNK_MAX_LINES || self.len() >= LOG_CHUNK_LIMIT {
                 self.finished = true;

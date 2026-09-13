@@ -205,6 +205,51 @@ impl LogWriterRef {
         }
     }
 
+    /// Write one whole line into the log.
+    ///
+    /// The other way in — [`consume_spawn`](LogWriterRef::consume_spawn) —
+    /// reads bytes off a pipe and assembles them into lines. This is for a
+    /// caller that already has the line: it goes into a chunk and the chunk
+    /// goes into the ring, with nothing in between.
+    pub fn write_line(&mut self, text: &str) {
+        self.write_lines([text]);
+    }
+
+    /// Write several whole lines into the log.
+    ///
+    /// One chunk for as many of them as fit, so lines written together are
+    /// stored together — and a fresh one whenever that fills, since a chunk
+    /// holds a couple of lines and not a list of them.
+    ///
+    /// The last chunk goes whether or not it filled: a line nobody can see
+    /// until the next one is a line that arrived too late to be read.
+    pub fn write_lines<I>(&mut self, lines: I)
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut chunk = self.chunk();
+        for line in lines {
+            let mut rest = line.as_ref();
+            loop {
+                rest = &rest[chunk.push_line_str(rest)..];
+                // Full, so it goes now and the rest of this line — if there
+                // is any — carries on in the one that comes back.
+                if chunk.is_finished() && !self.push_chunk(&mut chunk) {
+                    self.recycle(chunk);
+                    return;
+                }
+                if rest.is_empty() {
+                    break;
+                }
+            }
+        }
+        if !chunk.is_empty() {
+            self.push_chunk(&mut chunk);
+        }
+        self.recycle(chunk);
+    }
+
     /// Drain `read` into the log until it ends, on a task of its own.
     ///
     /// Takes the writer by value: a pipe has one reader, and this is it. The
