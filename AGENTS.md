@@ -6,10 +6,33 @@ something.
 
 ## Scope
 
+**Ask before writing anything that was not asked for. Every time.**
+
+Not "write it and flag it in the report". By the time the report is written the
+code exists, and the decision it was supposed to raise has already been taken.
+Asking means stopping before the edit, saying what the addition is and why, and
+waiting.
+
+The trigger is easy to check: **if you find yourself drafting a paragraph that
+starts "one thing I also changed" or "this I added without being asked" — you
+have already failed.** That paragraph is the question you should have asked,
+arriving too late to be answered.
+
+Things that have gone in this way, none of them asked for, all of them removed
+again afterwards: a mutex, a `LogSpan` newtype, a handle type for writing log
+notes from a task, a reader with a capacity of its own, three modules' worth of
+UI tests. Each one was defensible on its own terms. That is exactly why the
+rule is "ask", and not "use judgement".
+
 **Do what was asked, and stop there.** The most common failure in this repo is
 not a bug, it is scope: answering a question with a redesign, inventing a type
 to avoid writing two words twice, or "improving" the thing next to the thing
 that was asked for.
+
+**When the ask names the mechanism, use that mechanism.** "Write the line
+straight into a chunk" is not an invitation to find a tidier route through the
+existing code. If the named way looks wrong, say so and wait — do not build the
+other one and explain afterwards.
 
 **When the ask is a design question, answer it. Do not implement it.** "What do
 you think?", "would X work?", "what do you suggest?" want a recommendation and
