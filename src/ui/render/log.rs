@@ -12,7 +12,8 @@ use crate::{
     runner::RunnerState,
     ui::{
         client::{UiLog, UiUnit},
-        render::{DIGITS_MAX, decimal, room, set_clipped, units::status_label},
+        render::{DIGITS_MAX, decimal, room, set_clipped},
+        theme::UiTheme,
     },
 };
 
@@ -22,9 +23,6 @@ use crate::{
 /// because scrolling goes both ways — stretched backwards only, it would make
 /// scrolling down cost exactly what it was meant to save.
 const LOG_MARGIN: usize = 100;
-
-/// What separates the pieces of the title.
-const SEPARATOR: &str = " · ";
 
 /// Blank columns at each edge, so the output is not written onto the border.
 const PAD_X: u16 = 1;
@@ -109,12 +107,23 @@ pub struct UiRenderLog<'a> {
     unit: Option<&'a UiUnit>,
     log: Option<UiLog<'a>>,
     border: &'a Block<'a>,
+    theme: &'a UiTheme,
 }
 
 impl<'a> UiRenderLog<'a> {
     /// The pane for `unit`'s `log`, drawn inside `border`.
-    pub fn new(unit: Option<&'a UiUnit>, log: Option<UiLog<'a>>, border: &'a Block<'a>) -> Self {
-        Self { unit, log, border }
+    pub fn new(
+        unit: Option<&'a UiUnit>,
+        log: Option<UiLog<'a>>,
+        border: &'a Block<'a>,
+        theme: &'a UiTheme,
+    ) -> Self {
+        Self {
+            unit,
+            log,
+            border,
+            theme,
+        }
     }
 
     /// Write the title over the top border: the unit, then its state spelled
@@ -123,19 +132,22 @@ impl<'a> UiRenderLog<'a> {
     /// The words the list gave up to fit on one line live here, where there
     /// is room for them and where they are about the unit being looked at.
     fn draw_title(&self, buffer: &mut Buffer, area: Rect, inner: Rect) {
+        let theme = self.theme;
+        let separator = &theme.symbol.separator;
         let plain = Style::new();
         let dim = plain.add_modifier(Modifier::DIM);
         let right = inner.right();
+
+        let mut x = buffer.set_stringn(inner.x, area.y, " ", 1, plain).0;
         let Some(unit) = self.unit else {
-            let x = buffer.set_stringn(inner.x, area.y, " ", 1, plain).0;
-            let x = set_clipped(buffer, x, area.y, "log", room(x, right), dim);
+            let x = set_clipped(buffer, theme, x, area.y, "log", room(x, right), dim);
             buffer.set_stringn(x, area.y, " ", 1, plain);
             return;
         };
 
-        let mut x = buffer.set_stringn(inner.x, area.y, " ", 1, plain).0;
         x = set_clipped(
             buffer,
+            theme,
             x,
             area.y,
             &unit.name,
@@ -143,32 +155,27 @@ impl<'a> UiRenderLog<'a> {
             plain.add_modifier(Modifier::BOLD),
         );
         x = buffer
-            .set_stringn(x, area.y, SEPARATOR, room(x, right), dim)
+            .set_stringn(x, area.y, separator, room(x, right), dim)
             .0;
 
-        let (label, color) = status_label(unit.state);
-        let style = plain.fg(color);
+        let status = theme.status.get(unit.state);
+        let style = plain.fg(status.color);
         x = buffer
-            .set_stringn(x, area.y, label, room(x, right), style)
+            .set_stringn(x, area.y, &status.label, room(x, right), style)
             .0;
         if let RunnerState::ExitError(Some(code)) = unit.state {
             let mut digits = [0u8; DIGITS_MAX];
+            let number = decimal(code.get() as usize, &mut digits);
             x = buffer
-                .set_stringn(
-                    x,
-                    area.y,
-                    decimal(code.get() as usize, &mut digits),
-                    room(x, right),
-                    style,
-                )
+                .set_stringn(x, area.y, number, room(x, right), style)
                 .0;
         }
 
         if let Some(mode) = unit.mode.as_deref() {
             x = buffer
-                .set_stringn(x, area.y, SEPARATOR, room(x, right), dim)
+                .set_stringn(x, area.y, separator, room(x, right), dim)
                 .0;
-            x = set_clipped(buffer, x, area.y, mode, room(x, right), dim);
+            x = set_clipped(buffer, theme, x, area.y, mode, room(x, right), dim);
         }
         buffer.set_stringn(x, area.y, " ", 1, plain);
     }
@@ -195,7 +202,7 @@ impl StatefulWidget for UiRenderLog<'_> {
         // a block's title is a `Line`, and both building one and rendering
         // one allocate.
         self.draw_title(buffer, area, inner);
-        draw_behind(buffer, area, state.scroll);
+        draw_behind(buffer, self.theme, area, state.scroll);
 
         let lines = self.log.as_ref().map_or(&[][..], |log| {
             visible(log, state.scroll, text.height as usize)
@@ -227,7 +234,7 @@ impl StatefulWidget for UiRenderLog<'_> {
 /// Drawn only while scrolled, at the bottom because that is the edge you are
 /// away from. The number is exact: the scroll *is* how many lines sit between
 /// the last row and the newest line.
-fn draw_behind(buffer: &mut Buffer, area: Rect, scroll: usize) {
+fn draw_behind(buffer: &mut Buffer, theme: &UiTheme, area: Rect, scroll: usize) {
     if scroll == 0 {
         return;
     }
@@ -235,7 +242,8 @@ fn draw_behind(buffer: &mut Buffer, area: Rect, scroll: usize) {
     let count = decimal(scroll, &mut digits);
 
     // " ↓ 42 ", ending one short of the corner.
-    let width = 4 + count.width() as u16;
+    let arrow = &theme.symbol.behind;
+    let width = (arrow.width() + count.width() + 1) as u16;
     let Some(x) = area.right().checked_sub(width + 1) else {
         return;
     };
@@ -245,7 +253,7 @@ fn draw_behind(buffer: &mut Buffer, area: Rect, scroll: usize) {
 
     let y = area.bottom().saturating_sub(1);
     let style = Style::new();
-    let mut x = buffer.set_stringn(x, y, " ↓ ", 3, style).0;
+    let mut x = buffer.set_stringn(x, y, arrow, arrow.width(), style).0;
     x = buffer
         .set_stringn(x, y, count, room(x, area.right()), style)
         .0;

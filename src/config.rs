@@ -121,8 +121,8 @@ pub struct ConfigProc {
     #[serde(rename = "$key$")]
     pub key: ArcStr,
     /// The name it is shown under. `None` for the procs with nothing better
-    /// to say about themselves than their key, which is most of them — see
-    /// [`display_name`](ConfigProc::display_name).
+    /// to say about themselves than their key, which is most of them, and
+    /// which is what is shown instead.
     #[serde(default)]
     pub name: Option<ArcStr>,
     /// A shorter name, for where the long one will not fit.

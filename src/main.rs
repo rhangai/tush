@@ -53,7 +53,7 @@ use crate::{
     app::App,
     cli::{Cli, Command, RunArgs},
     config::Config,
-    ui::{Ui, UiApp},
+    ui::{Ui, UiApp, UiTheme},
 };
 
 #[tokio::main]
@@ -90,7 +90,7 @@ async fn run(args: RunArgs) -> Result<()> {
         app.units().start(key)?;
     }
 
-    let result = Ui::run(UiApp::new(app.clone()), refresh).await;
+    let result = Ui::run(UiApp::new(app.clone()), refresh, UiTheme::default()).await;
     app.units().shutdown().await;
     result
 }

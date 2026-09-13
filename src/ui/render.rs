@@ -25,7 +25,11 @@ use unicode_width::UnicodeWidthStr;
 
 use arcstr::ArcStr;
 
-use crate::{log::LogRegion, ui::client::UiClient, unit::UnitChoice};
+use crate::{
+    log::LogRegion,
+    ui::{client::UiClient, theme::UiTheme},
+    unit::UnitChoice,
+};
 
 #[allow(unused_imports)]
 pub use log::{UiRenderLog, UiRenderLogState};
@@ -44,22 +48,6 @@ use crate::ui::client::UiUnit;
 /// name and a name does not grow when the window does. It also keeps the list
 /// still: a name lands in the same place whatever else is on screen.
 const UNITS_WIDTH: u16 = 30;
-
-/// The mark on a selected row. Every row is indented past it and a space, so
-/// what follows stays in one column whether the mark is there or not.
-///
-/// A mark and not a bar across the row: a bar has to be painted in some
-/// colour, and every colour it could be is either a bet that the terminal is
-/// dark or a fight with the status marks, which are what the list is read by.
-///
-/// Up here because both lists use it.
-const CURSOR: &str = ">";
-
-/// The corner where the units pane's border runs into the log pane's.
-const JOIN_TOP: &str = "┬";
-
-/// The same, at the other end.
-const JOIN_BOTTOM: &str = "┴";
 
 /// The frame the panes are drawn in.
 ///
@@ -90,11 +78,18 @@ pub struct UiRender {
     units_border: Block<'static>,
     /// The line of key bindings, which never changes at all.
     hints: Line<'static>,
+    /// Every fixed character and colour the panes draw with.
+    ///
+    /// Owned rather than borrowed, so that a screen is one thing to hold and
+    /// a theme read from somewhere else is moved in at construction and not
+    /// kept alive alongside it.
+    theme: UiTheme,
 }
 
 impl UiRender {
-    /// A screen showing the first unit, following the end of its log.
-    pub fn new() -> Self {
+    /// A screen showing the first unit, following the end of its log, drawn
+    /// the way `theme` says.
+    pub fn new(theme: UiTheme) -> Self {
         Self {
             units: UiRenderUnitsState::default(),
             log: UiRenderLogState::default(),
@@ -104,7 +99,8 @@ impl UiRender {
             panes: Layout::horizontal([Constraint::Length(UNITS_WIDTH), Constraint::Fill(1)]),
             border: Block::bordered(),
             units_border: Block::new().borders(Borders::TOP | Borders::BOTTOM | Borders::LEFT),
-            hints: key_hints(),
+            hints: key_hints(&theme),
+            theme,
         }
     }
 
@@ -118,23 +114,28 @@ impl UiRender {
 
         frame.render_widget(UiRenderHints(&self.hints), footer);
         frame.render_stateful_widget(
-            UiRenderLog::new(self.selected_unit(client), client.log(), &self.border),
+            UiRenderLog::new(
+                self.selected_unit(client),
+                client.log(),
+                &self.border,
+                &self.theme,
+            ),
             log_area,
             &mut self.log,
         );
         frame.render_stateful_widget(
-            UiRenderUnits::new(client.units(), &self.units_border),
+            UiRenderUnits::new(client.units(), &self.units_border, &self.theme),
             units_area,
             &mut self.units,
         );
-        join_borders(frame.buffer_mut(), log_area);
+        join_borders(frame.buffer_mut(), log_area, &self.theme);
 
         // Last, because it goes over both panes. Centred rather than pinned
         // to the row it acts on: the title says which unit it is for.
         if self.menu.is_open() {
-            let (width, height) = self.menu.size();
+            let (width, height) = self.menu.size(&self.theme);
             frame.render_stateful_widget(
-                UiRenderMenu::new(&self.border),
+                UiRenderMenu::new(&self.border, &self.theme),
                 centered(frame.area(), width, height),
                 &mut self.menu,
             );
@@ -221,7 +222,7 @@ impl UiRender {
 
 impl Default for UiRender {
     fn default() -> Self {
-        Self::new()
+        Self::new(UiTheme::default())
     }
 }
 
@@ -248,9 +249,13 @@ impl Widget for UiRenderHints<'_> {
 /// other: a double rule down the middle of the screen is the first thing the
 /// eye catches, and it means nothing. Drawn over the blocks afterwards,
 /// there being no way to ask one for a tee.
-fn join_borders(buffer: &mut Buffer, log: Rect) {
+fn join_borders(buffer: &mut Buffer, log: Rect, theme: &UiTheme) {
     let bottom = log.bottom().saturating_sub(1);
-    for (y, symbol) in [(log.y, JOIN_TOP), (bottom, JOIN_BOTTOM)] {
+    let joins = [
+        (log.y, &theme.symbol.join_top),
+        (bottom, &theme.symbol.join_bottom),
+    ];
+    for (y, symbol) in joins {
         if let Some(cell) = buffer.cell_mut(Position::new(log.x, y)) {
             cell.set_symbol(symbol);
         }
@@ -275,19 +280,28 @@ fn room(x: u16, right: u16) -> usize {
     right.saturating_sub(x) as usize
 }
 
-/// Put `text` down in at most `room` columns, ending in an ellipsis if it had
-/// to be cut, and report where it ended.
+/// Put `text` down in at most `room` columns, ending in the theme's ellipsis
+/// if it had to be cut, and report where it ended.
 ///
-/// The buffer clips on its own but will not say that it clipped, and a name
-/// that simply stops looks like a name spelled that way.
-fn set_clipped(buffer: &mut Buffer, x: u16, y: u16, text: &str, room: usize, style: Style) -> u16 {
+/// The buffer clips on its own but will not say that it clipped.
+fn set_clipped(
+    buffer: &mut Buffer,
+    theme: &UiTheme,
+    x: u16,
+    y: u16,
+    text: &str,
+    room: usize,
+    style: Style,
+) -> u16 {
     if text.width() <= room {
         return buffer.set_stringn(x, y, text, room, style).0;
     }
-    // One column goes to the mark, so anything narrower has room for the mark
-    // and nothing else.
-    let (end, _) = buffer.set_stringn(x, y, text, room.saturating_sub(1), style);
-    buffer.set_stringn(end, y, "…", 1, style).0
+    // The mark takes its own columns, so anything narrower has room for the
+    // mark and nothing else.
+    let mark = &theme.symbol.ellipsis;
+    let width = mark.width();
+    let (end, _) = buffer.set_stringn(x, y, text, room.saturating_sub(width), style);
+    buffer.set_stringn(end, y, mark, width, style).0
 }
 
 /// The most digits a [`usize`] can have.
@@ -314,7 +328,7 @@ fn decimal(value: usize, digits: &mut [u8; DIGITS_MAX]) -> &str {
 
 /// The bottom line: what the keys do. When a command can report having been
 /// refused, this is the line it will have to share.
-fn key_hints() -> Line<'static> {
+fn key_hints(theme: &UiTheme) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     for (key, what) in [
         ("↑↓", "move"),
@@ -325,7 +339,7 @@ fn key_hints() -> Line<'static> {
         ("end", "follow"),
         ("q", "quit"),
     ] {
-        key_hint(&mut spans, key, what);
+        key_hint(&mut spans, key, what, theme.color.key);
     }
     Line::from(spans)
 }
@@ -335,8 +349,8 @@ fn key_hints() -> Line<'static> {
 ///
 /// Two styles rather than one, because a line of evenly dim text is a line
 /// nobody picks a key out of.
-fn key_hint(spans: &mut Vec<Span<'static>>, key: &'static str, what: &'static str) {
-    spans.push(Span::styled(key, Style::new().fg(Color::Cyan)));
+fn key_hint(spans: &mut Vec<Span<'static>>, key: &'static str, what: &'static str, color: Color) {
+    spans.push(Span::styled(key, Style::new().fg(color)));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(what, Style::new().add_modifier(Modifier::DIM)));
     spans.push(Span::raw("   "));

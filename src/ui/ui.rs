@@ -14,6 +14,7 @@ use tokio_stream::StreamExt;
 use crate::ui::{
     client::{UiClient, UiCommand, UiUnit},
     render::{Move, UiMenuChoice, UiRender},
+    theme::UiTheme,
 };
 
 /// How many lines one notch of the wheel moves the log: three, which is what
@@ -43,13 +44,16 @@ impl<C: UiClient> Ui<C> {
     /// a run changes state without anybody asking, and a [`UiClient`] cannot
     /// push, so the only way to find out is to look.
     ///
+    /// `theme` is taken here rather than read here: this is the screen, and
+    /// where the values come from is the caller's business.
+    ///
     /// The terminal is restored whatever the loop did, error path included —
     /// which is why the result is held rather than `?`-ed. A failure that
     /// leaves raw mode on is a failure you cannot read the message of.
-    pub async fn run(client: C, refresh: Duration) -> Result<()> {
+    pub async fn run(client: C, refresh: Duration, theme: UiTheme) -> Result<()> {
         let mut ui = Self {
             client,
-            render: UiRender::new(),
+            render: UiRender::new(theme),
             running: true,
         };
         let mut terminal = ratatui::init();

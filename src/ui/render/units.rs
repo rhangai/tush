@@ -10,24 +10,41 @@ use crate::{
     runner::RunnerState,
     ui::{
         client::UiUnit,
-        render::{CURSOR, DIGITS_MAX, decimal, room, set_clipped},
+        render::{DIGITS_MAX, decimal, room, set_clipped},
+        theme::{UiTheme, UiThemeUnits},
     },
 };
 
 /// Blank columns at each edge of a row, so the text is not against the
-/// border and the selection bar has something to be a bar of.
+/// border and the gutter has somewhere to start.
 const PAD_X: u16 = 1;
 
-/// What separates the name from the column on the right.
+/// What separates the name from the column on the right, in a compact row.
 const DETAIL_GAP: u16 = 2;
 
 /// How little room the name may be left with before the right hand column is
 /// dropped instead. A name is what the list is for; the mode is a reminder.
 const NAME_MIN: u16 = 8;
 
-/// One line each. The status is a mark in the gutter rather than a word under
-/// the name, which is what let the row lose the other two lines.
-const ROW_HEIGHT: usize = 1;
+/// How far the second line of a roomy row sits in from the name above it,
+/// which is what makes the two lines read as one row.
+const DETAIL_INDENT: &str = "  ";
+
+/// How many lines a row of each layout takes.
+///
+/// A roomy row is two lines and the gap after them: two lines with nothing
+/// between them read as four rows rather than two. The theme picks between
+/// the layouts; what a layout costs in lines is this pane's to know.
+const COMPACT_HEIGHT: u16 = 1;
+const ROOMY_HEIGHT: u16 = 3;
+
+/// How many lines `layout` spends on one unit.
+fn row_height(layout: UiThemeUnits) -> u16 {
+    match layout {
+        UiThemeUnits::Compact => COMPACT_HEIGHT,
+        UiThemeUnits::Roomy => ROOMY_HEIGHT,
+    }
+}
 
 /// Where a key press moves the cursor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,8 +91,7 @@ impl UiRenderUnitsState {
     }
 }
 
-/// The units pane: one row per unit — a status mark, its name, and whatever
-/// qualifies it.
+/// The units pane: one row per unit, laid out the way the theme says.
 ///
 /// The rows are written into the buffer rather than built as a `List` of
 /// `ListItem`s of `Line`s of `Span`s, every part of which allocates. Caching
@@ -84,13 +100,32 @@ impl UiRenderUnitsState {
 pub struct UiRenderUnits<'a> {
     units: &'a [UiUnit],
     border: &'a Block<'a>,
+    theme: &'a UiTheme,
 }
 
 impl<'a> UiRenderUnits<'a> {
     /// The pane for `units`, drawn inside `border` — lent rather than built
     /// here, a `Block` not being free to make.
-    pub fn new(units: &'a [UiUnit], border: &'a Block<'a>) -> Self {
-        Self { units, border }
+    pub fn new(units: &'a [UiUnit], border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
+        Self {
+            units,
+            border,
+            theme,
+        }
+    }
+
+    /// Which layout to actually use, which is the theme's unless the pane is
+    /// too short for it.
+    ///
+    /// The fallback is one way: a roomy row wants three lines, and a pane that
+    /// cannot give one row all three would show a list of one unit. Compact
+    /// asks for one line and so never has to fall back to anything.
+    fn layout(&self, height: u16) -> UiThemeUnits {
+        let wanted = self.theme.units;
+        match height >= row_height(wanted) {
+            true => wanted,
+            false => UiThemeUnits::Compact,
+        }
     }
 }
 
@@ -101,19 +136,61 @@ impl StatefulWidget for UiRenderUnits<'_> {
         let inner = self.border.inner(area);
         self.border.render(area, buffer);
 
-        let per_page = (inner.height as usize / ROW_HEIGHT).max(1);
+        let layout = self.layout(inner.height);
+        let height = row_height(layout);
+        let per_page = (inner.height / height).max(1) as usize;
         state.scroll_into_view(per_page, self.units.len());
 
         let last = self.units.len().min(state.offset + per_page);
         for (row, index) in (state.offset..last).enumerate() {
-            let y = inner.y + (row * ROW_HEIGHT) as u16;
-            draw_unit(
-                buffer,
-                &self.units[index],
-                Rect::new(inner.x, y, inner.width, 1),
-                index == state.cursor,
-            );
+            let y = inner.y + row as u16 * height;
+            let area = Rect::new(inner.x, y, inner.width, height);
+            let unit = &self.units[index];
+            let selected = index == state.cursor;
+            match layout {
+                UiThemeUnits::Compact => draw_compact(buffer, self.theme, unit, area, selected),
+                UiThemeUnits::Roomy => draw_roomy(buffer, self.theme, unit, area, selected),
+            }
         }
+    }
+}
+
+/// The cursor column and the status mark, which both layouts open with, and
+/// where the name may start after them.
+fn draw_gutter(
+    buffer: &mut Buffer,
+    theme: &UiTheme,
+    unit: &UiUnit,
+    area: Rect,
+    selected: bool,
+) -> u16 {
+    let cursor = &theme.symbol.cursor;
+    let x = area.x + PAD_X;
+    if selected {
+        let style = Style::new().fg(theme.color.cursor);
+        buffer.set_stringn(x, area.y, cursor, cursor.width(), style);
+    }
+
+    let status = theme.status.get(unit.state);
+    let mark = &status.mark;
+    let x = buffer
+        .set_stringn(
+            x + cursor.width() as u16 + 1,
+            area.y,
+            mark,
+            mark.width(),
+            Style::new().fg(status.color),
+        )
+        .0;
+    x + 1
+}
+
+/// Bold as well as marked, because a cursor two columns wide is a thin thing
+/// to find a row by.
+fn name_style(selected: bool) -> Style {
+    match selected {
+        true => Style::new().add_modifier(Modifier::BOLD),
+        false => Style::new(),
     }
 }
 
@@ -121,37 +198,15 @@ impl StatefulWidget for UiRenderUnits<'_> {
 /// column — set down in that order because the name takes whatever the other
 /// two leave.
 ///
-/// [`CURSOR`] gets a column of its own ahead of the mark, so that being
-/// selected changes nothing about how the rest of the row is drawn — the
-/// status marks keep their colours on every row, selected included.
-///
-/// The short names are taken wherever the config wrote one. This row is the
-/// narrowest thing on the screen, which is why the choice is made here and
-/// why nothing below it takes it: the log pane's title has the room and
-/// spells both out in full.
-fn draw_unit(buffer: &mut Buffer, unit: &UiUnit, area: Rect, selected: bool) {
+/// The short names are taken wherever the config wrote one. This is the
+/// narrowest row on the screen and the one they were asked for; the roomy
+/// layout and the log pane's title spell everything out instead.
+fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect, selected: bool) {
+    let left = draw_gutter(buffer, theme, unit, area, selected);
     let right = area.right().saturating_sub(PAD_X);
-    let x = area.x + PAD_X;
-    if selected {
-        // White, so the one coloured thing in a row is still the status mark.
-        let style = Style::new().fg(Color::White);
-        buffer.set_stringn(x, area.y, CURSOR, CURSOR.width(), style);
-    }
-
-    let (mark, color) = status_mark(unit.state);
-    let x = buffer
-        .set_stringn(
-            x + CURSOR.width() as u16 + 1,
-            area.y,
-            mark,
-            mark.width(),
-            Style::new().fg(color),
-        )
-        .0;
-    let left = x + 1;
 
     let mut digits = [0u8; DIGITS_MAX];
-    let (label, number, color) = detail(unit, &mut digits);
+    let (label, number, color) = detail(theme, unit, &mut digits);
     let style = match color {
         Some(color) => Style::new().fg(color),
         None => Style::new().add_modifier(Modifier::DIM),
@@ -168,35 +223,86 @@ fn draw_unit(buffer: &mut Buffer, unit: &UiUnit, area: Rect, selected: bool) {
             name_right = start.saturating_sub(DETAIL_GAP);
         }
     }
-    // Bold as well as marked, because a mark two columns wide is a thin
-    // thing to find a row by.
-    let name = match selected {
-        true => Style::new().add_modifier(Modifier::BOLD),
-        false => Style::new(),
-    };
-    let text = unit.name_short.as_ref().unwrap_or(&unit.name);
-    set_clipped(buffer, left, area.y, text, room(left, name_right), name);
+
+    let name = unit.name_short.as_ref().unwrap_or(&unit.name);
+    let style = name_style(selected);
+    set_clipped(
+        buffer,
+        theme,
+        left,
+        area.y,
+        name,
+        room(left, name_right),
+        style,
+    );
 }
 
-/// The right hand column, in the two pieces it is written in: the most
-/// specific thing there is to say about the unit — why it stopped, when it
-/// stopped badly, and otherwise which mode it is on.
+/// One unit over two lines and a gap: the name, then its state spelled out
+/// under it.
 ///
-/// A failure with a code says `exit ` and leaves the number to [`decimal`],
-/// which keeps every string here a literal. `None` for the colour is the
-/// mode, which is said quietly.
+/// Full names on both lines. Two lines is the layout you pick when you would
+/// rather read the list than fit it, so it takes the long form of everything
+/// the config gave a short one for.
+fn draw_roomy(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect, selected: bool) {
+    let left = draw_gutter(buffer, theme, unit, area, selected);
+    let right = area.right().saturating_sub(PAD_X);
+    set_clipped(
+        buffer,
+        theme,
+        left,
+        area.y,
+        &unit.name,
+        room(left, right),
+        name_style(selected),
+    );
+
+    let y = area.y + 1;
+    let mut x = buffer
+        .set_stringn(left, y, DETAIL_INDENT, DETAIL_INDENT.width(), Style::new())
+        .0;
+
+    let status = theme.status.get(unit.state);
+    let style = Style::new().fg(status.color);
+    x = buffer
+        .set_stringn(x, y, &status.label, room(x, right), style)
+        .0;
+    if let RunnerState::ExitError(Some(code)) = unit.state {
+        let mut digits = [0u8; DIGITS_MAX];
+        let number = decimal(code.get() as usize, &mut digits);
+        x = buffer.set_stringn(x, y, number, room(x, right), style).0;
+    }
+
+    let Some(mode) = unit.mode.as_deref() else {
+        return;
+    };
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let separator = &theme.symbol.separator;
+    x = buffer.set_stringn(x, y, separator, room(x, right), dim).0;
+    set_clipped(buffer, theme, x, y, mode, room(x, right), dim);
+}
+
+/// A compact row's right hand column, in the two pieces it is written in: the
+/// most specific thing there is to say about the unit — why it stopped, when
+/// it stopped badly, and otherwise which mode it is on.
+///
+/// A failure with a code leaves the number to [`decimal`], the theme's label
+/// for it being a prefix, which keeps this from building a string.
+/// `None` for the colour is the mode, which is said quietly.
 fn detail<'a>(
+    theme: &'a UiTheme,
     unit: &'a UiUnit,
     digits: &'a mut [u8; DIGITS_MAX],
 ) -> (&'a str, &'a str, Option<Color>) {
+    let status = theme.status.get(unit.state);
     match unit.state {
         RunnerState::ExitError(Some(code)) => (
-            "exit ",
+            &status.label,
             decimal(code.get() as usize, digits),
-            Some(Color::Red),
+            Some(status.color),
         ),
-        RunnerState::ExitError(None) => ("failed", "", Some(Color::Red)),
-        RunnerState::Killed(_) => ("killed", "", Some(Color::Magenta)),
+        RunnerState::ExitError(None) | RunnerState::Killed(_) => {
+            (&status.label, "", Some(status.color))
+        }
         _ => (
             unit.mode_short
                 .as_deref()
@@ -205,41 +311,5 @@ fn detail<'a>(
             "",
             None,
         ),
-    }
-}
-
-/// The mark a state gets in the gutter, and the colour it gets it in.
-///
-/// Shape as well as colour, because a list read at a glance is read by shape
-/// first and because a terminal's colours are the user's, not ours.
-pub fn status_mark(state: RunnerState) -> (&'static str, Color) {
-    match state {
-        RunnerState::Stopped => ("○", Color::DarkGray),
-        RunnerState::Waiting => ("◌", Color::Gray),
-        RunnerState::Started => ("◐", Color::Yellow),
-        RunnerState::Running => ("●", Color::Green),
-        RunnerState::Killing => ("◑", Color::Yellow),
-        RunnerState::ExitSuccess => ("✓", Color::Cyan),
-        RunnerState::ExitError(_) => ("✗", Color::Red),
-        RunnerState::Killed(_) => ("✗", Color::Magenta),
-    }
-}
-
-/// What a state is called, for the one place there is room to spell it out.
-///
-/// The three terminal states stay apart rather than collapsing into
-/// "stopped": whether a unit finished, failed or was killed is the first
-/// thing you look at a list like this to find out.
-pub fn status_label(state: RunnerState) -> (&'static str, Color) {
-    match state {
-        RunnerState::Stopped => ("stopped", Color::DarkGray),
-        RunnerState::Waiting => ("waiting", Color::Gray),
-        RunnerState::Started => ("starting", Color::Yellow),
-        RunnerState::Running => ("running", Color::Green),
-        RunnerState::Killing => ("stopping", Color::Yellow),
-        RunnerState::ExitSuccess => ("done", Color::Cyan),
-        RunnerState::ExitError(Some(_)) => ("exit ", Color::Red),
-        RunnerState::ExitError(None) => ("failed", Color::Red),
-        RunnerState::Killed(_) => ("killed", Color::Magenta),
     }
 }

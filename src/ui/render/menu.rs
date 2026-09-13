@@ -8,7 +8,10 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    ui::render::{CURSOR, Move, room, set_clipped},
+    ui::{
+        render::{Move, room, set_clipped},
+        theme::UiTheme,
+    },
     unit::{UnitChoice, UnitEvent},
 };
 
@@ -128,7 +131,10 @@ impl UiRenderMenuState {
 
     /// Wide enough for the longest entry or the title, tall enough for all
     /// of them, plus padding and border.
-    pub fn size(&self) -> (u16, u16) {
+    ///
+    /// Takes the theme because the cursor's column is as wide as the theme's
+    /// mark, and a box measured without it is a box the entries hang out of.
+    pub fn size(&self, theme: &UiTheme) -> (u16, u16) {
         let entries = self
             .items
             .iter()
@@ -141,7 +147,8 @@ impl UiRenderMenuState {
             })
             .max()
             .unwrap_or(0);
-        let width = (entries.max(CANCEL.width()) + CURSOR.width() + 1) as u16 + PAD_X * 2;
+        let cursor = theme.symbol.cursor.width() + 1;
+        let width = (entries.max(CANCEL.width()) + cursor) as u16 + PAD_X * 2;
         // The title sits in the top border with a space either side, and the
         // two corners are not room for anything.
         let width = width.max(self.title.width() as u16 + 2).max(MIN_WIDTH) + 2;
@@ -168,12 +175,13 @@ pub enum UiMenuChoice {
 /// those rules in the module least able to check them.
 pub struct UiRenderMenu<'a> {
     border: &'a Block<'a>,
+    theme: &'a UiTheme,
 }
 
 impl<'a> UiRenderMenu<'a> {
     /// The menu, drawn inside `border`.
-    pub fn new(border: &'a Block<'a>) -> Self {
-        Self { border }
+    pub fn new(border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
+        Self { border, theme }
     }
 }
 
@@ -195,6 +203,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
         let mut x = buffer.set_stringn(inner.x, area.y, " ", 1, plain).0;
         x = set_clipped(
             buffer,
+            self.theme,
             x,
             area.y,
             &state.title,
@@ -211,7 +220,13 @@ impl StatefulWidget for UiRenderMenu<'_> {
         let row_at = |y: u16| Rect::new(inner.x, top + y, inner.width, 1);
 
         for (row, item) in state.items.iter().take(rows as usize).enumerate() {
-            draw_choice(buffer, item, row_at(row as u16), row == state.cursor);
+            draw_choice(
+                buffer,
+                self.theme,
+                item,
+                row_at(row as u16),
+                row == state.cursor,
+            );
         }
 
         // Past the gap, on the row the cursor calls `items.len()`.
@@ -219,6 +234,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
         if row < rows {
             draw_row(
                 buffer,
+                self.theme,
                 CANCEL,
                 None,
                 row_at(row),
@@ -230,13 +246,20 @@ impl StatefulWidget for UiRenderMenu<'_> {
 }
 
 /// One entry: the mark, the verb, and the mode it applies to.
-fn draw_choice(buffer: &mut Buffer, item: &UnitChoice, area: Rect, selected: bool) {
+fn draw_choice(
+    buffer: &mut Buffer,
+    theme: &UiTheme,
+    item: &UnitChoice,
+    area: Rect,
+    selected: bool,
+) {
     let style = match item.enabled {
         true => Style::new(),
         false => Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
     };
     draw_row(
         buffer,
+        theme,
         item.verb,
         item.mode.as_deref(),
         area,
@@ -248,10 +271,11 @@ fn draw_choice(buffer: &mut Buffer, item: &UnitChoice, area: Rect, selected: boo
 /// A verb, and what it applies to, across one row of the box.
 ///
 /// Shared with [`CANCEL`], which is no [`UnitChoice`] but has to line up with
-/// them to the column. The selection is the same [`CURSOR`] the units list
-/// uses — one way of saying "here" for both lists.
+/// them to the column. The selection is the theme's cursor, the same mark the
+/// units list uses — one way of saying "here" for both lists.
 fn draw_row(
     buffer: &mut Buffer,
+    theme: &UiTheme,
     verb: &str,
     mode: Option<&str>,
     area: Rect,
@@ -263,18 +287,19 @@ fn draw_row(
         false => style,
     };
     let right = area.right().saturating_sub(PAD_X);
+    let mark = &theme.symbol.cursor;
     let x = area.x + PAD_X;
     if selected {
-        let cursor = Style::new().fg(Color::White);
-        buffer.set_stringn(x, area.y, CURSOR, CURSOR.width(), cursor);
+        let cursor = Style::new().fg(theme.color.cursor);
+        buffer.set_stringn(x, area.y, mark, mark.width(), cursor);
     }
-    let left = x + CURSOR.width() as u16 + 1;
-    let mut x = set_clipped(buffer, left, area.y, verb, room(left, right), style);
+    let left = x + mark.width() as u16 + 1;
+    let mut x = set_clipped(buffer, theme, left, area.y, verb, room(left, right), style);
     let Some(mode) = mode else {
         return;
     };
     x = buffer
         .set_stringn(x, area.y, VERB_GAP, room(x, right), style)
         .0;
-    set_clipped(buffer, x, area.y, mode, room(x, right), style);
+    set_clipped(buffer, theme, x, area.y, mode, room(x, right), style);
 }
