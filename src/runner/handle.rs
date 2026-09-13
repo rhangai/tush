@@ -49,12 +49,15 @@ impl RunnerHandle {
     /// such as [`abort`](RunnerHandle::abort) or
     /// [`wait`](RunnerHandle::wait) — is called.
     pub fn new(runner: impl Runner) -> Arc<Self> {
-        Self::new_inner(runner, true)
+        Self::new_inner(runner, true, |_| ())
     }
 
-    /// Create the handle from the runner, already running
-    pub fn new_running(runner: impl Runner) -> Arc<Self> {
-        Self::new_inner(runner, false)
+    /// Create the runner handle with a on_exit callback
+    pub fn new_with_callback<F>(runner: impl Runner, on_exit: F) -> Arc<Self>
+    where
+        F: FnOnce(RunnerState) + Send + 'static,
+    {
+        Self::new_inner(runner, true, on_exit)
     }
 
     /// Create the handle from the runner
@@ -62,7 +65,10 @@ impl RunnerHandle {
     /// Spawns the supervising task, which owns the runner for the rest of its
     /// life. The task holds an `Arc` back to the handle, so it keeps reporting
     /// state even if every external reference is dropped.
-    fn new_inner(runner: impl Runner, paused: bool) -> Arc<Self> {
+    fn new_inner<F>(runner: impl Runner, paused: bool, on_exit: F) -> Arc<Self>
+    where
+        F: FnOnce(RunnerState) + Send + 'static,
+    {
         let (exit_state_sender, exit_state_receiver) =
             tokio::sync::watch::channel::<Option<RunnerState>>(None);
         let handle = Arc::new(RunnerHandle {
@@ -79,7 +85,7 @@ impl RunnerHandle {
         // Block to spawn the worker task
         {
             let handle = handle.clone();
-            tokio::spawn(async move {
+            _ = tokio::spawn(async move {
                 if let Some(start_notify) = &handle.start_notify {
                     start_notify.notified().await;
                 }
@@ -89,6 +95,7 @@ impl RunnerHandle {
                     let exit_state = RunnerState::Killed(None);
                     handle.state.store(exit_state);
                     _ = exit_state_sender.send(Some(exit_state));
+                    on_exit(exit_state);
                     return;
                 }
                 handle.state.store_next(RunnerState::Running);
@@ -105,7 +112,8 @@ impl RunnerHandle {
                 };
                 handle.state.store(exit_state);
                 _ = exit_state_sender.send(Some(exit_state));
-            })
+                on_exit(exit_state);
+            });
         };
         handle
     }

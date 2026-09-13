@@ -5,7 +5,7 @@ use arcstr::ArcStr;
 use parking_lot::Mutex;
 
 use crate::{
-    log::{Log, LogReader},
+    log::{Log, LogReader, LogWriterNotes},
     runner::{RunnerHandle, RunnerState},
     unit::{UnitAction, UnitEvent, behavior::UnitBehavior},
 };
@@ -22,6 +22,7 @@ use crate::{
 /// without locking, including while a restart is in flight.
 pub struct Unit {
     log: Log,
+    log_notes: LogWriterNotes,
     behavior: Mutex<UnitBehavior>,
     handle: ArcSwapOption<RunnerHandle>,
 }
@@ -29,8 +30,11 @@ pub struct Unit {
 impl Unit {
     /// Create a stopped unit with an empty log.
     pub fn new(behavior: UnitBehavior) -> Self {
+        let log = Log::new(4096);
+        let log_notes = log.notes();
         Self {
-            log: Log::new(4096),
+            log,
+            log_notes,
             behavior: Mutex::new(behavior),
             handle: ArcSwapOption::const_empty(),
         }

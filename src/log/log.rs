@@ -212,12 +212,7 @@ impl LogWriterRef {
     /// process's output and has no meaning for a line the manager wrote
     /// itself.
     pub fn notes(&self) -> LogWriterNotes {
-        LogWriterNotes {
-            inner: Self {
-                inner: self.inner.clone(),
-                id: LogWriterId::NOTES,
-            },
-        }
+        LogWriterNotes::new(self.inner.clone())
     }
 
     /// Write one whole line into the log.
@@ -319,6 +314,15 @@ pub struct LogWriterNotes {
 }
 
 impl LogWriterNotes {
+    /// Create the LogWriterNotes
+    fn new(inner: Weak<LogInner>) -> Self {
+        Self {
+            inner: LogWriterRef {
+                inner,
+                id: LogWriterId::NOTES,
+            },
+        }
+    }
     /// Write one whole line into the log.
     pub fn write_line(&mut self, text: &str) {
         self.inner.write_line(text);
@@ -442,6 +446,16 @@ impl Log {
             Arc::downgrade(&self.inner),
             self.inner.history.lock().chunks.capacity(),
         )
+    }
+
+    /// A writer for notes about this log, rather than output into it.
+    ///
+    /// The same log, under [`LogWriterId::NOTES`], and narrowed to the two
+    /// ways in that a note has: everything else a writer can do belongs to a
+    /// process's output and has no meaning for a line the manager wrote
+    /// itself.
+    pub fn notes(&self) -> LogWriterNotes {
+        LogWriterNotes::new(Arc::downgrade(&self.inner))
     }
 
     /// Print the history to stdout, oldest first.
