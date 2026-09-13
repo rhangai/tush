@@ -234,6 +234,7 @@ impl ProcessInner {
                 writer,
             } => {
                 command.process_group(0);
+                command.stdin(Stdio::null());
                 let (child, writer_task) = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
                     command.stderr(Stdio::piped());
