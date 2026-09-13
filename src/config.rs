@@ -123,6 +123,14 @@ pub struct ConfigProc {
     /// [`display_name`](ConfigProc::display_name).
     #[serde(default)]
     pub name: Option<ArcStr>,
+    /// A shorter name, for where the long one will not fit.
+    ///
+    /// Handed on as the `Option` it is, and not folded into
+    /// [`name`](ConfigProc::name): only a view knows whether it has the room,
+    /// and a fallback taken here would reach it as a short name somebody
+    /// chose.
+    #[serde(default)]
+    pub name_short: Option<ArcStr>,
     /// The groups it belongs to, for starting several procs by one name.
     ///
     /// `group` in the file, singular, because that is how it reads at the
@@ -160,6 +168,9 @@ impl ConfigProc {
 pub struct ConfigUnitMode {
     /// What the mode is called, and what the menu lists it as.
     pub name: ArcStr,
+    /// A shorter name for it, on the same terms as a proc's.
+    #[serde(default)]
+    pub name_short: Option<ArcStr>,
     /// What it runs.
     pub run: ConfigUnitRun,
 }

@@ -55,7 +55,7 @@ impl UiApp {
     /// row out from under the cursor. It stands in for the order the config
     /// was written in, which the config does not carry this far yet.
     ///
-    /// The name is taken once because a proc is not renamed — unlike the
+    /// The names are taken once because a proc is not renamed — unlike the
     /// mode, which is read every sync.
     pub fn new(app: Arc<App>) -> Self {
         let units = app.units();
@@ -63,8 +63,10 @@ impl UiApp {
             .keys()
             .map(|key| UiUnit {
                 name: units.name(key).unwrap_or_else(|_| key.into()),
+                name_short: units.name_short(key).unwrap_or_default(),
                 key: key.to_owned(),
                 mode: None,
+                mode_short: None,
                 state: RunnerState::Stopped,
             })
             .collect();
@@ -109,6 +111,9 @@ impl UiClient for UiApp {
             }
             if let Ok(mode) = units.mode(&unit.key) {
                 unit.mode = mode;
+            }
+            if let Ok(short) = units.mode_short(&unit.key) {
+                unit.mode_short = short;
             }
         }
         self.sync_log();

@@ -47,6 +47,12 @@ pub struct UnitBehavior {
     /// and a copy per unit per frame, for text that never changes; with this
     /// it is a refcount.
     name: ArcStr,
+    /// A shorter name for it, when the config declared one.
+    ///
+    /// Kept as an `Option` and never folded into [`name`](Self::name): only a
+    /// view knows whether it has the room for the long one, and a fallback
+    /// taken here would reach it as a short name somebody chose.
+    short: Option<ArcStr>,
     inner: UnitBehaviorInner,
 }
 
@@ -75,16 +81,29 @@ impl UnitBehavior {
     /// moves only when a [`StartMode`](UnitEvent::StartMode) picks another —
     /// which is what the `&mut self` on [`dispatch`](UnitBehavior::dispatch)
     /// is for.
-    pub fn modes(name: ArcStr, modes: Vec<UnitBehavior>) -> Self {
+    pub fn modes(name: ArcStr, modes: impl Iterator<Item = UnitBehavior>) -> Self {
         Self::wrap(
             name,
-            UnitBehaviorInner::Modes(BehaviorModes { index: 0, modes }),
+            UnitBehaviorInner::Modes(BehaviorModes {
+                index: 0,
+                modes: modes.collect(),
+            }),
         )
     }
 
     /// A behavior that does nothing and succeeds immediately.
     pub fn noop(name: ArcStr) -> Self {
         Self::wrap(name, UnitBehaviorInner::Noop(BehaviorNoop {}))
+    }
+
+    /// Give it the short name the config declared, if it declared one.
+    ///
+    /// Takes the `Option` rather than the name so that a caller holding the
+    /// config's field passes it straight through — `None` is a behavior with
+    /// no short name, which is what it already was.
+    pub fn with_short(mut self, short: Option<ArcStr>) -> Self {
+        self.short = short;
+        self
     }
 
     /// What this behavior is called: the proc, or the mode.
@@ -95,9 +114,18 @@ impl UnitBehavior {
         self.name.clone()
     }
 
+    /// The shorter name for it, or `None` where none was declared.
+    pub fn name_short(&self) -> Option<ArcStr> {
+        self.short.clone()
+    }
+
     /// Put a kind behind the wrapper the rest of the crate sees.
     fn wrap(name: ArcStr, inner: UnitBehaviorInner) -> Self {
-        Self { name, inner }
+        Self {
+            name,
+            short: None,
+            inner,
+        }
     }
 
     /// Which of its modes is current, for a behavior that has any.
@@ -108,6 +136,12 @@ impl UnitBehavior {
     /// has no modes, and a made up label for it would be noise on every row.
     pub fn mode(&self) -> Option<ArcStr> {
         self.inner.mode()
+    }
+
+    /// The current mode's short name, which is `None` both for a behavior
+    /// with no modes and for a mode that declared none.
+    pub fn mode_short(&self) -> Option<ArcStr> {
+        self.inner.mode_short()
     }
 
     /// Hand an event to the behavior, and take the action it asks for.
@@ -189,6 +223,11 @@ trait UnitBehaviorKind {
 
     /// Which of its modes is current, for the kinds that have any.
     fn mode(&self) -> Option<ArcStr> {
+        None
+    }
+
+    /// That mode's short name, on the same terms.
+    fn mode_short(&self) -> Option<ArcStr> {
         None
     }
 
@@ -295,6 +334,10 @@ struct BehaviorModes {
 impl UnitBehaviorKind for BehaviorModes {
     fn mode(&self) -> Option<ArcStr> {
         Some(self.modes.get(self.index)?.name())
+    }
+
+    fn mode_short(&self) -> Option<ArcStr> {
+        self.modes.get(self.index)?.name_short()
     }
 
     /// One entry per mode, in the order the config wrote them.

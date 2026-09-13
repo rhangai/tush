@@ -57,10 +57,20 @@ impl Unit {
         self.behavior.lock().name()
     }
 
+    /// The shorter name for it, or `None` where the config declared none.
+    pub fn name_short(&self) -> Option<ArcStr> {
+        self.behavior.lock().name_short()
+    }
+
     /// Which of its modes is current, or `None` if it has none. Read every
     /// time a view refreshes, since a dispatch may have moved it.
     pub fn mode(&self) -> Option<ArcStr> {
         self.behavior.lock().mode()
+    }
+
+    /// That mode's short name, read every sync for the same reason.
+    pub fn mode_short(&self) -> Option<ArcStr> {
+        self.behavior.lock().mode_short()
     }
 
     /// Hand an event to the behavior, and take the action it asks for.

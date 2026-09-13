@@ -20,9 +20,17 @@ pub struct UiUnit {
     /// folding the two would mean either showing an identifier or addressing
     /// a unit by something a person may change.
     pub name: ArcStr,
+    /// A shorter name to show where [`name`](UiUnit::name) will not fit.
+    ///
+    /// `None` is the config having said nothing, not "use the long one": what
+    /// to do about it is the pane's, since the pane is what knows its width.
+    pub name_short: Option<ArcStr>,
     /// Which mode it is on. `None` means no modes at all, which is most
     /// units — the row shows nothing rather than inventing a label.
     pub mode: Option<ArcStr>,
+    /// That mode's short name, on the same terms — `None` both for a unit
+    /// with no modes and for a mode that declared none.
+    pub mode_short: Option<ArcStr>,
     /// Where its run was at the last sync.
     pub state: RunnerState,
 }

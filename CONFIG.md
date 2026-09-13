@@ -27,16 +27,18 @@ entries point at.
 ```yaml
 procs:
   <name>:
-    name:    <string>          # optional
-    group:   [<string>, ...]   # optional
-    depends: [<string>, ...]   # optional
-    run:     <commands>        # optional
-    modes:   [<mode>, ...]     # optional
+    name:       <string>        # optional
+    name_short: <string>        # optional
+    group:      [<string>, ...] # optional
+    depends:    [<string>, ...] # optional
+    run:        <commands>      # optional
+    modes:      [<mode>, ...]   # optional
 ```
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `name` | string | A label to show instead of the proc's key |
+| `name_short` | string | A shorter label, for where the full one will not fit |
 | `group` | list of strings | Groups this proc belongs to |
 | `depends` | list of strings | Procs that must be up before this one starts |
 | `run` | [commands](#run) | The one way this proc runs |
@@ -116,8 +118,18 @@ web:
         - [npm, run, serve]
 ```
 
-Every mode needs a `name` and a `run`, and those are the only two keys it may
-have. A mode's `run` takes the same two spellings as a proc's.
+A mode may also carry a `name_short`, which the units list uses the same way
+it uses a proc's:
+
+```yaml
+modes:
+  - name: Watch
+    name_short: W
+    run: [npm, run, watch]
+```
+
+Every mode needs a `name` and a `run`; `name_short` is the only other key it
+may have. A mode's `run` takes the same two spellings as a proc's.
 
 Modes stay in the order you write them.
 
@@ -163,6 +175,24 @@ api:
 ```
 
 Leave it out and the key is used.
+
+---
+
+## `name_short`
+
+A second, shorter label, for the places too narrow for the full one — today
+that is the units list, which gives each proc a single line.
+
+```yaml
+web-frontend-dev-server:
+  name:       Frontend
+  name_short: web
+  run: [npm, run, dev]
+```
+
+Leave it out and the full name is used there too. It does **not** fall back
+the way `name` falls back to the key: the two are kept apart all the way to
+the screen, so a view can tell a short name you chose from one it settled for.
 
 ---
 

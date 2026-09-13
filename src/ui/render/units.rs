@@ -124,6 +124,11 @@ impl StatefulWidget for UiRenderUnits<'_> {
 /// [`CURSOR`] gets a column of its own ahead of the mark, so that being
 /// selected changes nothing about how the rest of the row is drawn — the
 /// status marks keep their colours on every row, selected included.
+///
+/// The short names are taken wherever the config wrote one. This row is the
+/// narrowest thing on the screen, which is why the choice is made here and
+/// why nothing below it takes it: the log pane's title has the room and
+/// spells both out in full.
 fn draw_unit(buffer: &mut Buffer, unit: &UiUnit, area: Rect, selected: bool) {
     let right = area.right().saturating_sub(PAD_X);
     let x = area.x + PAD_X;
@@ -169,14 +174,8 @@ fn draw_unit(buffer: &mut Buffer, unit: &UiUnit, area: Rect, selected: bool) {
         true => Style::new().add_modifier(Modifier::BOLD),
         false => Style::new(),
     };
-    set_clipped(
-        buffer,
-        left,
-        area.y,
-        &unit.name,
-        room(left, name_right),
-        name,
-    );
+    let text = unit.name_short.as_ref().unwrap_or(&unit.name);
+    set_clipped(buffer, left, area.y, text, room(left, name_right), name);
 }
 
 /// The right hand column, in the two pieces it is written in: the most
@@ -198,7 +197,14 @@ fn detail<'a>(
         ),
         RunnerState::ExitError(None) => ("failed", "", Some(Color::Red)),
         RunnerState::Killed(_) => ("killed", "", Some(Color::Magenta)),
-        _ => (unit.mode.as_deref().unwrap_or(""), "", None),
+        _ => (
+            unit.mode_short
+                .as_deref()
+                .or(unit.mode.as_deref())
+                .unwrap_or(""),
+            "",
+            None,
+        ),
     }
 }
 

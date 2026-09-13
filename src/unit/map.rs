@@ -72,9 +72,19 @@ impl UnitMap {
         self.with(key, Unit::name)
     }
 
+    /// The shorter name for the unit under `key`, if it declared one.
+    pub fn name_short(&self, key: &str) -> Result<Option<ArcStr>> {
+        self.with(key, Unit::name_short)
+    }
+
     /// Which of its modes the unit under `key` is currently on, if it has any.
     pub fn mode(&self, key: &str) -> Result<Option<ArcStr>> {
         self.with(key, Unit::mode)
+    }
+
+    /// That mode's short name, if it declared one.
+    pub fn mode_short(&self, key: &str) -> Result<Option<ArcStr>> {
+        self.with(key, Unit::mode_short)
     }
 
     /// State of the unit under `key`.
