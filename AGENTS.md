@@ -66,8 +66,23 @@ the code is not.
 
 **Doc comments say why, not what.** The signature already says what. What a
 reader cannot recover is the reasoning: what was tried, what it cost, what
-breaks if it changes. Match the density of the surrounding module — this
-codebase documents heavily and deliberately.
+breaks if it changes.
+
+**Say it once, in as few lines as it takes.** A doc that goes round the houses
+is worse than no doc: it is more tiring to read than the code it sits on, so it
+gets skipped, and then the one sentence that mattered goes with it. `draw_unit`
+had twenty eight lines of prose over a function that writes two lines of text —
+that is the failure, and it is the common one.
+
+Concretely: one sentence per decision. No `# Heading` sections on a function
+unless it genuinely has two or three separate subtleties. Do not restate the
+signature, do not narrate what the next three statements do, and do not defend
+a small choice across three paragraphs. If a sentence is there for rhythm
+rather than because a reader would get it wrong without it, cut it.
+
+The heavy blocks in `log`, `runner` and `util` earned their length on
+invariants that are genuinely hard. That is not a licence to write at that
+length everywhere — most functions rate one line or none.
 
 **Name the reason in the doc when a choice looks odd.** A `Copy` type that
 holds four `usize` instead of two `Range`s, a reader that must be the same size
