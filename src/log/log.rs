@@ -205,6 +205,21 @@ impl LogWriterRef {
         }
     }
 
+    /// A writer for notes about this log, rather than output into it.
+    ///
+    /// The same log, under [`LogWriterId::NOTES`], and narrowed to the two
+    /// ways in that a note has: everything else a writer can do belongs to a
+    /// process's output and has no meaning for a line the manager wrote
+    /// itself.
+    pub fn notes(&self) -> LogWriterNotes {
+        LogWriterNotes {
+            inner: Self {
+                inner: self.inner.clone(),
+                id: LogWriterId::NOTES,
+            },
+        }
+    }
+
     /// Write one whole line into the log.
     ///
     /// The other way in — [`consume_spawn`](LogWriterRef::consume_spawn) —
@@ -293,6 +308,32 @@ impl LogWriterRef {
     }
 }
 
+/// A way into a log for the manager's own notes.
+///
+/// A [`LogWriterRef`] with everything but the two line writers taken away —
+/// there is no chunk to hand over, no pipe to drain, nothing to fork. What is
+/// left is what a note is: a line somebody already has, going into a log among
+/// output somebody else wrote.
+pub struct LogWriterNotes {
+    inner: LogWriterRef,
+}
+
+impl LogWriterNotes {
+    /// Write one whole line into the log.
+    pub fn write_line(&mut self, text: &str) {
+        self.inner.write_line(text);
+    }
+
+    /// Write several whole lines into the log.
+    pub fn write_lines<I>(&mut self, lines: I)
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        self.inner.write_lines(lines);
+    }
+}
+
 /// Which writer produced a chunk.
 ///
 /// A log takes from as many writers as a unit has processes, and their chunks
@@ -312,6 +353,14 @@ pub struct LogWriterId {
 }
 
 impl LogWriterId {
+    /// The id notes are written under.
+    ///
+    /// Reserved rather than minted, and not for tidiness: a line split across
+    /// chunks is continued by *that writer's* next chunk, so notes sharing an
+    /// id with a process could be spliced into the middle of one of its
+    /// lines. An id of their own is what keeps the two apart.
+    pub const NOTES: Self = Self::new(0);
+
     /// The stamp a chunk carries before any writer has claimed it.
     ///
     /// A chunk in the ring always carries a real id — it is stamped on the
@@ -523,7 +572,8 @@ impl LogInner {
             chunks_free: Mutex::new(Vec::new()),
             partials: Mutex::new(Partials::new()),
             version: AtomicU64::new(0),
-            next_writer_id: AtomicU32::new(0),
+            // Zero belongs to the notes; processes start after it.
+            next_writer_id: AtomicU32::new(1),
             pushed_hint: AtomicU64::new(0),
         })
     }
@@ -1732,9 +1782,10 @@ mod test {
         let chunks: Vec<_> = reader.chunks().iter().filter(|c| !c.is_empty()).collect();
         assert_eq!(chunks.len(), 2);
         assert_eq!((chunks[0].count(), chunks[0].len()), (2, 4));
-        assert_eq!(chunks[0].writer().index(), 0);
+        // Numbered from one: zero is [`LogWriterId::NOTES`].
+        assert_eq!(chunks[0].writer().index(), 1);
         assert_eq!((chunks[1].count(), chunks[1].len()), (1, 4));
-        assert_eq!(chunks[1].writer().index(), 1);
+        assert_eq!(chunks[1].writer().index(), 2);
     }
 
     /// A reader does not hold its log open: a view left behind on a unit that
