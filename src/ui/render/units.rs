@@ -10,7 +10,7 @@ use crate::{
     runner::RunnerState,
     ui::{
         client::UiUnit,
-        render::{room, set_clipped},
+        render::{DIGITS_MAX, decimal, room, set_clipped},
     },
 };
 
@@ -196,12 +196,12 @@ fn draw_unit(buffer: &mut Buffer, unit: &UiUnit, area: Rect, selected: bool) {
         .set_stringn(x, detail, label, room(x, right), status_style)
         .0;
     if let RunnerState::ExitError(Some(code)) = unit.state {
-        let mut digits = [0u8; 3];
+        let mut digits = [0u8; DIGITS_MAX];
         x = buffer
             .set_stringn(
                 x,
                 detail,
-                decimal(code.get(), &mut digits),
+                decimal(code.get() as usize, &mut digits),
                 room(x, right),
                 status_style,
             )
@@ -242,25 +242,4 @@ fn status(state: RunnerState) -> (&'static str, Color) {
         RunnerState::ExitError(None) => ("failed", Color::Red),
         RunnerState::Killed(_) => ("killed", Color::Magenta),
     }
-}
-
-/// A byte as decimal digits, written into a buffer the caller owns.
-///
-/// Three digits is every `u8` there is. Done this way because the alternative
-/// is a `format!` on a path that runs once per failed unit per frame, to say
-/// a number that has not changed since the process exited.
-fn decimal(value: u8, digits: &mut [u8; 3]) -> &str {
-    let mut len = 0;
-    if value >= 100 {
-        digits[len] = b'0' + value / 100;
-        len += 1;
-    }
-    if value >= 10 {
-        digits[len] = b'0' + (value / 10) % 10;
-        len += 1;
-    }
-    digits[len] = b'0' + value % 10;
-    len += 1;
-    // Every byte written is an ASCII digit.
-    std::str::from_utf8(&digits[..len]).unwrap_or("?")
 }

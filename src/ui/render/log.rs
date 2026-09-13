@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthStr;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -9,7 +11,7 @@ use crate::{
     log::LogRegion,
     ui::{
         client::UiLog,
-        render::{room, set_clipped},
+        render::{DIGITS_MAX, decimal, room, set_clipped},
     },
 };
 
@@ -142,6 +144,8 @@ impl StatefulWidget for UiRenderLog<'_> {
         );
         buffer.set_stringn(x, area.y, " ", 1, Style::new());
 
+        draw_behind(buffer, area, state.scroll);
+
         let Some(log) = self.log else {
             return;
         };
@@ -158,6 +162,50 @@ impl StatefulWidget for UiRenderLog<'_> {
             );
         }
     }
+}
+
+/// Say how far below the pane the end of the log is, when it is not the pane.
+///
+/// # Why it is worth a corner of the border
+///
+/// Scrolled up, a log goes on without you and the pane stops changing.
+/// Nothing about that looks different from a process that has gone quiet, so
+/// the two get confused — and the confusion is the wrong way round, because
+/// the one that looks broken is the one where everything is working.
+///
+/// Only there when it is true, so its being there is the message and the
+/// number is the detail. Nothing is drawn at all while the pane is following,
+/// which is nearly always.
+///
+/// # Why the bottom, and why that number
+///
+/// The bottom because that is the edge you are away from. And the number is
+/// exact rather than a guess at one: the scroll *is* how many lines sit
+/// between the pane's last row and the newest line, so `42` means forty two
+/// lines, not roughly that many.
+fn draw_behind(buffer: &mut Buffer, area: Rect, scroll: usize) {
+    if scroll == 0 {
+        return;
+    }
+    let mut digits = [0u8; DIGITS_MAX];
+    let count = decimal(scroll, &mut digits);
+
+    // " ↓ 42 ", ending one short of the corner.
+    let width = 4 + count.width() as u16;
+    let Some(x) = area.right().checked_sub(width + 1) else {
+        return;
+    };
+    if x <= area.x {
+        return;
+    }
+
+    let y = area.bottom().saturating_sub(1);
+    let style = Style::new();
+    let mut x = buffer.set_stringn(x, y, " ↓ ", 3, style).0;
+    x = buffer
+        .set_stringn(x, y, count, room(x, area.right()), style)
+        .0;
+    buffer.set_stringn(x, y, " ", 1, style);
 }
 
 /// The part of a fetched region the pane is actually showing.

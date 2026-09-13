@@ -169,11 +169,6 @@ impl UiRender {
         self.log.follow();
     }
 
-    /// Whether the log pane is showing the end as it arrives.
-    pub fn is_following_log(&self) -> bool {
-        self.log.is_following()
-    }
-
     /// The rectangle the log pane wants.
     pub fn log_region(&self) -> LogRegion {
         self.log.region()
@@ -229,6 +224,30 @@ fn set_clipped(buffer: &mut Buffer, x: u16, y: u16, text: &str, room: usize, sty
     // and nothing else.
     let (end, _) = buffer.set_stringn(x, y, text, room.saturating_sub(1), style);
     buffer.set_stringn(end, y, "…", 1, style).0
+}
+
+/// The most digits a [`usize`] can have.
+const DIGITS_MAX: usize = 20;
+
+/// A number as decimal digits, written into a buffer the caller owns.
+///
+/// Done this way because the alternative is a `format!` on paths that run per
+/// row per frame, to say numbers that mostly have not changed since the last
+/// one. Returns the used tail of `digits`, which is why it fills from the
+/// back.
+fn decimal(value: usize, digits: &mut [u8; DIGITS_MAX]) -> &str {
+    let mut start = DIGITS_MAX;
+    let mut left = value;
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (left % 10) as u8;
+        left /= 10;
+        if left == 0 {
+            break;
+        }
+    }
+    // Every byte written is an ASCII digit.
+    std::str::from_utf8(&digits[start..]).unwrap_or("?")
 }
 
 /// The bottom line: what the keys do.
