@@ -8,7 +8,7 @@
 //! and hands nothing back. Nothing here is behind a lock or an `Option` for
 //! that reason — a screen always has a theme, even if it is the default one.
 
-use arcstr::{ArcStr, literal};
+use crate::util::str::SmallStr;
 use ratatui::style::Color;
 
 use crate::runner::RunnerState;
@@ -38,16 +38,16 @@ pub struct UiThemeStatus {
     ///
     /// Carries its meaning in its shape and not only in its colour, because a
     /// list is read at a glance and a terminal's palette is the user's.
-    pub mark: ArcStr,
+    pub mark: SmallStr,
     /// The same thing as a word, for the places wide enough to spell it out.
-    pub label: ArcStr,
+    pub label: SmallStr,
     /// What both are drawn in.
     pub color: Color,
 }
 
 impl UiThemeStatus {
     /// One row of the table in [`UiThemeStatuses::default`].
-    pub fn new(mark: ArcStr, label: ArcStr, color: Color) -> Self {
+    pub fn new(mark: SmallStr, label: SmallStr, color: Color) -> Self {
         Self { mark, label, color }
     }
 }
@@ -95,15 +95,51 @@ impl UiThemeStatuses {
 impl Default for UiThemeStatuses {
     fn default() -> Self {
         Self {
-            stopped: UiThemeStatus::new(literal!("○"), literal!("stopped"), Color::DarkGray),
-            waiting: UiThemeStatus::new(literal!("◌"), literal!("waiting"), Color::Gray),
-            starting: UiThemeStatus::new(literal!("◐"), literal!("starting"), Color::Yellow),
-            running: UiThemeStatus::new(literal!("●"), literal!("running"), Color::Green),
-            stopping: UiThemeStatus::new(literal!("◑"), literal!("stopping"), Color::Yellow),
-            done: UiThemeStatus::new(literal!("✓"), literal!("done"), Color::Cyan),
-            exit: UiThemeStatus::new(literal!("✗"), literal!("exit "), Color::Red),
-            failed: UiThemeStatus::new(literal!("✗"), literal!("failed"), Color::Red),
-            killed: UiThemeStatus::new(literal!("✗"), literal!("killed"), Color::Magenta),
+            stopped: UiThemeStatus::new(
+                SmallStr::literal("○"),
+                SmallStr::literal("stopped"),
+                Color::DarkGray,
+            ),
+            waiting: UiThemeStatus::new(
+                SmallStr::literal("◌"),
+                SmallStr::literal("waiting"),
+                Color::Gray,
+            ),
+            starting: UiThemeStatus::new(
+                SmallStr::literal("◐"),
+                SmallStr::literal("starting"),
+                Color::Yellow,
+            ),
+            running: UiThemeStatus::new(
+                SmallStr::literal("●"),
+                SmallStr::literal("running"),
+                Color::Green,
+            ),
+            stopping: UiThemeStatus::new(
+                SmallStr::literal("◑"),
+                SmallStr::literal("stopping"),
+                Color::Yellow,
+            ),
+            done: UiThemeStatus::new(
+                SmallStr::literal("✓"),
+                SmallStr::literal("done"),
+                Color::Cyan,
+            ),
+            exit: UiThemeStatus::new(
+                SmallStr::literal("✗"),
+                SmallStr::literal("exit "),
+                Color::Red,
+            ),
+            failed: UiThemeStatus::new(
+                SmallStr::literal("✗"),
+                SmallStr::literal("failed"),
+                Color::Red,
+            ),
+            killed: UiThemeStatus::new(
+                SmallStr::literal("✗"),
+                SmallStr::literal("killed"),
+                Color::Magenta,
+            ),
         }
     }
 }
@@ -115,30 +151,30 @@ pub struct UiThemeSymbols {
     /// A mark and not a bar across the row: a bar has to be painted in some
     /// colour, and every colour it could be is either a bet that the terminal
     /// is dark or a fight with the status marks.
-    pub cursor: ArcStr,
+    pub cursor: SmallStr,
     /// What joins the pieces of the log pane's title.
-    pub separator: ArcStr,
+    pub separator: SmallStr,
     /// The corners where the units pane's border runs into the log pane's, so
     /// that the two share one wall instead of standing two next to each other.
-    pub join_top: ArcStr,
-    pub join_bottom: ArcStr,
+    pub join_top: SmallStr,
+    pub join_bottom: SmallStr,
     /// What the "how far below" count is arrowed with while the log is
     /// scrolled back.
-    pub behind: ArcStr,
+    pub behind: SmallStr,
     /// What marks text that had to be cut. A name that simply stops looks
     /// like a name spelled that way.
-    pub ellipsis: ArcStr,
+    pub ellipsis: SmallStr,
 }
 
 impl Default for UiThemeSymbols {
     fn default() -> Self {
         Self {
-            cursor: literal!(">"),
-            separator: literal!(" · "),
-            join_top: literal!("┬"),
-            join_bottom: literal!("┴"),
-            behind: literal!(" ↓ "),
-            ellipsis: literal!("…"),
+            cursor: SmallStr::literal(">"),
+            separator: SmallStr::literal(" · "),
+            join_top: SmallStr::literal("┬"),
+            join_bottom: SmallStr::literal("┴"),
+            behind: SmallStr::literal(" ↓ "),
+            ellipsis: SmallStr::literal("…"),
         }
     }
 }

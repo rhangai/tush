@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use arcstr::ArcStr;
-
+use crate::util::str::SmallStr;
 use crate::{
     app::App,
     log::{LogReader, LogRegion},
@@ -15,7 +14,7 @@ struct AppLog {
     /// Which unit it belongs to. A pane moving to another one throws this
     /// away rather than re-pointing it: the revision counted against one
     /// log's chunks means nothing against another's.
-    key: ArcStr,
+    key: SmallStr,
     /// A reader over that unit's log, which is to say a mirror of it.
     reader: LogReader,
     /// The region last asked for.
@@ -62,7 +61,7 @@ impl UiApp {
         let mut list: Vec<UiUnit> = units
             .keys()
             .map(|key| UiUnit {
-                name: units.name(key).unwrap_or_else(|_| key.into()),
+                name: units.name(key).unwrap_or_else(|_| key.clone()),
                 name_short: units.name_short(key).unwrap_or_default(),
                 key: key.to_owned(),
                 mode: None,
@@ -128,7 +127,7 @@ impl UiClient for UiApp {
     /// A new reader only when the unit changed. Resolving the region is
     /// [`sync`](UiClient::sync)'s job, so the lines and the states in one
     /// frame are taken at the same moment.
-    fn set_log(&mut self, key: Option<ArcStr>, region: LogRegion) {
+    fn set_log(&mut self, key: Option<SmallStr>, region: LogRegion) {
         let Some(key) = key else {
             self.log = None;
             return;

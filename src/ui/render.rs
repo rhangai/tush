@@ -23,8 +23,6 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use arcstr::ArcStr;
-
 use crate::{
     log::LogRegion,
     ui::{client::UiClient, theme::UiTheme},
@@ -41,6 +39,7 @@ pub use menu::{UiMenuChoice, UiRenderMenu, UiRenderMenuState};
 pub use units::{Move, UiRenderUnits, UiRenderUnitsState};
 
 use crate::ui::client::UiUnit;
+use crate::util::str::SmallStr;
 
 /// How wide the units column is.
 ///
@@ -200,7 +199,7 @@ impl UiRender {
     }
 
     /// Open the menu over `key`, titled `title`, listing `items`.
-    pub fn open_menu(&mut self, key: ArcStr, title: ArcStr, items: Vec<UnitChoice>) {
+    pub fn open_menu(&mut self, key: SmallStr, title: SmallStr, items: Vec<UnitChoice>) {
         self.menu.open(key, title, items);
     }
 

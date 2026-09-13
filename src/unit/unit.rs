@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
-use arcstr::ArcStr;
 use parking_lot::Mutex;
 
+use crate::util::str::SmallStr;
 use crate::{
     log::{Log, LogReader, LogWriterNotes},
     runner::{RunnerHandle, RunnerState},
@@ -52,24 +52,24 @@ impl Unit {
     /// What it is called on screen.
     ///
     /// Owned because the behavior is behind a lock and nothing may borrow out
-    /// of it — but cheaply, an [`ArcStr`] being a refcount and not a copy.
-    pub fn name(&self) -> ArcStr {
+    /// of it — but cheaply, an [`SmallStr`] being a refcount and not a copy.
+    pub fn name(&self) -> SmallStr {
         self.behavior.lock().name()
     }
 
     /// The shorter name for it, or `None` where the config declared none.
-    pub fn name_short(&self) -> Option<ArcStr> {
+    pub fn name_short(&self) -> Option<SmallStr> {
         self.behavior.lock().name_short()
     }
 
     /// Which of its modes is current, or `None` if it has none. Read every
     /// time a view refreshes, since a dispatch may have moved it.
-    pub fn mode(&self) -> Option<ArcStr> {
+    pub fn mode(&self) -> Option<SmallStr> {
         self.behavior.lock().mode()
     }
 
     /// That mode's short name, read every sync for the same reason.
-    pub fn mode_short(&self) -> Option<ArcStr> {
+    pub fn mode_short(&self) -> Option<SmallStr> {
         self.behavior.lock().mode_short()
     }
 

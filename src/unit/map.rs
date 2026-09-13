@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 
+use crate::util::str::SmallStr;
 use crate::{
     log::LogReader,
     runner::{RunnerHandle, RunnerState},
@@ -22,13 +22,13 @@ use crate::{
 /// does not wait, and starting hands the run to a task rather than doing it.
 pub struct UnitMap {
     /// The units, by name.
-    units: HashMap<ArcStr, Unit>,
+    units: HashMap<SmallStr, Unit>,
 }
 
 impl UnitMap {
     /// A map holding one unit per behavior.
-    pub fn new(behaviors: HashMap<ArcStr, UnitBehavior>) -> Arc<Self> {
-        let mut units: HashMap<ArcStr, Unit> = HashMap::new();
+    pub fn new(behaviors: HashMap<SmallStr, UnitBehavior>) -> Arc<Self> {
+        let mut units: HashMap<SmallStr, Unit> = HashMap::new();
         for (key, behavior) in behaviors {
             units.insert(key, Unit::new(behavior));
         }
@@ -68,22 +68,22 @@ impl UnitMap {
     }
 
     /// What the unit under `key` is called on screen.
-    pub fn name(&self, key: &str) -> Result<ArcStr> {
+    pub fn name(&self, key: &str) -> Result<SmallStr> {
         self.with(key, Unit::name)
     }
 
     /// The shorter name for the unit under `key`, if it declared one.
-    pub fn name_short(&self, key: &str) -> Result<Option<ArcStr>> {
+    pub fn name_short(&self, key: &str) -> Result<Option<SmallStr>> {
         self.with(key, Unit::name_short)
     }
 
     /// Which of its modes the unit under `key` is currently on, if it has any.
-    pub fn mode(&self, key: &str) -> Result<Option<ArcStr>> {
+    pub fn mode(&self, key: &str) -> Result<Option<SmallStr>> {
         self.with(key, Unit::mode)
     }
 
     /// That mode's short name, if it declared one.
-    pub fn mode_short(&self, key: &str) -> Result<Option<ArcStr>> {
+    pub fn mode_short(&self, key: &str) -> Result<Option<SmallStr>> {
         self.with(key, Unit::mode_short)
     }
 
@@ -112,7 +112,7 @@ impl UnitMap {
     /// order did not survive being put into one. A caller that shows these to
     /// a person has to impose an order of its own, or the same session will
     /// list itself differently on every render.
-    pub fn keys(&self) -> impl Iterator<Item = &ArcStr> {
+    pub fn keys(&self) -> impl Iterator<Item = &SmallStr> {
         self.units.keys()
     }
 
@@ -159,9 +159,9 @@ mod test {
 
     /// A map with `keys` declared, each running nothing.
     fn map(keys: &[&str]) -> Arc<UnitMap> {
-        let mut behaviors: HashMap<ArcStr, UnitBehavior> = HashMap::new();
+        let mut behaviors: HashMap<SmallStr, UnitBehavior> = HashMap::new();
         for key in keys {
-            let key = ArcStr::from(*key);
+            let key = SmallStr::from(*key);
             behaviors.insert(key.clone(), UnitBehavior::noop(key));
         }
         UnitMap::new(behaviors)

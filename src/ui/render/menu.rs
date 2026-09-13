@@ -1,4 +1,3 @@
-use arcstr::ArcStr;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -7,6 +6,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::util::str::SmallStr;
 use crate::{
     ui::{
         render::{Move, room, set_clipped},
@@ -44,9 +44,9 @@ const CANCEL_GAP: u16 = 1;
 pub struct UiRenderMenuState {
     /// The unit it is open for, `None` when closed. Kept rather than re-read
     /// from the selection, which a resize can move underneath it.
-    key: Option<ArcStr>,
+    key: Option<SmallStr>,
     /// What that unit is called, for the title.
-    title: ArcStr,
+    title: SmallStr,
     /// The entries, kept across a close so the next open refills them.
     items: Vec<UnitChoice>,
     /// Which row: an entry, or [`CANCEL`] at `items.len()`. Only ever one
@@ -75,7 +75,7 @@ impl UiRenderMenuState {
     /// run what the row was offering; failing that the first enabled entry,
     /// failing that [`CANCEL`]. Between them it never lands on a disabled
     /// row, so <kbd>Enter</kbd> is never a press that does nothing.
-    pub fn open(&mut self, key: ArcStr, title: ArcStr, items: Vec<UnitChoice>) {
+    pub fn open(&mut self, key: SmallStr, title: SmallStr, items: Vec<UnitChoice>) {
         self.cursor = items
             .iter()
             .position(|item| item.current && item.enabled)
@@ -162,7 +162,7 @@ impl UiRenderMenuState {
 /// Not an `Option`, because closing is an answer and not the absence of one.
 pub enum UiMenuChoice {
     /// Send this to the unit, and close.
-    Send { key: ArcStr, event: UnitEvent },
+    Send { key: SmallStr, event: UnitEvent },
     /// Close, and ask for nothing.
     Cancel,
 }

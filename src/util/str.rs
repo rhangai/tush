@@ -30,8 +30,8 @@ use smol_str::SmolStr;
 /// Everything that can be derived is: [`SmolStr`]'s own [`Hash`](std::hash::Hash),
 /// [`Ord`] and [`PartialEq`] all go through its `str`, so a derive on the
 /// newtype behaves exactly as a hand written forward would — which is what
-/// makes the [`Borrow`] below sound. The four that are written out are the
-/// four a derive would get wrong or not reach at all.
+/// makes the [`Borrow`] below sound. The rest are written out because no
+/// derive would get them right or reach them at all.
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SmallStr(SmolStr);
@@ -69,6 +69,15 @@ impl Deref for SmallStr {
 /// key reaches the maps in this crate.
 impl Borrow<str> for SmallStr {
     fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+/// Required and not a convenience: `Buffer::set_stringn` is generic over
+/// `AsRef<str>`, and a generic parameter is the one place the deref does not
+/// coerce — which is every piece of text the screen puts down.
+impl AsRef<str> for SmallStr {
+    fn as_ref(&self) -> &str {
         self.as_str()
     }
 }

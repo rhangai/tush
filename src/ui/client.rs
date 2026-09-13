@@ -1,5 +1,4 @@
-use arcstr::ArcStr;
-
+use crate::util::str::SmallStr;
 use crate::{
     log::LogRegion,
     runner::RunnerState,
@@ -13,24 +12,24 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct UiUnit {
     /// How a [`UiCommand`] addresses it. Not shown; see [`name`](UiUnit::name).
-    pub key: ArcStr,
+    pub key: SmallStr,
     /// What to call it on screen.
     ///
     /// Apart from the key because the config lets a proc name itself, and
     /// folding the two would mean either showing an identifier or addressing
     /// a unit by something a person may change.
-    pub name: ArcStr,
+    pub name: SmallStr,
     /// A shorter name to show where [`name`](UiUnit::name) will not fit.
     ///
     /// `None` is the config having said nothing, not "use the long one": what
     /// to do about it is the pane's, since the pane is what knows its width.
-    pub name_short: Option<ArcStr>,
+    pub name_short: Option<SmallStr>,
     /// Which mode it is on. `None` means no modes at all, which is most
     /// units — the row shows nothing rather than inventing a label.
-    pub mode: Option<ArcStr>,
+    pub mode: Option<SmallStr>,
     /// That mode's short name, on the same terms — `None` both for a unit
     /// with no modes and for a mode that declared none.
-    pub mode_short: Option<ArcStr>,
+    pub mode_short: Option<SmallStr>,
     /// Where its run was at the last sync.
     pub state: RunnerState,
 }
@@ -44,14 +43,14 @@ pub struct UiUnit {
 #[derive(Clone, Debug)]
 pub enum UiCommand {
     /// Run it, restarting it if it was already running.
-    Start { key: ArcStr },
+    Start { key: SmallStr },
     /// Stop it.
-    Stop { key: ArcStr },
+    Stop { key: SmallStr },
     /// Hand it an event and let its behavior decide.
     ///
     /// What every menu entry sends, the entries having come out of the
     /// behavior in the first place.
-    Dispatch { key: ArcStr, event: UnitEvent },
+    Dispatch { key: SmallStr, event: UnitEvent },
 }
 
 /// What a client has for the log pane: some lines, and what they are.
@@ -121,7 +120,7 @@ pub trait UiClient {
     ///
     /// Called every frame; whether anything has to happen is the client's
     /// call, since it holds the region, the revision and the connection.
-    fn set_log(&mut self, key: Option<ArcStr>, region: LogRegion);
+    fn set_log(&mut self, key: Option<SmallStr>, region: LogRegion);
 
     /// The lines for the pane, as of the last [`sync`](UiClient::sync).
     ///

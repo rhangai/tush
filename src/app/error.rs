@@ -1,8 +1,7 @@
 use std::fmt;
 
-use arcstr::ArcStr;
-
-use crate::util::types::SmallVecArcStr;
+use crate::util::str::SmallStr;
+use crate::util::types::SmallVecStr;
 
 /// Everything wrong with a config, reported at once.
 ///
@@ -46,15 +45,15 @@ impl std::error::Error for AppErrors {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppError {
     /// A proc declared `run` and `modes` both.
-    RunAndModes { proc: ArcStr },
+    RunAndModes { proc: SmallStr },
     /// A proc or a group is named with a character a command line needs for
     /// itself.
-    ReservedCharacter { name: ArcStr, character: char },
+    ReservedCharacter { name: SmallStr, character: char },
     /// A proc depends on a name that no proc is declared under.
-    UnknownDependency { proc: ArcStr, depends: ArcStr },
+    UnknownDependency { proc: SmallStr, depends: SmallStr },
     /// Procs that wait on each other in a circle, so none of them can be
     /// first. A cycle of one is a proc that depends on itself.
-    Cycle { procs: SmallVecArcStr },
+    Cycle { procs: SmallVecStr },
 }
 
 impl fmt::Display for AppError {

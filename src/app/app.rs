@@ -4,8 +4,8 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use arcstr::ArcStr;
 
+use crate::util::str::SmallStr;
 use crate::{
     app::{
         error::{AppError, AppErrors},
@@ -14,7 +14,7 @@ use crate::{
     config::{Config, ConfigProc},
     runner::RunnerHandle,
     unit::{UnitAction, UnitBehavior, UnitEvent, UnitMap},
-    util::{graph::DependencyGraph, types::SmallVecArcStr},
+    util::{graph::DependencyGraph, types::SmallVecStr},
 };
 
 /// A session that has been checked and is ready to be run.
@@ -29,7 +29,7 @@ pub struct App {
     units: Arc<UnitMap>,
     /// Group name to the keys declared under it — inverted from how the
     /// config writes it, a config being written per proc and used per group.
-    groups: HashMap<ArcStr, SmallVecArcStr>,
+    groups: HashMap<SmallStr, SmallVecStr>,
 }
 
 impl App {
@@ -47,9 +47,9 @@ impl App {
             return Err(error.into());
         }
 
-        let mut behaviors: HashMap<ArcStr, UnitBehavior> =
+        let mut behaviors: HashMap<SmallStr, UnitBehavior> =
             HashMap::with_capacity(config.procs.len());
-        let mut groups: HashMap<ArcStr, SmallVecArcStr> = HashMap::new();
+        let mut groups: HashMap<SmallStr, SmallVecStr> = HashMap::new();
 
         for proc in &config.procs {
             let behavior = Self::get_behavior(proc);
@@ -121,7 +121,7 @@ impl App {
     }
 
     /// The keys belonging to each group.
-    pub fn groups(&self) -> &HashMap<ArcStr, SmallVecArcStr> {
+    pub fn groups(&self) -> &HashMap<SmallStr, SmallVecStr> {
         &self.groups
     }
 
@@ -138,8 +138,8 @@ impl App {
     ///
     /// A name that is not there is an error, and all of them at once — the
     /// same reason [`new`](App::new) reports every problem with a config.
-    pub fn resolve(&self, targets: &[Target]) -> Result<SmallVecArcStr> {
-        let mut keys: SmallVecArcStr = SmallVecArcStr::new();
+    pub fn resolve(&self, targets: &[Target]) -> Result<SmallVecStr> {
+        let mut keys: SmallVecStr = SmallVecStr::new();
         let mut unknown: Vec<String> = Vec::new();
 
         for target in targets {
@@ -172,9 +172,9 @@ impl App {
     /// first means the second never has to wonder.
     fn validate_config(config: &Config) -> Option<AppErrors> {
         let mut errors = Vec::new();
-        let declared: HashSet<&ArcStr> = config.procs.iter().map(|proc| &proc.key).collect();
+        let declared: HashSet<&SmallStr> = config.procs.iter().map(|proc| &proc.key).collect();
 
-        let mut graph: DependencyGraph<&ArcStr> = DependencyGraph::new();
+        let mut graph: DependencyGraph<&SmallStr> = DependencyGraph::new();
         for proc in &config.procs {
             // Even a proc nothing mentions has to be in the graph, or it
             // would not be in the order that comes out of it.
@@ -234,7 +234,7 @@ impl App {
 
 /// Add `key` unless it is already there. Linear: these lists are a command
 /// line long.
-fn push_once(keys: &mut SmallVecArcStr, key: &ArcStr) {
+fn push_once(keys: &mut SmallVecStr, key: &SmallStr) {
     if !keys.contains(key) {
         keys.push(key.clone());
     }

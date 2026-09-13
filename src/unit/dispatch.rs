@@ -1,4 +1,4 @@
-use arcstr::ArcStr;
+use crate::util::str::SmallStr;
 
 /// Something asked of a unit, for its behavior to answer.
 ///
@@ -31,7 +31,7 @@ pub struct UnitChoice {
     /// text instead of allocating `"Restart Build"` per item.
     pub verb: &'static str,
     /// What the verb applies to, or `None` for a proc that runs one way.
-    pub mode: Option<ArcStr>,
+    pub mode: Option<SmallStr>,
     /// What to send if it is chosen.
     pub event: UnitEvent,
     /// Whether it can be chosen. A disabled entry is drawn dim rather than

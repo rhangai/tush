@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use arcstr::ArcStr;
 use enum_dispatch::enum_dispatch;
 use smallvec::smallvec;
 use tokio::process::Command;
 
+use crate::util::str::SmallStr;
 use crate::{
     base::Process,
     log::LogWriterRef,
     runner::{RunnerHandle, RunnerSerial, RunnerState},
     unit::dispatch::{UnitAction, UnitChoice, UnitEvent},
-    util::types::{SmallMatrixArcStr, SmallVecArcStr},
+    util::types::{SmallMatrixStr, SmallVecStr},
 };
 
 /// What a [`Unit`](crate::unit::Unit) does: what it spawns when started, and
@@ -42,25 +42,25 @@ use crate::{
 pub struct UnitBehavior {
     /// What it is called.
     ///
-    /// An [`ArcStr`] rather than a [`String`] because of where it is asked
+    /// An [`SmallStr`] rather than a [`String`] because of where it is asked
     /// for: a view refreshing several times a second reads the current mode's
     /// name out of here on every frame, and the behavior is behind a lock, so
     /// nothing may borrow out of it. With a `String` that is an allocation
     /// and a copy per unit per frame, for text that never changes; with this
     /// it is a refcount.
-    name: ArcStr,
+    name: SmallStr,
     /// A shorter name for it, when the config declared one.
     ///
     /// Kept as an `Option` and never folded into [`name`](Self::name): only a
     /// view knows whether it has the room for the long one, and a fallback
     /// taken here would reach it as a short name somebody chose.
-    short: Option<ArcStr>,
+    short: Option<SmallStr>,
     inner: UnitBehaviorInner,
 }
 
 impl UnitBehavior {
     /// One command, as its argv: the program, then its arguments.
-    pub fn run(name: ArcStr, command: SmallVecArcStr) -> Self {
+    pub fn run(name: SmallStr, command: SmallVecStr) -> Self {
         Self::run_many(name, smallvec![command])
     }
 
@@ -69,7 +69,7 @@ impl UnitBehavior {
     ///
     /// One unit still, with one log and one state — the sequence is a
     /// [`RunnerSerial`], which is itself a single runner.
-    pub fn run_many(name: ArcStr, commands: SmallMatrixArcStr) -> Self {
+    pub fn run_many(name: SmallStr, commands: SmallMatrixStr) -> Self {
         Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
     }
 
@@ -83,7 +83,7 @@ impl UnitBehavior {
     /// moves only when a [`StartMode`](UnitEvent::StartMode) picks another —
     /// which is what the `&mut self` on [`dispatch`](UnitBehavior::dispatch)
     /// is for.
-    pub fn modes(name: ArcStr, modes: impl Iterator<Item = UnitBehavior>) -> Self {
+    pub fn modes(name: SmallStr, modes: impl Iterator<Item = UnitBehavior>) -> Self {
         Self::wrap(
             name,
             UnitBehaviorInner::Modes(BehaviorModes {
@@ -94,7 +94,7 @@ impl UnitBehavior {
     }
 
     /// A behavior that does nothing and succeeds immediately.
-    pub fn noop(name: ArcStr) -> Self {
+    pub fn noop(name: SmallStr) -> Self {
         Self::wrap(name, UnitBehaviorInner::Noop(BehaviorNoop {}))
     }
 
@@ -103,7 +103,7 @@ impl UnitBehavior {
     /// Takes the `Option` rather than the name so that a caller holding the
     /// config's field passes it straight through — `None` is a behavior with
     /// no short name, which is what it already was.
-    pub fn with_short(mut self, short: Option<ArcStr>) -> Self {
+    pub fn with_short(mut self, short: Option<SmallStr>) -> Self {
         self.short = short;
         self
     }
@@ -112,17 +112,17 @@ impl UnitBehavior {
     ///
     /// By value, because it is cheap to hand over and the callers that want
     /// it want it out from under the lock the behavior sits behind.
-    pub fn name(&self) -> ArcStr {
+    pub fn name(&self) -> SmallStr {
         self.name.clone()
     }
 
     /// The shorter name for it, or `None` where none was declared.
-    pub fn name_short(&self) -> Option<ArcStr> {
+    pub fn name_short(&self) -> Option<SmallStr> {
         self.short.clone()
     }
 
     /// Put a kind behind the wrapper the rest of the crate sees.
-    fn wrap(name: ArcStr, inner: UnitBehaviorInner) -> Self {
+    fn wrap(name: SmallStr, inner: UnitBehaviorInner) -> Self {
         Self {
             name,
             short: None,
@@ -136,13 +136,13 @@ impl UnitBehavior {
     /// `None` for a behavior that runs only one way, which is most of them.
     /// The distinction is the point: there is nothing to show for a proc that
     /// has no modes, and a made up label for it would be noise on every row.
-    pub fn mode(&self) -> Option<ArcStr> {
+    pub fn mode(&self) -> Option<SmallStr> {
         self.inner.mode()
     }
 
     /// The current mode's short name, which is `None` both for a behavior
     /// with no modes and for a mode that declared none.
-    pub fn mode_short(&self) -> Option<ArcStr> {
+    pub fn mode_short(&self) -> Option<SmallStr> {
         self.inner.mode_short()
     }
 
@@ -161,7 +161,7 @@ impl UnitBehavior {
     /// Everything that can be asked of this behavior right now.
     ///
     /// Into a `Vec` the caller owns and reuses, so a menu that opens over and
-    /// over costs the [`ArcStr`] refcounts and no allocation.
+    /// over costs the [`SmallStr`] refcounts and no allocation.
     ///
     /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, which is
     /// also what makes it the last entry of every menu.
@@ -224,12 +224,12 @@ trait UnitBehaviorKind {
     fn choices(&self, _state: RunnerState, _out: &mut Vec<UnitChoice>) {}
 
     /// Which of its modes is current, for the kinds that have any.
-    fn mode(&self) -> Option<ArcStr> {
+    fn mode(&self) -> Option<SmallStr> {
         None
     }
 
     /// That mode's short name, on the same terms.
-    fn mode_short(&self) -> Option<ArcStr> {
+    fn mode_short(&self) -> Option<SmallStr> {
         None
     }
 
@@ -252,7 +252,7 @@ impl UnitBehaviorKind for BehaviorNoop {
 /// common case to drift away from.
 struct BehaviorRun {
     /// Each command as its argv, in the order they were written.
-    commands: SmallMatrixArcStr,
+    commands: SmallMatrixStr,
 }
 
 impl UnitBehaviorKind for BehaviorRun {
@@ -313,7 +313,7 @@ fn verb(state: RunnerState) -> &'static str {
 /// The first word is the program and the rest are its arguments, handed to
 /// the OS as they are: no shell, so nothing re-splits them and no quoting
 /// rule applies.
-fn command(argv: &[ArcStr]) -> Result<Command> {
+fn command(argv: &[SmallStr]) -> Result<Command> {
     let Some((program, args)) = argv.split_first() else {
         bail!("a command with no program to run");
     };
@@ -334,11 +334,11 @@ struct BehaviorModes {
 }
 
 impl UnitBehaviorKind for BehaviorModes {
-    fn mode(&self) -> Option<ArcStr> {
+    fn mode(&self) -> Option<SmallStr> {
         Some(self.modes.get(self.index)?.name())
     }
 
-    fn mode_short(&self) -> Option<ArcStr> {
+    fn mode_short(&self) -> Option<SmallStr> {
         self.modes.get(self.index)?.name_short()
     }
 

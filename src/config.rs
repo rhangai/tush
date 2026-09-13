@@ -48,7 +48,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use figment::{
     Figment, Provider,
     providers::{Format, Yaml},
@@ -56,7 +55,8 @@ use figment::{
 use serde::Deserialize;
 use serde_with::{KeyValueMap, OneOrMany, serde_as};
 
-use crate::util::types::{SmallMatrixArcStr, SmallVecArcStr};
+use crate::util::str::SmallStr;
+use crate::util::types::{SmallMatrixStr, SmallVecStr};
 
 /// A parsed config file: every proc a session is made of.
 ///
@@ -119,12 +119,12 @@ pub struct ConfigProc {
     /// `$key$` is not a key of the file: it is how [`KeyValueMap`] hands over
     /// the name this proc was declared under in the `procs` mapping.
     #[serde(rename = "$key$")]
-    pub key: ArcStr,
+    pub key: SmallStr,
     /// The name it is shown under. `None` for the procs with nothing better
     /// to say about themselves than their key, which is most of them, and
     /// which is what is shown instead.
     #[serde(default)]
-    pub name: Option<ArcStr>,
+    pub name: Option<SmallStr>,
     /// A shorter name, for where the long one will not fit.
     ///
     /// Handed on as the `Option` it is, and not folded into
@@ -132,17 +132,17 @@ pub struct ConfigProc {
     /// and a fallback taken here would reach it as a short name somebody
     /// chose.
     #[serde(default)]
-    pub name_short: Option<ArcStr>,
+    pub name_short: Option<SmallStr>,
     /// The groups it belongs to, for starting several procs by one name.
     ///
     /// `group` in the file, singular, because that is how it reads at the
     /// declaration of one proc.
     #[serde(default, rename = "group")]
-    pub groups: SmallVecArcStr,
+    pub groups: SmallVecStr,
     /// What has to be up before it may start, and the edges of the
     /// dependency graph.
     #[serde(default)]
-    pub depends: SmallVecArcStr,
+    pub depends: SmallVecStr,
     /// `run:` — the one way this proc runs.
     #[serde(default)]
     pub run: Option<ConfigUnitRun>,
@@ -157,10 +157,10 @@ pub struct ConfigProc {
 #[serde(deny_unknown_fields)]
 pub struct ConfigUnitMode {
     /// What the mode is called, and what the menu lists it as.
-    pub name: ArcStr,
+    pub name: SmallStr,
     /// A shorter name for it, on the same terms as a proc's.
     #[serde(default)]
-    pub name_short: Option<ArcStr>,
+    pub name_short: Option<SmallStr>,
     /// What it runs.
     pub run: ConfigUnitRun,
 }
@@ -191,5 +191,5 @@ pub struct ConfigUnitRun {
     /// `transparent` and not `flatten`: `run` in the file is a sequence, and
     /// flattening asks for the keys of a map it never has.
     #[serde_as(as = "OneOrMany<_>")]
-    pub commands: SmallMatrixArcStr,
+    pub commands: SmallMatrixStr,
 }

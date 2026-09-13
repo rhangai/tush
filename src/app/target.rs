@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
+use crate::util::str::SmallStr;
 use anyhow::{Result, bail};
-use arcstr::ArcStr;
 
 /// What tells one kind of target from another.
 ///
@@ -22,9 +22,9 @@ const GROUP: &str = "group";
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Target {
     /// One proc, by the key it was declared under.
-    Unit(ArcStr),
+    Unit(SmallStr),
     /// Every proc in a group, by the group's name.
-    Group(ArcStr),
+    Group(SmallStr),
 }
 
 impl FromStr for Target {

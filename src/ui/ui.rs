@@ -16,6 +16,7 @@ use crate::ui::{
     render::{Move, UiMenuChoice, UiRender},
     theme::UiTheme,
 };
+use crate::util::str::SmallStr;
 
 /// How many lines one notch of the wheel moves the log: three, which is what
 /// a terminal scrolls by and so what a hand expects.
@@ -222,7 +223,7 @@ impl<C: UiClient> Ui<C> {
 
     /// Send the command `command` builds for the selected unit's key, if
     /// there is one selected.
-    fn send(&mut self, command: impl FnOnce(arcstr::ArcStr) -> UiCommand) {
+    fn send(&mut self, command: impl FnOnce(SmallStr) -> UiCommand) {
         let Some(unit) = self.selected() else {
             return;
         };
