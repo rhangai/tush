@@ -141,7 +141,7 @@ impl UiRenderMenuState {
             })
             .max()
             .unwrap_or(0);
-        let width = (entries.max(CANCEL.width()) + CURSOR.width()) as u16 + PAD_X * 2;
+        let width = (entries.max(CANCEL.width()) + CURSOR.width() + 1) as u16 + PAD_X * 2;
         // The title sits in the top border with a space either side, and the
         // two corners are not room for anything.
         let width = width.max(self.title.width() as u16 + 2).max(MIN_WIDTH) + 2;
@@ -203,29 +203,25 @@ impl StatefulWidget for UiRenderMenu<'_> {
         );
         buffer.set_stringn(x, area.y, " ", 1, plain);
 
-        let entries = Rect {
-            x: inner.x + PAD_X,
-            y: inner.y + PAD_Y,
-            width: inner.width.saturating_sub(PAD_X * 2),
-            height: inner.height.saturating_sub(PAD_Y * 2),
-        };
-        for (row, item) in state.items.iter().take(entries.height as usize).enumerate() {
-            draw_choice(
-                buffer,
-                item,
-                Rect::new(entries.x, entries.y + row as u16, entries.width, 1),
-                row == state.cursor,
-            );
+        // A row is as wide as the box is inside, so a selected one is a bar
+        // across it rather than a highlight around a word; the padding is
+        // where the text starts, not where the row does.
+        let top = inner.y + PAD_Y;
+        let rows = inner.height.saturating_sub(PAD_Y * 2);
+        let row_at = |y: u16| Rect::new(inner.x, top + y, inner.width, 1);
+
+        for (row, item) in state.items.iter().take(rows as usize).enumerate() {
+            draw_choice(buffer, item, row_at(row as u16), row == state.cursor);
         }
 
         // Past the gap, on the row the cursor calls `items.len()`.
         let row = state.items.len() as u16 + CANCEL_GAP;
-        if row < entries.height {
+        if row < rows {
             draw_row(
                 buffer,
                 CANCEL,
                 None,
-                Rect::new(entries.x, entries.y + row, entries.width, 1),
+                row_at(row),
                 Style::new(),
                 state.cursor == state.items.len(),
             );
@@ -249,10 +245,11 @@ fn draw_choice(buffer: &mut Buffer, item: &UnitChoice, area: Rect, selected: boo
     );
 }
 
-/// A verb, and what it applies to, in the cursor column.
+/// A verb, and what it applies to, across one row of the box.
 ///
 /// Shared with [`CANCEL`], which is no [`UnitChoice`] but has to line up with
-/// them to the column.
+/// them to the column. The selection is the same [`CURSOR`] the units list
+/// uses — one way of saying "here" for both lists.
 fn draw_row(
     buffer: &mut Buffer,
     verb: &str,
@@ -265,11 +262,13 @@ fn draw_row(
         true => style.add_modifier(Modifier::BOLD),
         false => style,
     };
-    let right = area.right();
+    let right = area.right().saturating_sub(PAD_X);
+    let x = area.x + PAD_X;
     if selected {
-        buffer.set_stringn(area.x, area.y, CURSOR, CURSOR.width(), style);
+        let cursor = Style::new().fg(Color::White);
+        buffer.set_stringn(x, area.y, CURSOR, CURSOR.width(), cursor);
     }
-    let left = area.x + CURSOR.width() as u16;
+    let left = x + CURSOR.width() as u16 + 1;
     let mut x = set_clipped(buffer, left, area.y, verb, room(left, right), style);
     let Some(mode) = mode else {
         return;

@@ -16,10 +16,10 @@ mod units;
 use ratatui::{
     Frame,
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
-    style::{Style, Stylize},
+    layout::{Constraint, Layout, Position, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Widget},
+    widgets::{Block, Borders, Widget},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -45,11 +45,21 @@ use crate::ui::client::UiUnit;
 /// still: a name lands in the same place whatever else is on screen.
 const UNITS_WIDTH: u16 = 30;
 
-/// The mark on a selected row. The trailing space is part of it, and every
-/// row is indented by its width so the text stays in one column.
+/// The mark on a selected row. Every row is indented past it and a space, so
+/// what follows stays in one column whether the mark is there or not.
+///
+/// A mark and not a bar across the row: a bar has to be painted in some
+/// colour, and every colour it could be is either a bet that the terminal is
+/// dark or a fight with the status marks, which are what the list is read by.
 ///
 /// Up here because both lists use it.
-const CURSOR: &str = "> ";
+const CURSOR: &str = ">";
+
+/// The corner where the units pane's border runs into the log pane's.
+const JOIN_TOP: &str = "┬";
+
+/// The same, at the other end.
+const JOIN_BOTTOM: &str = "┴";
 
 /// The frame the panes are drawn in.
 ///
@@ -71,10 +81,13 @@ pub struct UiRender {
     /// owns a `Vec` of its constraints, and the split never changes.
     body: Layout,
     panes: Layout,
-    /// The border every pane is drawn in. Untitled, because a block's title
-    /// is a [`Line`] and rendering one allocates — the panes write their own
-    /// over the border instead.
+    /// The border the log pane and the menu are drawn in. Untitled, because
+    /// a block's title is a [`Line`] and rendering one allocates — they write
+    /// their own over the border instead.
     border: Block<'static>,
+    /// The same, less the right hand side: that wall is the log pane's left
+    /// one, and one line is drawn once.
+    units_border: Block<'static>,
     /// The line of key bindings, which never changes at all.
     hints: Line<'static>,
 }
@@ -90,6 +103,7 @@ impl UiRender {
             body: Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]),
             panes: Layout::horizontal([Constraint::Length(UNITS_WIDTH), Constraint::Fill(1)]),
             border: Block::bordered(),
+            units_border: Block::new().borders(Borders::TOP | Borders::BOTTOM | Borders::LEFT),
             hints: key_hints(),
         }
     }
@@ -101,21 +115,19 @@ impl UiRender {
     /// and what it takes from outside is the client — only to read.
     pub fn draw<C: UiClient>(&mut self, frame: &mut Frame, client: &C) {
         let [footer, units_area, log_area] = self.areas(frame.area());
-        let title = self
-            .selected_unit(client)
-            .map_or("log", |unit| unit.name.as_str());
 
         frame.render_widget(UiRenderHints(&self.hints), footer);
         frame.render_stateful_widget(
-            UiRenderLog::new(title, client.log(), &self.border),
+            UiRenderLog::new(self.selected_unit(client), client.log(), &self.border),
             log_area,
             &mut self.log,
         );
         frame.render_stateful_widget(
-            UiRenderUnits::new(client.units(), &self.border),
+            UiRenderUnits::new(client.units(), &self.units_border),
             units_area,
             &mut self.units,
         );
+        join_borders(frame.buffer_mut(), log_area);
 
         // Last, because it goes over both panes. Centred rather than pinned
         // to the row it acts on: the title says which unit it is for.
@@ -230,6 +242,21 @@ impl Widget for UiRenderHints<'_> {
     }
 }
 
+/// Turn the log pane's two left hand corners into the tees they are.
+///
+/// The panes share one wall rather than standing two of them next to each
+/// other: a double rule down the middle of the screen is the first thing the
+/// eye catches, and it means nothing. Drawn over the blocks afterwards,
+/// there being no way to ask one for a tee.
+fn join_borders(buffer: &mut Buffer, log: Rect) {
+    let bottom = log.bottom().saturating_sub(1);
+    for (y, symbol) in [(log.y, JOIN_TOP), (bottom, JOIN_BOTTOM)] {
+        if let Some(cell) = buffer.cell_mut(Position::new(log.x, y)) {
+            cell.set_symbol(symbol);
+        }
+    }
+}
+
 /// A box of `width` by `height` in the middle of `area`, clamped to it —
 /// a popup hanging off the frame is a popup missing a border.
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -288,19 +315,29 @@ fn decimal(value: usize, digits: &mut [u8; DIGITS_MAX]) -> &str {
 /// The bottom line: what the keys do. When a command can report having been
 /// refused, this is the line it will have to share.
 fn key_hints() -> Line<'static> {
-    Line::from(vec![
-        Span::raw(" "),
-        key_hint("↑↓", "move"),
-        key_hint("⏎", "actions"),
-        key_hint("r", "(re)start"),
-        key_hint("⌫", "stop"),
-        key_hint("pgup/dn", "scroll"),
-        key_hint("end", "follow"),
-        key_hint("q", "quit"),
-    ])
+    let mut spans = vec![Span::raw(" ")];
+    for (key, what) in [
+        ("↑↓", "move"),
+        ("⏎", "actions"),
+        ("r", "(re)start"),
+        ("⌫", "stop"),
+        ("pgup/dn", "scroll"),
+        ("end", "follow"),
+        ("q", "quit"),
+    ] {
+        key_hint(&mut spans, key, what);
+    }
+    Line::from(spans)
 }
 
-/// `key`, then what it does, dimmed, with a gap before the next one.
-fn key_hint<'a>(key: &'a str, what: &'a str) -> Span<'a> {
-    Span::raw(format!("{key} {what}   ")).dim()
+/// `key` in a colour, what it does dimmed beside it, and a gap before the
+/// next one.
+///
+/// Two styles rather than one, because a line of evenly dim text is a line
+/// nobody picks a key out of.
+fn key_hint(spans: &mut Vec<Span<'static>>, key: &'static str, what: &'static str) {
+    spans.push(Span::styled(key, Style::new().fg(Color::Cyan)));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(what, Style::new().add_modifier(Modifier::DIM)));
+    spans.push(Span::raw("   "));
 }

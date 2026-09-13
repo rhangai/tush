@@ -3,15 +3,16 @@ use unicode_width::UnicodeWidthStr;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     widgets::{Block, StatefulWidget, Widget},
 };
 
 use crate::{
     log::LogRegion,
+    runner::RunnerState,
     ui::{
-        client::UiLog,
-        render::{DIGITS_MAX, decimal, room, set_clipped},
+        client::{UiLog, UiUnit},
+        render::{DIGITS_MAX, decimal, room, set_clipped, units::status_label},
     },
 };
 
@@ -21,6 +22,12 @@ use crate::{
 /// because scrolling goes both ways — stretched backwards only, it would make
 /// scrolling down cost exactly what it was meant to save.
 const LOG_MARGIN: usize = 100;
+
+/// What separates the pieces of the title.
+const SEPARATOR: &str = " · ";
+
+/// Blank columns at each edge, so the output is not written onto the border.
+const PAD_X: u16 = 1;
 
 /// Where the log pane is looking from, and how big it turned out.
 ///
@@ -92,18 +99,78 @@ impl UiRenderLogState {
     }
 }
 
+/// What a pane with no lines in it says, so an empty one does not read as a
+/// pane that failed to draw.
+const EMPTY: &str = "no output yet";
+
 /// The log pane: a unit's output, titled with the unit rather than with the
 /// word "log", so it says which output it is about before it has any.
 pub struct UiRenderLog<'a> {
-    title: &'a str,
+    unit: Option<&'a UiUnit>,
     log: Option<UiLog<'a>>,
     border: &'a Block<'a>,
 }
 
 impl<'a> UiRenderLog<'a> {
-    /// The pane for `log`, titled `title`, drawn inside `border`.
-    pub fn new(title: &'a str, log: Option<UiLog<'a>>, border: &'a Block<'a>) -> Self {
-        Self { title, log, border }
+    /// The pane for `unit`'s `log`, drawn inside `border`.
+    pub fn new(unit: Option<&'a UiUnit>, log: Option<UiLog<'a>>, border: &'a Block<'a>) -> Self {
+        Self { unit, log, border }
+    }
+
+    /// Write the title over the top border: the unit, then its state spelled
+    /// out, then the mode.
+    ///
+    /// The words the list gave up to fit on one line live here, where there
+    /// is room for them and where they are about the unit being looked at.
+    fn draw_title(&self, buffer: &mut Buffer, area: Rect, inner: Rect) {
+        let plain = Style::new();
+        let dim = plain.add_modifier(Modifier::DIM);
+        let right = inner.right();
+        let Some(unit) = self.unit else {
+            let x = buffer.set_stringn(inner.x, area.y, " ", 1, plain).0;
+            let x = set_clipped(buffer, x, area.y, "log", room(x, right), dim);
+            buffer.set_stringn(x, area.y, " ", 1, plain);
+            return;
+        };
+
+        let mut x = buffer.set_stringn(inner.x, area.y, " ", 1, plain).0;
+        x = set_clipped(
+            buffer,
+            x,
+            area.y,
+            &unit.name,
+            room(x, right),
+            plain.add_modifier(Modifier::BOLD),
+        );
+        x = buffer
+            .set_stringn(x, area.y, SEPARATOR, room(x, right), dim)
+            .0;
+
+        let (label, color) = status_label(unit.state);
+        let style = plain.fg(color);
+        x = buffer
+            .set_stringn(x, area.y, label, room(x, right), style)
+            .0;
+        if let RunnerState::ExitError(Some(code)) = unit.state {
+            let mut digits = [0u8; DIGITS_MAX];
+            x = buffer
+                .set_stringn(
+                    x,
+                    area.y,
+                    decimal(code.get() as usize, &mut digits),
+                    room(x, right),
+                    style,
+                )
+                .0;
+        }
+
+        if let Some(mode) = unit.mode.as_deref() {
+            x = buffer
+                .set_stringn(x, area.y, SEPARATOR, room(x, right), dim)
+                .0;
+            x = set_clipped(buffer, x, area.y, mode, room(x, right), dim);
+        }
+        buffer.set_stringn(x, area.y, " ", 1, plain);
     }
 }
 
@@ -113,36 +180,37 @@ impl StatefulWidget for UiRenderLog<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer, state: &mut Self::State) {
         let inner = self.border.inner(area);
         self.border.render(area, buffer);
-        state.size = (inner.height as usize, inner.width as usize);
 
-        // The title goes over the top border, in the three pieces it is made
-        // of, rather than through the block: a block's title is a `Line`, and
-        // both building one and rendering one allocate.
-        let mut x = buffer.set_stringn(inner.x, area.y, " ", 1, Style::new()).0;
-        x = set_clipped(
-            buffer,
-            x,
-            area.y,
-            self.title,
-            room(x, inner.right()),
-            Style::new(),
-        );
-        buffer.set_stringn(x, area.y, " ", 1, Style::new());
+        // Indented on both sides, and the region asked for is the narrower
+        // rectangle that leaves — a line clipped to the pane's full width
+        // would have its last columns written over the border.
+        let text = Rect {
+            x: inner.x + PAD_X,
+            width: inner.width.saturating_sub(PAD_X * 2),
+            ..inner
+        };
+        state.size = (text.height as usize, text.width as usize);
 
+        // The title goes over the top border rather than through the block:
+        // a block's title is a `Line`, and both building one and rendering
+        // one allocate.
+        self.draw_title(buffer, area, inner);
         draw_behind(buffer, area, state.scroll);
 
-        let Some(log) = self.log else {
+        let lines = self.log.as_ref().map_or(&[][..], |log| {
+            visible(log, state.scroll, text.height as usize)
+        });
+        if lines.is_empty() {
+            let style = Style::new().add_modifier(Modifier::DIM);
+            buffer.set_stringn(text.x, text.y, EMPTY, room(text.x, text.right()), style);
             return;
-        };
-        for (row, text) in visible(&log, state.scroll, inner.height as usize)
-            .iter()
-            .enumerate()
-        {
+        }
+        for (row, line) in lines.iter().enumerate() {
             buffer.set_stringn(
-                inner.x,
-                inner.y + row as u16,
-                text,
-                inner.width as usize,
+                text.x,
+                text.y + row as u16,
+                line,
+                text.width as usize,
                 Style::new(),
             );
         }
