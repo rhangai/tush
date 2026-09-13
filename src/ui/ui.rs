@@ -13,14 +13,6 @@ use crate::{
     unit::UnitEvent,
 };
 
-/// How often the screen is redrawn when nothing is being pressed.
-///
-/// A run changes state without anybody asking — a process exits, a start
-/// finally schedules — and with a [`UiClient`] that cannot push, the only way
-/// to find out is to look. Four times a second is under the threshold where a
-/// person notices the lag and far above what a [`sync`](UiClient::sync) costs.
-const REFRESH: Duration = Duration::from_millis(250);
-
 /// The terminal UI: a list of units, and the keys that act on the selected one.
 ///
 /// Generic over its [`UiClient`] rather than holding a `dyn` one, so the
@@ -46,18 +38,23 @@ pub struct Ui<C: UiClient> {
 impl<C: UiClient> Ui<C> {
     /// Take over the terminal, run until the user quits, and give it back.
     ///
+    /// `refresh` is how long to wait between frames when nothing is being
+    /// pressed. A run changes state without anybody asking — a process exits,
+    /// a line is half written — and with a [`UiClient`] that cannot push, the
+    /// only way to find out is to look.
+    ///
     /// The terminal is restored whatever the loop did — including on the
     /// error path, which is the reason for the temporary rather than a `?` on
     /// the loop. A failure that leaves the terminal in raw mode with no
     /// cursor is a failure you cannot read the message of.
-    pub async fn run(client: C) -> Result<()> {
+    pub async fn run(client: C, refresh: Duration) -> Result<()> {
         let mut ui = Self {
             client,
             render: UiRender::new(),
             running: true,
         };
         let mut terminal = ratatui::init();
-        let result = ui.main_loop(&mut terminal).await;
+        let result = ui.main_loop(&mut terminal, refresh).await;
         ratatui::restore();
         result
     }
@@ -69,9 +66,9 @@ impl<C: UiClient> Ui<C> {
     /// what makes a command's effect visible: `send` returns before the
     /// session has acted on it, so the frame that shows the result is the
     /// next one through here, not the one the key press was in.
-    async fn main_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    async fn main_loop(&mut self, terminal: &mut DefaultTerminal, refresh: Duration) -> Result<()> {
         let mut events = EventStream::new();
-        let mut ticks = tokio::time::interval(REFRESH);
+        let mut ticks = tokio::time::interval(refresh);
 
         while self.running {
             // Ask before syncing, so that a client with a round trip to make

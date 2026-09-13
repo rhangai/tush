@@ -3,11 +3,14 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 
 use crate::{
-    app::error::{AppError, AppErrors},
+    app::{
+        error::{AppError, AppErrors},
+        target::{TARGET_SEPARATOR, Target},
+    },
     config::{Config, ConfigProc},
     runner::RunnerHandle,
     unit::{UnitAction, UnitBehavior, UnitEvent, UnitMap},
@@ -127,6 +130,54 @@ impl App {
         &self.groups
     }
 
+    /// The units `targets` name, in the order they were named, without
+    /// repeats.
+    ///
+    /// A group expands to what was declared under it. Order is the command
+    /// line's, because that is the one the person who typed it has in mind;
+    /// within a group it is the order the config declared them, which is as
+    /// good an answer as any until there is a start order to ask instead.
+    ///
+    /// # Named twice
+    ///
+    /// Kept once. `group:web server-main` where `server-main` is in `web` is
+    /// somebody naming a group and then a member of it, and starting it twice
+    /// would restart it — the second start would kill the first, which is the
+    /// opposite of what they asked for.
+    ///
+    /// # Named and not there
+    ///
+    /// An error, and all of them at once. A command line with two typos in it
+    /// is about to be retyped, and telling somebody about one typo per run is
+    /// two runs of the same discovery — the same reason
+    /// [`new`](App::new) reports every problem with a config.
+    pub fn resolve(&self, targets: &[Target]) -> Result<Vec<ArcStr>> {
+        let mut keys: Vec<ArcStr> = Vec::new();
+        let mut unknown: Vec<String> = Vec::new();
+
+        for target in targets {
+            match target {
+                Target::Unit(key) => match self.units.contains(key) {
+                    true => push_once(&mut keys, key),
+                    false => unknown.push(format!("`{key}` is not a proc")),
+                },
+                Target::Group(group) => match self.groups.get(group) {
+                    Some(members) => {
+                        for key in members {
+                            push_once(&mut keys, key);
+                        }
+                    }
+                    None => unknown.push(format!("`{group}` is not a group")),
+                },
+            }
+        }
+
+        if !unknown.is_empty() {
+            bail!("{}", unknown.join("\n"));
+        }
+        Ok(keys)
+    }
+
     /// Everything wrong with `config`, in the order it was found.
     ///
     /// Separate from [`new`](App::new) because the two halves want the config
@@ -142,6 +193,21 @@ impl App {
             // Even a proc nothing mentions has to be in the graph, or it
             // would not be in the order that comes out of it.
             graph.insert(&proc.key);
+
+            if proc.key.contains(TARGET_SEPARATOR) {
+                errors.push(AppError::ReservedCharacter {
+                    name: proc.key.clone(),
+                    character: TARGET_SEPARATOR,
+                });
+            }
+            for group in &proc.groups {
+                if group.contains(TARGET_SEPARATOR) {
+                    errors.push(AppError::ReservedCharacter {
+                        name: group.clone(),
+                        character: TARGET_SEPARATOR,
+                    });
+                }
+            }
 
             if proc.run.is_some() && proc.modes.is_some() {
                 errors.push(AppError::RunAndModes {
@@ -177,5 +243,14 @@ impl App {
         } else {
             Some(AppErrors::new(errors))
         }
+    }
+}
+
+/// Add `key` unless it is already there.
+///
+/// Linear, because the lists this is building are a command line long.
+fn push_once(keys: &mut Vec<ArcStr>, key: &ArcStr) {
+    if !keys.contains(key) {
+        keys.push(key.clone());
     }
 }

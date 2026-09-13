@@ -48,6 +48,9 @@ impl std::error::Error for AppErrors {}
 pub enum AppError {
     /// A proc declared `run` and `modes` both.
     RunAndModes { proc: ArcStr },
+    /// A proc or a group is named with a character a command line needs for
+    /// itself.
+    ReservedCharacter { name: ArcStr, character: char },
     /// A proc depends on a name that no proc is declared under.
     UnknownDependency { proc: ArcStr, depends: ArcStr },
     /// Procs that wait on each other in a circle, so none of them can be
@@ -60,6 +63,12 @@ impl fmt::Display for AppError {
         match self {
             Self::RunAndModes { proc } => {
                 write!(f, "`{proc}` declares both `run` and `modes`")
+            }
+            Self::ReservedCharacter { name, character } => {
+                write!(
+                    f,
+                    "`{name}` contains `{character}`, which a command line needs to tell a group from a proc"
+                )
             }
             Self::UnknownDependency { proc, depends } => {
                 write!(f, "`{proc}` depends on `{depends}`, which is not a proc")

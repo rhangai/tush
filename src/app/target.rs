@@ -1,0 +1,89 @@
+use std::str::FromStr;
+
+use anyhow::{Result, bail};
+use arcstr::ArcStr;
+
+/// What tells one kind of target from another.
+///
+/// Reserved: a proc's key and a group's name may not contain it, which
+/// [`App::validate_config`](crate::app::App) refuses at the door. Without
+/// that, `group:web` is a group called `web` or a proc called `group:web`
+/// depending on what the file happens to declare, and which one a command
+/// line means would depend on a file it never mentioned.
+pub const TARGET_SEPARATOR: char = ':';
+
+/// The prefix that means a group rather than a proc.
+const GROUP: &str = "group";
+
+/// Something to start, named the way a command line names it.
+///
+/// A bare name is a proc; `group:web` is every proc declared under `web`. The
+/// prefix is on the group and not on the proc because the proc is the common
+/// case and the common case should be the short one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Target {
+    /// One proc, by the key it was declared under.
+    Unit(ArcStr),
+    /// Every proc in a group, by the group's name.
+    Group(ArcStr),
+}
+
+impl FromStr for Target {
+    type Err = anyhow::Error;
+
+    /// Read one target off a command line.
+    ///
+    /// An unknown prefix is refused rather than read as a proc whose name
+    /// happens to contain a colon: those cannot exist, so a name with one in
+    /// it is a typo in a prefix and saying so is more use than looking for a
+    /// proc that could never have been declared.
+    fn from_str(target: &str) -> Result<Self> {
+        let Some((kind, name)) = target.split_once(TARGET_SEPARATOR) else {
+            if target.is_empty() {
+                bail!("an empty target names nothing");
+            }
+            return Ok(Self::Unit(target.into()));
+        };
+        if kind != GROUP {
+            bail!(
+                "`{kind}{TARGET_SEPARATOR}` is not a kind of target; did you mean `{GROUP}{TARGET_SEPARATOR}{name}`?"
+            );
+        }
+        if name.is_empty() {
+            bail!("`{GROUP}{TARGET_SEPARATOR}` with no group after it names nothing");
+        }
+        Ok(Self::Group(name.into()))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_bare_name_is_a_proc_and_a_prefixed_one_is_a_group() {
+        assert_eq!(
+            "server".parse::<Target>().unwrap(),
+            Target::Unit("server".into())
+        );
+        assert_eq!(
+            "group:web".parse::<Target>().unwrap(),
+            Target::Group("web".into())
+        );
+    }
+
+    /// A proc cannot have a colon in its name, so a colon is always a prefix
+    /// — and a prefix nobody knows is a typo worth naming.
+    #[test]
+    fn an_unknown_prefix_is_refused_rather_than_read_as_a_name() {
+        let error = "grupo:web".parse::<Target>().unwrap_err().to_string();
+        assert!(error.contains("grupo:"), "{error}");
+        assert!(error.contains("group:web"), "{error}");
+    }
+
+    #[test]
+    fn a_target_has_to_name_something() {
+        assert!("".parse::<Target>().is_err());
+        assert!("group:".parse::<Target>().is_err());
+    }
+}

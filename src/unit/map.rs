@@ -107,6 +107,11 @@ impl UnitMap {
         self.with(key, Unit::log_reader).ok()
     }
 
+    /// Whether a unit was declared under `key`.
+    pub fn contains(&self, key: &str) -> bool {
+        self.units.contains_key(key)
+    }
+
     /// The name every unit was declared under.
     ///
     /// In no particular order — the map is a `HashMap`, and the declaration
