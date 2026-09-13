@@ -49,6 +49,13 @@ pub trait LogBufferWriter {
     /// `false` once there is nowhere left to put anything, which is the
     /// buffer's cue to stop rather than to retry.
     fn push_chunk(&mut self, chunk: &mut LogChunk) -> bool;
+
+    /// Take `text` as the line being written, which is not finished yet.
+    fn set_partial(&mut self, text: &str);
+
+    /// Forget the line being written, because it ended or because the reader
+    /// did.
+    fn clear_partial(&mut self);
 }
 
 /// The real one: chunks come from the log's arena and go into its ring.
@@ -59,6 +66,14 @@ pub trait LogBufferWriter {
 impl LogBufferWriter for LogWriterRef {
     fn chunk(&mut self) -> LogChunk {
         LogWriterRef::chunk(self)
+    }
+
+    fn set_partial(&mut self, text: &str) {
+        LogWriterRef::set_partial(self, text);
+    }
+
+    fn clear_partial(&mut self) {
+        LogWriterRef::clear_partial(self);
     }
 
     fn recycle(&mut self, chunk: LogChunk) {
@@ -175,6 +190,22 @@ impl<W: LogBufferWriter> LogBufferAny<W> {
             }
         }
         self.flush_chunk();
+        self.publish_partial();
+    }
+
+    /// Show the line so far, if there is one and it is not finished.
+    ///
+    /// At the end of a read rather than as it goes, because what a reader
+    /// wants to see is the line as it stands now — and a read that arrives in
+    /// three pieces is still one moment as far as anybody watching is
+    /// concerned.
+    fn publish_partial(&mut self) {
+        if self.line.is_ready() || self.line.is_empty() {
+            return;
+        }
+        // Disjoint fields: the line is read while the writer is written to.
+        let (line, writer) = (&self.line, &mut self.writer);
+        writer.set_partial(line.as_str());
     }
 
     /// Hand over a chunk holding text, whether or not it filled up.
@@ -206,6 +237,10 @@ impl<W: LogBufferWriter> LogBufferAny<W> {
     /// Returns `false` once the log is gone: there is nowhere left to put
     /// anything, and no reason for the caller to carry on.
     fn flush_line(&mut self) -> bool {
+        // The line is on its way into the history, so there is no longer
+        // anything part way through — whether a newline closed it, the room
+        // ran out, or the stream ended and sealed it.
+        self.writer.clear_partial();
         loop {
             self.chunk.push_line(&mut self.line);
             if self.chunk.is_finished() {
@@ -314,6 +349,7 @@ impl<W: LogBufferWriter> LogBufferAny<W> {
         }
 
         self.flush_chunk();
+        self.publish_partial();
 
         // Whatever the chunk would not take is the head of a character the
         // next read will finish — at most three bytes, and usually none at
@@ -353,6 +389,16 @@ impl<W: LogBufferWriter> LogBufferAny<W> {
 /// from under it, and only `Drop` covers both.
 impl<W: LogBufferWriter> Drop for LogBufferAny<W> {
     fn drop(&mut self) {
+        // SAFETY: the one and only take. `drop` runs once, nothing reads
+        // `chunk` after this, and `ManuallyDrop` means the field is not
+        // dropped again on the way out — so the chunk is moved exactly once
+        // and destroyed exactly once, by `recycle`.
+        // Whatever was part way through goes with the task that was writing
+        // it. This is the path an aborted reader takes — a unit stopped or
+        // restarted mid-line — and the only one that does not run the code
+        // that would otherwise retire the partial.
+        self.writer.clear_partial();
+
         // SAFETY: the one and only take. `drop` runs once, nothing reads
         // `chunk` after this, and `ManuallyDrop` means the field is not
         // dropped again on the way out — so the chunk is moved exactly once
@@ -403,6 +449,8 @@ mod test {
         /// Whether pushes still land. Set to false to play the log going
         /// away under a reader still holding one.
         open: bool,
+        /// The line the buffer says is part way through, if any.
+        partial: Option<String>,
     }
 
     impl Handed {
@@ -446,6 +494,17 @@ mod test {
     }
 
     impl LogBufferWriter for Fake {
+        /// The partial line, as the writer last saw it. Kept rather than
+        /// forwarded anywhere, since a test's whole interest in it is what
+        /// the buffer decided to publish and when.
+        fn set_partial(&mut self, text: &str) {
+            self.handed.borrow_mut().partial = Some(text.to_owned());
+        }
+
+        fn clear_partial(&mut self) {
+            self.handed.borrow_mut().partial = None;
+        }
+
         fn chunk(&mut self) -> LogChunk {
             let mut handed = self.handed.borrow_mut();
             handed.spare.pop().unwrap_or_else(|| {

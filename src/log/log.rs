@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
+use crate::log::line::LOG_LINE_SIZE;
 use crate::{
     log::{
         LogBuffer,
@@ -161,10 +162,47 @@ impl LogWriterRef {
             // protects.
             inner.pushed_hint.store(history.pushed, Ordering::Release);
         }
+        inner.version.fetch_add(1, Ordering::Release);
         // Outside the lock: the displaced chunk is ours alone now, and
         // clearing it is nobody else's business.
         chunk.clear();
         true
+    }
+
+    /// Publish `text` as the line this writer is part way through.
+    ///
+    /// Called at the end of a read that did not finish a line, so that a
+    /// process printing a prompt, a progress bar or a `Compiling ...` is
+    /// visible while it is doing it rather than only once it says something
+    /// else. Without this such a line waits in the reader task for a newline
+    /// that may be a minute away, or never come.
+    pub(super) fn set_partial(&self, text: &str) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let mut partials = inner.partials.lock();
+        if partials.is(self.id, text) {
+            return;
+        }
+        let version = inner.version.fetch_add(1, Ordering::Release) + 1;
+        partials.set(self.id, version, text);
+    }
+
+    /// Forget whatever this writer was part way through.
+    ///
+    /// Two callers, and between them every way a partial line can end: the
+    /// buffer when the line is finished and handed over, and the buffer's
+    /// `Drop` when the reader task ends for any reason at all — a process
+    /// exiting, a unit being stopped, a task aborted mid-line. The last is
+    /// the one that matters, because it is the only path that does not run
+    /// the code that would otherwise tidy up.
+    pub(super) fn clear_partial(&self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        if inner.partials.lock().clear(self.id) {
+            inner.version.fetch_add(1, Ordering::Release);
+        }
     }
 
     /// Drain `read` into the log until it ends, on a task of its own.
@@ -400,6 +438,15 @@ struct LogInner {
     /// that have ever run at once — and touched only when a reader starts or
     /// stops, so a plain lock costs nothing here.
     chunks_free: Mutex<Vec<LogChunk>>,
+    /// The lines currently being written, one per writer.
+    partials: Mutex<Partials>,
+    /// Everything that has happened to this log, counted.
+    ///
+    /// Bumped by a chunk arriving and by a partial line changing, so a reader
+    /// polling one number learns about both. `pushed` cannot do that job: a
+    /// partial does not push a chunk, and a view watching only that would
+    /// never notice a line being typed.
+    version: AtomicU64,
 }
 
 impl LogInner {
@@ -429,6 +476,8 @@ impl LogInner {
             }),
             arena,
             chunks_free: Mutex::new(Vec::new()),
+            partials: Mutex::new(Partials::new()),
+            version: AtomicU64::new(0),
             next_writer_id: AtomicU32::new(0),
             pushed_hint: AtomicU64::new(0),
         })
@@ -437,6 +486,192 @@ impl LogInner {
     /// Claim the next writer id.
     fn next_writer_id(&self) -> LogWriterId {
         LogWriterId::new(self.next_writer_id.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// How many writers may have a line in flight at once.
+///
+/// One per process reading into the log, and a unit runs its commands one
+/// after another, so in practice this is one or two. The cap is not the
+/// mechanism — a partial is retired by the writer that owns it, on every path
+/// there is — it is what stops a leak from growing without bound if one ever
+/// gets past that.
+const PARTIALS_MAX: usize = 8;
+
+/// The text of a line still being written.
+///
+/// Inline and fixed, like every other piece of text this module holds: a line
+/// being assembled is a `[u8; LOG_LINE_SIZE]`, a chunk is one arena block, a
+/// reader's chunk is its bytes. A `String` here would have been the one thing
+/// in the log that allocates per line, and the one whose type does not say
+/// how long it can get — and the answer is the same [`LOG_LINE_SIZE`],
+/// because past that a line stops being partial and becomes a fragment in the
+/// ring.
+struct PartialText {
+    /// How many bytes of `bytes` are text.
+    len: usize,
+    /// The text, inline. Only the first `len` mean anything.
+    bytes: [u8; LOG_LINE_SIZE],
+}
+
+impl PartialText {
+    /// An empty one.
+    fn new() -> Self {
+        Self {
+            len: 0,
+            bytes: [0; LOG_LINE_SIZE],
+        }
+    }
+
+    /// Take `text`, replacing whatever was here.
+    ///
+    /// Truncated to what fits, on a character boundary. The caller cannot
+    /// overrun it — a line longer than this has already left the buffer as a
+    /// fragment — but a bound that only holds because of something two
+    /// modules away is a bound worth keeping anyway.
+    fn set(&mut self, text: &str) {
+        let mut len = text.len().min(LOG_LINE_SIZE);
+        while len > 0 && !text.is_char_boundary(len) {
+            len -= 1;
+        }
+        self.bytes[..len].copy_from_slice(&text.as_bytes()[..len]);
+        self.len = len;
+    }
+
+    /// The text.
+    fn as_str(&self) -> &str {
+        // SAFETY: every byte was copied out of a `&str`, and the length was
+        // moved back to a character boundary before the copy, so what is here
+        // is a prefix of valid UTF-8 cut between characters.
+        unsafe { std::str::from_utf8_unchecked(&self.bytes[..self.len]) }
+    }
+}
+
+/// A line that is still being written.
+///
+/// Copied out of the reader task rather than moved, because the task is not
+/// finished with it: the next read goes on adding to the same line, and this
+/// is only what it looked like when the read ran out.
+struct Partial {
+    /// Who is writing it, or [`UNSET`](LogWriterId::UNSET) for a free slot.
+    writer: LogWriterId,
+    /// The log's version when it was last written, which is what decides
+    /// which one goes if the store ever fills.
+    version: u64,
+    /// The text so far.
+    text: PartialText,
+}
+
+impl Partial {
+    /// A free slot.
+    fn new() -> Self {
+        Self {
+            writer: LogWriterId::UNSET,
+            version: 0,
+            text: PartialText::new(),
+        }
+    }
+
+    /// Whether anybody is writing into it.
+    fn is_taken(&self) -> bool {
+        self.writer != LogWriterId::UNSET
+    }
+}
+
+/// The lines currently being written, one per writer.
+///
+/// # Why they are not in the ring
+///
+/// A chunk in the ring is permanent and never changes; a partial is neither.
+/// It is replaced on every read and then disappears when the finished line
+/// lands, so putting it in the ring would write the same text into the
+/// history twice and leave every superseded version of it there for good.
+/// Readers mirror chunks by offset, too, which a chunk that mutated would
+/// break.
+///
+/// # Why a lock of their own
+///
+/// Publishing one happens on every read that does not end a line, and the
+/// history's lock is the one every writer needs to hand a chunk over. Keeping
+/// them apart is what stops a process printing a progress bar from getting in
+/// the way of one printing lines.
+struct Partials {
+    /// [`PARTIALS_MAX`] slots, built once and reused. A free one carries
+    /// [`UNSET`](LogWriterId::UNSET), the way a reader's ring carries empty
+    /// chunks — there is nothing left to allocate after this.
+    lines: Vec<Partial>,
+}
+
+impl Partials {
+    /// A store with every slot built and none of them taken.
+    fn new() -> Self {
+        Self {
+            lines: (0..PARTIALS_MAX).map(|_| Partial::new()).collect(),
+        }
+    }
+
+    /// Whether `writer` is already showing exactly `text`.
+    ///
+    /// Asked before publishing, because a read that brings only the head of a
+    /// character adds nothing to the line — and a version that moved for that
+    /// would have every view re-copying its window because a pipe twitched.
+    fn is(&self, writer: LogWriterId, text: &str) -> bool {
+        self.lines
+            .iter()
+            .any(|line| line.writer == writer && line.text.as_str() == text)
+    }
+
+    /// Take `text` as the line `writer` is part way through.
+    ///
+    /// Into the slot it already has, or a free one, or — failing both — the
+    /// one written longest ago, which is the one most likely to belong to a
+    /// reader that is not coming back. That last case is a backstop and not
+    /// the mechanism: a partial is retired by the writer that owns it, on
+    /// every path there is.
+    fn set(&mut self, writer: LogWriterId, version: u64, text: &str) {
+        let slot = self
+            .lines
+            .iter()
+            .position(|line| line.writer == writer)
+            .or_else(|| self.lines.iter().position(|line| !line.is_taken()))
+            .or_else(|| {
+                self.lines
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, line)| line.version)
+                    .map(|(index, _)| index)
+            });
+        let Some(slot) = slot else {
+            return;
+        };
+        let line = &mut self.lines[slot];
+        line.writer = writer;
+        line.version = version;
+        line.text.set(text);
+    }
+
+    /// Forget whatever `writer` was part way through.
+    ///
+    /// Reports whether there was anything, because a version that moved for a
+    /// clear that cleared nothing would wake every view for no reason.
+    fn clear(&mut self, writer: LogWriterId) -> bool {
+        let Some(line) = self.lines.iter_mut().find(|line| line.writer == writer) else {
+            return false;
+        };
+        line.writer = LogWriterId::UNSET;
+        line.text.set("");
+        true
+    }
+
+    /// The lines being written, oldest first.
+    ///
+    /// By version, because slots are reused in whatever order they came free,
+    /// and a list that reorders itself under a reader is a list nobody can
+    /// follow.
+    fn taken(&self) -> impl Iterator<Item = &Partial> {
+        let mut taken: Vec<&Partial> = self.lines.iter().filter(|line| line.is_taken()).collect();
+        taken.sort_by_key(|line| line.version);
+        taken.into_iter()
     }
 }
 
@@ -488,6 +723,22 @@ pub struct LogReader {
     /// than at the log's current count, so a new reader's first sync picks up
     /// the history that is already there.
     seen: u64,
+    /// The lines that were still being written at the last sync.
+    ///
+    /// Copied, like the chunks, so that reading them back does not go near
+    /// the log — and held the same way they are held there: [`PARTIALS_MAX`]
+    /// slots built once, refilled in place. The whole point of a partial is
+    /// that it changes on every read of a busy pipe, so it is the last place
+    /// that should be allocating.
+    partials: Vec<PartialText>,
+    /// How many of those slots mean anything.
+    partials_len: usize,
+    /// The log's version at the last sync.
+    ///
+    /// Everything that has happened to it, chunks and partials together. What
+    /// [`seen`](LogReader::seen) counts cannot answer for a line being typed,
+    /// and a view watching only that would never redraw for one.
+    version: u64,
 }
 
 impl LogReader {
@@ -501,6 +752,9 @@ impl LogReader {
             inner,
             chunks: LocalRingBuffer::new_with(capacity, LogReaderChunk::new),
             seen: 0,
+            partials: (0..PARTIALS_MAX).map(|_| PartialText::new()).collect(),
+            partials_len: 0,
+            version: 0,
         }
     }
 
@@ -518,8 +772,25 @@ impl LogReader {
         let Some(inner) = self.inner.upgrade() else {
             return 0;
         };
-        // Acquire pairs with the release on the writer's side: if the count
-        // has moved, the chunk behind it is already in the ring.
+        // Acquire pairs with the release on the writer's side: if the version
+        // has moved, whatever moved it is already published.
+        let version = inner.version.load(Ordering::Acquire);
+        if version == self.version {
+            return 0;
+        }
+        self.version = version;
+
+        // The lines still being written, which change far more often than
+        // chunks arrive and are far cheaper to take.
+        {
+            let partials = inner.partials.lock();
+            self.partials_len = 0;
+            for partial in partials.taken() {
+                self.partials[self.partials_len].set(partial.text.as_str());
+                self.partials_len += 1;
+            }
+        }
+
         if inner.pushed_hint.load(Ordering::Acquire) == self.seen {
             return 0;
         }
@@ -650,7 +921,15 @@ impl LogReader {
     /// the same `Vec` handed back on every call reuses the strings it already
     /// has rather than allocating a pane's worth each time.
     pub fn copy_region(&self, region: LogRegion, out: &mut Vec<String>) {
+        // The lines still being written sit at the end of the log, so a
+        // region counted back from the end runs into them first: they take
+        // distances `0..held`, and the history starts after them. Which is
+        // the whole of what they cost this walk — the history is asked for
+        // the same window it always was, shifted past them.
+        let held = self.partials_len;
         let mut lines = 0;
+
+        let history = region.line_start.saturating_sub(held)..region.line_end.saturating_sub(held);
         // How far into the line the pieces so far have reached, in columns.
         // Kept across pieces because a line the chunk size split arrives as
         // several, and the window is over the line rather than over any one
@@ -659,19 +938,12 @@ impl LogReader {
         let mut open = false;
 
         // No ceiling on the walk: it stops as soon as it has counted back
-        // `lines.end` line ends, and in the degenerate case where there are
+        // `history.end` line ends, and in the degenerate case where there are
         // not that many it is bounded by the reader, which is a walk over
         // memory and not a copy of it.
-        for piece in self
-            .iter_unsync()
-            .tail_range(region.line_start..region.line_end, usize::MAX)
-        {
+        for piece in self.iter_unsync().tail_range(history, usize::MAX) {
             if !open {
-                if lines < out.len() {
-                    out[lines].clear();
-                } else {
-                    out.push(String::new());
-                }
+                open_line(out, lines);
                 open = true;
             }
             clip_into(&mut out[lines], piece.as_str(), &mut column, region);
@@ -686,6 +958,20 @@ impl LogReader {
         if open {
             lines += 1;
         }
+
+        // Then the partials the region reaches. The newest is at distance
+        // zero, so distance `d` is the one `d` from the end of the list, and
+        // the slice comes out oldest first like everything else here.
+        let nearest = region.line_end.min(held);
+        if region.line_start < nearest {
+            for partial in &self.partials[held - nearest..held - region.line_start] {
+                open_line(out, lines);
+                let mut column = 0;
+                clip_into(&mut out[lines], partial.as_str(), &mut column, region);
+                lines += 1;
+            }
+        }
+
         out.truncate(lines);
     }
 
@@ -711,6 +997,24 @@ impl LogReader {
     /// the ring is long has seen far more than it kept.
     pub fn seen(&self) -> u64 {
         self.seen
+    }
+
+    /// Everything that had happened to the log as of the last sync.
+    ///
+    /// A change token and nothing more: two of these differing means the log
+    /// moved, whether that was a chunk arriving or a line being typed. It is
+    /// what a view polls to know whether what it is showing is still what the
+    /// log says.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// How many lines are being written right now.
+    ///
+    /// They sit at the end of the log, so they are the first lines a region
+    /// counted back from the end runs into.
+    pub fn partials(&self) -> usize {
+        self.partials_len
     }
 
     /// The chunks it holds, oldest first.
@@ -769,6 +1073,18 @@ impl LogRegion {
             column_start: columns.start,
             column_end: columns.end,
         }
+    }
+}
+
+/// Make sure `out` has an empty string at `line`, reusing the one there.
+///
+/// Which is what keeps a caller that hands the same `Vec` back on every call
+/// from paying for a pane's worth of strings each time.
+fn open_line(out: &mut Vec<String>, line: usize) {
+    if line < out.len() {
+        out[line].clear();
+    } else {
+        out.push(String::new());
     }
 }
 

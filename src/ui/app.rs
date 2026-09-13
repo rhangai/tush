@@ -106,7 +106,7 @@ impl UiApp {
             return;
         };
         log.reader.sync();
-        let revision = log.reader.seen();
+        let revision = log.reader.version();
         if revision == log.revision && log.region == log.wanted {
             return;
         }
