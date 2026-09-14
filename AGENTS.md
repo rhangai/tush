@@ -115,16 +115,27 @@ the staleness check it needed all go away with it.
 
 ## Strings
 
-**`ArcStr` for text that is shared and never changed**: unit names, keys,
+**`SmallStr` for text that is shared and never changed**: unit names, keys,
 modes, config values. These are read out from behind locks several times a
 second, and a `String` there is an allocation and a copy per read.
 
 **`String` where the buffer is reused**: log lines, anything filled in place
-and truncated. `ArcStr` is immutable, so it cannot be refilled — swapping it in
-there makes things worse.
+and truncated. `SmallStr` is immutable, so it cannot be refilled — swapping it
+in there makes things worse.
 
-**Watch the handoffs.** A `&str` accessor feeding an `impl Into<ArcStr>`
-allocates a fresh copy of text that already exists as an `ArcStr` two fields
+**Short is what the saving rests on.** Up to 23 bytes live inside the
+`SmallStr`'s own 24: no allocation, and a clone is a copy rather than an
+atomic. Names, keys and modes are all under that; past it the allocation and
+the refcount are back.
+
+**It was `ArcStr` and is not going back.** `ArcStr` is a bare pointer with no
+inline form, so every word read out of a config file is its own allocation —
+measured at three allocations for `[npm, run, build]` against zero, and a
+slower clone, since a refcount per word costs more than one memcpy. Its win is
+`literal!()` on compile-time text, which config values are not.
+
+**Watch the handoffs.** A `&str` accessor feeding an `impl Into<SmallStr>`
+allocates a fresh copy of text that already exists as a `SmallStr` two fields
 away. That is the whole saving lost at one call site.
 
 ## The log

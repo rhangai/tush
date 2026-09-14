@@ -5,3 +5,4 @@ pub mod graph;
 pub mod localring;
 pub mod str;
 pub mod types;
+pub mod vec;
