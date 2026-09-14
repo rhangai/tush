@@ -25,4 +25,4 @@ pub type SmallVecStr = SmallVec<[SmallStr; 8]>;
 /// handful of procs, and the inner list is 208 bytes: eight of them inline
 /// would be 1672 bytes carried by every behavior, mode and no-op in the
 /// session, since this sits inside the enum they all are. One is 224.
-pub type SmallMatrixStr = SmallVec<[SmallVecStr; 1]>;
+pub type SmallMultiVecStr = SmallVec<[SmallVecStr; 1]>;

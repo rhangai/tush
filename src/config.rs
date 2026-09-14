@@ -56,7 +56,7 @@ use serde::Deserialize;
 use serde_with::{KeyValueMap, OneOrMany, serde_as};
 
 use crate::util::str::SmallStr;
-use crate::util::types::{SmallMatrixStr, SmallVecStr};
+use crate::util::types::{SmallMultiVecStr, SmallVecStr};
 
 /// A parsed config file: every proc a session is made of.
 ///
@@ -191,5 +191,5 @@ pub struct ConfigUnitRun {
     /// `transparent` and not `flatten`: `run` in the file is a sequence, and
     /// flattening asks for the keys of a map it never has.
     #[serde_as(as = "OneOrMany<_>")]
-    pub commands: SmallMatrixStr,
+    pub commands: SmallMultiVecStr,
 }

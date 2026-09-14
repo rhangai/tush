@@ -11,7 +11,7 @@ use crate::{
     log::LogWriterRef,
     runner::{RunnerHandle, RunnerSerial, RunnerState},
     unit::dispatch::{UnitAction, UnitChoice, UnitEvent},
-    util::types::{SmallMatrixStr, SmallVecStr},
+    util::types::{SmallMultiVecStr, SmallVecStr},
 };
 
 /// What a [`Unit`](crate::unit::Unit) does: what it spawns when started, and
@@ -69,7 +69,7 @@ impl UnitBehavior {
     ///
     /// One unit still, with one log and one state — the sequence is a
     /// [`RunnerSerial`], which is itself a single runner.
-    pub fn run_many(name: SmallStr, commands: SmallMatrixStr) -> Self {
+    pub fn run_many(name: SmallStr, commands: SmallMultiVecStr) -> Self {
         Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
     }
 
@@ -252,7 +252,7 @@ impl UnitBehaviorKind for BehaviorNoop {
 /// common case to drift away from.
 struct BehaviorRun {
     /// Each command as its argv, in the order they were written.
-    commands: SmallMatrixStr,
+    commands: SmallMultiVecStr,
 }
 
 impl UnitBehaviorKind for BehaviorRun {
