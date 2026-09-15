@@ -82,7 +82,7 @@ rather than because a reader would get it wrong without it, cut it.
 
 The heavy blocks in `log`, `runner` and `util` earned their length on
 invariants that are genuinely hard. That is not a licence to write at that
-length everywhere — most functions rate one line or none.
+length everywhere — most functions rate one line.
 
 **Name the reason in the doc when a choice looks odd.** A `Copy` type that
 holds four `usize` instead of two `Range`s, a reader that must be the same size
