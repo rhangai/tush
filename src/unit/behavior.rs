@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use enum_dispatch::enum_dispatch;
-use smallvec::smallvec;
 use tokio::process::Command;
 
 use crate::util::str::SmallStr;
@@ -61,7 +60,9 @@ pub struct UnitBehavior {
 impl UnitBehavior {
     /// One command, as its argv: the program, then its arguments.
     pub fn run(name: SmallStr, command: SmallVecStr) -> Self {
-        Self::run_many(name, smallvec![command])
+        let mut commands = SmallMultiVecStr::new();
+        commands.push(command);
+        Self::run_many(name, Arc::new(commands))
     }
 
     /// Several commands, run one after the other, stopping at the first that
@@ -69,7 +70,11 @@ impl UnitBehavior {
     ///
     /// One unit still, with one log and one state — the sequence is a
     /// [`RunnerSerial`], which is itself a single runner.
-    pub fn run_many(name: SmallStr, commands: SmallMultiVecStr) -> Self {
+    ///
+    /// Shared and not owned: the commands are read at spawn and never written,
+    /// and an `Arc` is what keeps them out of the enum every behavior is — 32
+    /// bytes carried by each no-op and each mode, rather than 208.
+    pub fn run_many(name: SmallStr, commands: Arc<SmallMultiVecStr>) -> Self {
         Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
     }
 
@@ -251,8 +256,9 @@ impl UnitBehaviorKind for BehaviorNoop {
 /// many are the same shape — there is no second path through here for the
 /// common case to drift away from.
 struct BehaviorRun {
-    /// Each command as its argv, in the order they were written.
-    commands: SmallMultiVecStr,
+    /// Each command as its argv, in the order they were written, shared with
+    /// whatever else holds the same proc's run.
+    commands: Arc<SmallMultiVecStr>,
 }
 
 impl UnitBehaviorKind for BehaviorRun {
@@ -286,11 +292,12 @@ impl UnitBehaviorKind for BehaviorRun {
             return Ok(RunnerHandle::new(()));
         }
         if self.commands.len() == 1 {
-            let process = Process::new(command(&self.commands[0])?, writer);
+            let row = self.commands.get_row(0).unwrap();
+            let process = Process::new(command(row)?, writer);
             return Ok(RunnerHandle::new(process));
         }
         let mut serial = RunnerSerial::new();
-        for argv in &self.commands {
+        for argv in self.commands.iter() {
             let writer = writer.as_ref().map(LogWriterRef::share);
             serial.add(Process::new(command(argv)?, writer));
         }

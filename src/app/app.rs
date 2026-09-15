@@ -79,12 +79,12 @@ impl App {
         // reads as the same thing and is not, since the proc's own short name
         // is applied below.
         let behavior = if let Some(run) = &proc.run {
-            UnitBehavior::run_many(name, run.commands.clone())
+            UnitBehavior::run_many(name, Arc::new(run.commands.clone()))
         } else if let Some(modes) = &proc.modes {
             UnitBehavior::modes(
                 name,
                 modes.iter().map(|mode| {
-                    UnitBehavior::run_many(mode.name.clone(), mode.run.commands.clone())
+                    UnitBehavior::run_many(mode.name.clone(), Arc::new(mode.run.commands.clone()))
                         .with_short(mode.name_short.clone())
                 }),
             )

@@ -7,8 +7,11 @@
 //! The inline capacities are what they are for a reason, and it is not the
 //! same reason twice — see each one.
 
-use super::str::SmallStr;
 use smallvec::SmallVec;
+
+use crate::util::vec::JaggedVec;
+
+use super::str::SmallStr;
 
 /// A short list of names: an argv, a proc's groups, its `depends`, the keys a
 /// command line resolved to.
@@ -21,8 +24,20 @@ pub type SmallVecStr = SmallVec<[SmallStr; 8]>;
 
 /// The commands of one proc, each as its argv.
 ///
-/// **One inline, not eight.** A `run:` is a single command in all but a
-/// handful of procs, and the inner list is 208 bytes: eight of them inline
-/// would be 1672 bytes carried by every behavior, mode and no-op in the
-/// session, since this sits inside the enum they all are. One is 224.
-pub type SmallMultiVecStr = SmallVec<[SmallVecStr; 1]>;
+/// **One run of items, not a vec per row.** A `SmallVec` of `SmallVec`s pays
+/// its inline capacity in every row, so two commands of three words cost two
+/// 208 byte inner vecs on the heap; a [`JaggedVec`] spends one budget of `N`
+/// across all its rows and holds the same two without allocating at all.
+///
+/// **Eight words is where the allocations stop.** The `Arc` around this always
+/// allocates; what `N` buys is whether the rows allocate *again* on top of it.
+/// Measured over the example config, spills go 3, 1, 0 at `N` of 2, 4, 6 and
+/// stay at 0 — so past six, more `N` is 24 bytes a word for nothing. Eight is
+/// six with two words of headroom, and at 208 bytes it is what one argv of the
+/// `SmallVecStr` above already cost.
+///
+/// **Six rows, because rows are free here.** `R` is a `[u8; R]` that fits in
+/// the alignment slack of the items, so 2 and 6 are both 208 bytes and only 7
+/// starts costing. A `run:` is one command in all but a handful of procs; six
+/// is simply as many as the padding will hold.
+pub type SmallMultiVecStr = JaggedVec<SmallStr, 8, 6>;

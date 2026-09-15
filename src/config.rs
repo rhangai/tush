@@ -40,10 +40,15 @@
 //!
 //! # Where the file's shape and the struct's disagree
 //!
-//! Twice, both covered by an attribute: the procs are written as a mapping
-//! and used as a list ([`KeyValueMap`] moves the key in as
-//! [`ConfigProc::key`]), and `run` is written as one command or a list of
-//! them ([`OneOrMany`] takes both and always yields the list).
+//! Twice, and both are a hand written [`Deserialize`] rather than an attribute:
+//! the procs are written as a mapping and used as a list, and `run` is written
+//! as one command or a list of them.
+//!
+//! `serde_with`'s `KeyValueMap` and `OneOrMany` covered both until the commands
+//! moved into a [`JaggedVec`](crate::util::vec::JaggedVec), which is not the
+//! `Vec<Vec<_>>` those adapters build. Writing it out is what the move bought:
+//! the words go from the parser straight into the one run of items, with no
+//! intermediate list made and dropped.
 
 use std::path::Path;
 
@@ -52,8 +57,10 @@ use figment::{
     Figment, Provider,
     providers::{Format, Yaml},
 };
-use serde::Deserialize;
-use serde_with::{KeyValueMap, OneOrMany, serde_as};
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeSeed, Visitor},
+};
 
 use crate::util::str::SmallStr;
 use crate::util::types::{SmallMultiVecStr, SmallVecStr};
@@ -68,13 +75,12 @@ use crate::util::types::{SmallMultiVecStr, SmallVecStr};
 /// Sorted is still *stable*, which is what dependency resolution needs as its
 /// tie breaker; what is lost is influencing the order by moving lines around,
 /// and a config that cares should say so with a `depends`.
-#[serde_as]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Every proc the file declared, sorted by key.
     #[serde(default)]
-    #[serde_as(as = "KeyValueMap<_>")]
+    #[serde(deserialize_with = "deserialize_procs")]
     pub procs: Vec<ConfigProc>,
 }
 
@@ -116,9 +122,10 @@ pub struct ConfigProc {
     /// The name it is addressed by, and the name the unit goes into a
     /// [`UnitMap`](crate::unit::UnitMap) with.
     ///
-    /// `$key$` is not a key of the file: it is how [`KeyValueMap`] hands over
-    /// the name this proc was declared under in the `procs` mapping.
-    #[serde(rename = "$key$")]
+    /// Skipped rather than read, because it is not written inside the proc: it
+    /// is the key the proc was declared under, and [`deserialize_procs`] writes
+    /// it in once the proc itself is built.
+    #[serde(skip)]
     pub key: SmallStr,
     /// The name it is shown under. `None` for the procs with nothing better
     /// to say about themselves than their key, which is most of them, and
@@ -180,16 +187,211 @@ pub struct ConfigUnitMode {
 ///   - [npm, run, test]
 /// ```
 ///
-/// [`OneOrMany`] is what takes both: a list of strings is one command's argv,
-/// a list of lists is a command each, and either way this holds the list.
-#[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(transparent)]
+/// The two are told apart by the first element alone: a string means the whole
+/// sequence is one command's argv, a list means one command each.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigUnitRun {
     /// Each command as its argv, in the order they were written.
-    ///
-    /// `transparent` and not `flatten`: `run` in the file is a sequence, and
-    /// flattening asks for the keys of a map it never has.
-    #[serde_as(as = "OneOrMany<_>")]
     pub commands: SmallMultiVecStr,
+}
+
+/// Reads the `procs` mapping as a list, moving each key into the proc it opened.
+///
+/// A mapping is how a person writes it — the key names the proc and cannot
+/// repeat — and a list is how the rest of the crate wants it, ordered and
+/// indexable.
+fn deserialize_procs<'rde, D>(deserializer: D) -> Result<Vec<ConfigProc>, D::Error>
+where
+    D: Deserializer<'rde>,
+{
+    /// Reads the mapping, one proc per key.
+    struct ConfigProcVisitor;
+    impl<'de> Visitor<'de> for ConfigProcVisitor {
+        type Value = Vec<ConfigProc>;
+
+        /// What the error says the file should have held.
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("proc map using proc-key: {}")
+        }
+
+        /// Each entry in turn, with the key written into the proc it opened.
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut vec: Vec<ConfigProc> = if let Some(hint) = map.size_hint() {
+                Vec::with_capacity(hint)
+            } else {
+                Vec::new()
+            };
+            while let Some(key) = map.next_key::<SmallStr>()? {
+                let mut value = map.next_value::<ConfigProc>()?;
+                value.key = key;
+                vec.push(value);
+            }
+            Ok(vec)
+        }
+    }
+    deserializer.deserialize_map(ConfigProcVisitor)
+}
+
+/// Streams the words straight into the [`JaggedVec`](crate::util::vec::JaggedVec).
+///
+/// That is what the seeds are for: every visitor below is handed the vec
+/// itself, so a word is pushed where it will live instead of into a list that
+/// exists only to be copied out of.
+///
+/// Which of the two spellings it is cannot be known before the first element,
+/// so that one is read with `deserialize_any` and every element after it with
+/// the typed seed its answer picks.
+impl<'rde> Deserialize<'rde> for ConfigUnitRun {
+    /// Always a sequence: the two spellings differ inside it, not at it.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'rde>,
+    {
+        /// What the first element turned out to be, and so what the rest are.
+        #[derive(Debug)]
+        enum Mode {
+            /// Strings: the whole sequence is one command's argv.
+            Flat,
+            /// Lists: one command each.
+            Multi,
+        }
+        /// The first element, whose type settles the [`Mode`].
+        ///
+        /// It is consumed into the vec as it is read rather than looked at and
+        /// put back, because a `deserialize_any` answer cannot be rewound.
+        struct ElemUnknown<'a> {
+            vec: &'a mut SmallMultiVecStr,
+        }
+        impl<'de, 'a> DeserializeSeed<'de> for ElemUnknown<'a> {
+            type Value = Mode;
+            /// `deserialize_any`, since the shape is exactly what is being asked.
+            fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Mode, D::Error> {
+                d.deserialize_any(self)
+            }
+        }
+        impl<'de, 'a> Visitor<'de> for ElemUnknown<'a> {
+            type Value = Mode;
+
+            /// What the error says the first element should have been.
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an string or a list of commands")
+            }
+
+            /// A word, and no commit: a flat `run` is one row for the whole sequence.
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Mode, E> {
+                self.vec.push_data(SmallStr::new(v));
+                Ok(Mode::Flat)
+            }
+
+            /// A command, closed here because in this spelling each element is one.
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Mode, A::Error> {
+                while seq.next_element_seed(ElemStr { vec: self.vec })?.is_some() {}
+                if self.vec.is_row_open() {
+                    self.vec.commit_row();
+                }
+                Ok(Mode::Multi)
+            }
+        }
+
+        /// One word of an argv, once the spelling is known.
+        struct ElemStr<'a> {
+            vec: &'a mut SmallMultiVecStr,
+        }
+        impl<'de, 'a> DeserializeSeed<'de> for ElemStr<'a> {
+            type Value = ();
+            /// `deserialize_str`, which is cheaper than asking what it is again.
+            fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+                d.deserialize_str(self)
+            }
+        }
+        impl<'de, 'a> Visitor<'de> for ElemStr<'a> {
+            type Value = ();
+
+            /// What the error says an argv element should have been.
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("the command arguments")
+            }
+
+            /// The word, pushed into whichever row is open.
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<(), E> {
+                self.vec.push_data(SmallStr::new(v));
+                Ok(())
+            }
+        }
+
+        /// One command: its words, and then the row they make.
+        struct ElemList<'a> {
+            vec: &'a mut SmallMultiVecStr,
+        }
+        impl<'de, 'a> DeserializeSeed<'de> for ElemList<'a> {
+            type Value = ();
+            /// `deserialize_seq`, which is cheaper than asking what it is again.
+            fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+                d.deserialize_seq(self)
+            }
+        }
+        impl<'de, 'a> Visitor<'de> for ElemList<'a> {
+            type Value = ();
+
+            /// What the error says a command should have been.
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a list of commands")
+            }
+
+            /// The words, then the row — skipping the commit for an empty command,
+            /// which has no program to run and would only fail later.
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                while seq.next_element_seed(ElemStr { vec: self.vec })?.is_some() {}
+                if self.vec.is_row_open() {
+                    self.vec.commit_row();
+                }
+                Ok(())
+            }
+        }
+
+        /// The `run:` sequence itself.
+        struct RunVisitor;
+        impl<'de> Visitor<'de> for RunVisitor {
+            type Value = ConfigUnitRun;
+
+            /// What the error says `run:` should have been.
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a list of command arguments or a list of list of commands")
+            }
+
+            /// Probes the first element, then reads the rest the way it says to.
+            ///
+            /// An empty `run:` never reaches the probe and yields no commands, which
+            /// is what a proc that declares one and lists nothing asked for.
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut vec = SmallMultiVecStr::new();
+                let Some(mode) = seq.next_element_seed(ElemUnknown { vec: &mut vec })? else {
+                    return Ok(ConfigUnitRun { commands: vec });
+                };
+                match mode {
+                    Mode::Flat => {
+                        while seq.next_element_seed(ElemStr { vec: &mut vec })?.is_some() {}
+                        if vec.is_row_open() {
+                            vec.commit_row();
+                        }
+                    }
+                    Mode::Multi => {
+                        while seq.next_element_seed(ElemList { vec: &mut vec })?.is_some() {}
+                    }
+                };
+                Ok(ConfigUnitRun { commands: vec })
+            }
+        }
+
+        deserializer.deserialize_seq(RunVisitor)
+    }
 }
