@@ -2,17 +2,16 @@ use std::num::NonZeroU8;
 use std::{process::Stdio, time::Duration};
 
 use anyhow::anyhow;
+use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
-use tokio::{
-    process::{Child, Command},
-    time::timeout,
-};
+use tokio::time::{Instant, timeout_at};
 
 use crate::base::ExitReason;
 use crate::log::LogWriterRef;
 
 /// How long a graceful shutdown waits after `SIGTERM` before escalating to
-/// `SIGKILL`, in milliseconds.
+/// `SIGKILL`, in milliseconds. The same budget bounds the wait after the
+/// `SIGKILL`, so a process stuck in an uninterruptible wait cannot hang us.
 const SHUTDOWN_TIMER: u64 = 10_000;
 
 /// A child process whose stdout is captured into a [`Log`](crate::log::Log).
@@ -28,7 +27,9 @@ const SHUTDOWN_TIMER: u64 = 10_000;
 /// The child is spawned in its own process group (`setpgid`), and every signal
 /// is sent to the whole group (`kill(-pid, ...)`). Killing a `bash -c '...'`
 /// wrapper therefore takes its children down with it, which is what a process
-/// manager wants: no orphaned dev servers left holding a port.
+/// manager wants: no orphaned dev servers left holding a port. A shutdown is
+/// not done when the leader exits but when the group empties out, since a
+/// leaked grandchild is what still holds the port.
 ///
 /// # Drop
 ///
@@ -87,15 +88,15 @@ impl Process {
 
     /// Kills the process.
     ///
-    /// Sends a SIGKILL and wait for it to terminate
+    /// `SIGKILL`s the whole group and waits for it to be empty.
     pub async fn kill(&mut self) -> anyhow::Result<ExitReason> {
         self.kill_inner(false).await
     }
 
     /// Shutdown the process
     ///
-    /// First send a sigterm then waits for n milliseconds
-    /// If the process did not shutdown, it sends a SIGKILL and terminates
+    /// `SIGTERM`s the whole group and gives it [`SHUTDOWN_TIMER`] ms to drain;
+    /// whatever is left over is then `SIGKILL`ed as in [`Process::kill`].
     pub async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
         let reason = self.kill_inner(true).await?;
         self.writer_wait().await;
@@ -115,75 +116,54 @@ impl Process {
     /// Inner function to handle the shutdown logic
     ///
     /// Shared by [`Process::kill`] and [`Process::shutdown`]; the flag selects
-    /// whether the polite `SIGTERM` phase happens at all. The paths are:
+    /// whether the polite `SIGTERM` phase happens at all.
     ///
-    /// 1. already exited — the group is still `SIGTERM`ed to sweep up children
-    ///    that outlived the leader, and the real status is returned as-is
-    ///    (so a clean exit stays [`ExitReason::Success`], not `Killed`);
-    /// 2. graceful — `SIGTERM` the group, wait up to [`SHUTDOWN_TIMER`] ms;
-    /// 3. forced — `SIGKILL` the group and wait.
-    ///
-    /// The final `start_kill` branch is the non-unix fallback, where signaling
-    /// the group is not available.
+    /// Both phases act on the whole group, and both wait for the whole group:
+    /// the leader exiting says nothing about the children it spawned, which are
+    /// exactly the processes a manager must not leak. The returned
+    /// [`ExitReason`] is the leader's, since that is the one the runner shows —
+    /// a leader that had already exited keeps its real status, so a clean exit
+    /// stays [`ExitReason::Success`] rather than becoming `Killed`.
     async fn kill_inner(&mut self, shutdown_gracefully: bool) -> anyhow::Result<ExitReason> {
         let ProcessInner::Running { child, pid, .. } = &mut self.inner else {
             return Err(anyhow!("Process was not running"));
         };
         let pid = *pid;
+        let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_TIMER);
 
-        // Check if already exited
-        if let Ok(Some(exit_status)) = child.try_wait() {
-            #[cfg(unix)]
-            if let Some(pid) = pid {
-                unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+        // `None` until the leader has been reaped.
+        let mut reason = child.try_wait().ok().flatten().map(exited_reason);
+
+        // Polite phase. The `SIGTERM` goes out even when the leader is already
+        // gone, because that is precisely when children are left behind.
+        if shutdown_gracefully && group::terminate(pid) {
+            if reason.is_none() {
+                reason = timeout_at(deadline, child.wait())
+                    .await
+                    .ok()
+                    .map(killed_reason);
             }
-
-            return Ok(if exit_status.success() {
-                ExitReason::Success
-            } else {
-                ExitReason::Error(exit_status.code().and_then(|v| NonZeroU8::new(v as u8)))
-            });
-        }
-
-        // Try to shutdown
-        if shutdown_gracefully {
-            #[cfg(unix)]
-            if let Some(pid) = pid {
-                unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
-                let timer = timeout(Duration::from_millis(SHUTDOWN_TIMER), child.wait()).await;
-                if let Ok(wait_result) = timer {
-                    return Ok(match wait_result {
-                        Ok(status) if status.success() => ExitReason::Success,
-                        Ok(status) => {
-                            ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8)))
-                        }
-                        Err(_) => ExitReason::Killed(None),
-                    });
-                }
+            // A zombie still answers `kill(2)`, so the group can only read as
+            // empty once the wait above has reaped the leader.
+            if let Some(reason) = reason
+                && group::wait(pid, deadline).await
+            {
+                return Ok(reason);
             }
         }
 
-        #[cfg(unix)]
-        if let Some(pid) = pid {
-            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-            let wait_result = child.wait().await;
-            return Ok(match wait_result {
-                Ok(status) if status.success() => ExitReason::Success,
-                Ok(status) => {
-                    ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8)))
-                }
-                Err(_) => ExitReason::Killed(None),
-            });
+        // Forced phase, for whatever ignored the `SIGTERM` or never got one.
+        // `start_kill` is the non-unix fallback, where there is no group to
+        // signal and only the leader can be reached.
+        if !group::kill(pid) && reason.is_none() {
+            child.start_kill()?;
         }
-
-        // Kill and return the status
-        child.start_kill()?;
-        let wait_result = child.wait().await;
-        Ok(match wait_result {
-            Ok(status) if status.success() => ExitReason::Success,
-            Ok(status) => ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8))),
-            Err(_) => ExitReason::Killed(None),
-        })
+        let reason = match reason {
+            Some(reason) => reason,
+            None => killed_reason(child.wait().await),
+        };
+        group::wait(pid, Instant::now() + Duration::from_millis(SHUTDOWN_TIMER)).await;
+        Ok(reason)
     }
 }
 
@@ -194,6 +174,107 @@ impl Drop for Process {
         if let ProcessInner::Running { pid: Some(pid), .. } = &mut self.inner {
             unsafe { libc::kill(-(*pid as i32), libc::SIGKILL) };
         };
+    }
+}
+
+/// The status a process reports for itself, as opposed to one we ended.
+fn exited_reason(status: std::process::ExitStatus) -> ExitReason {
+    if status.success() {
+        ExitReason::Success
+    } else {
+        ExitReason::Error(status.code().and_then(|v| NonZeroU8::new(v as u8)))
+    }
+}
+
+/// The status of a process we signalled. A failed wait still means gone.
+fn killed_reason(result: std::io::Result<std::process::ExitStatus>) -> ExitReason {
+    match result {
+        Ok(status) if status.success() => ExitReason::Success,
+        Ok(status) => ExitReason::Killed(status.code().and_then(|v| NonZeroU8::new(v as u8))),
+        Err(_) => ExitReason::Killed(None),
+    }
+}
+
+/// Signalling and waiting on the child's process group.
+///
+/// Split out so [`Process::kill_inner`] reads the same everywhere: off unix
+/// there is no group, every call is a no-op reporting `false`, and the caller
+/// falls back to the leader alone.
+#[cfg(unix)]
+mod group {
+    use std::time::Duration;
+    use tokio::time::{Instant, sleep};
+
+    /// Bounds of the backoff between liveness checks.
+    ///
+    /// The common case is a group that empties as soon as the leader does, and
+    /// one short wait catches it; a group that is going to sit out the whole
+    /// timer is not worth checking hundreds of times, so the wait grows into
+    /// it and the escalation costs a handful of syscalls rather than a poll.
+    const POLL_MIN: Duration = Duration::from_millis(20);
+    const POLL_MAX: Duration = Duration::from_millis(400);
+
+    /// `SIGTERM` the group, reporting whether there was one to signal.
+    pub fn terminate(pid: Option<u32>) -> bool {
+        signal(pid, libc::SIGTERM)
+    }
+
+    /// `SIGKILL` the group, reporting whether there was one to signal.
+    pub fn kill(pid: Option<u32>) -> bool {
+        signal(pid, libc::SIGKILL)
+    }
+
+    /// Wait until the group holds nothing, or `deadline` passes.
+    ///
+    /// Polled rather than waited on: `waitpid` only reaches our own children,
+    /// and the processes that matter here are the grandchildren. The leader
+    /// must already be reaped when this is called — a zombie is still a member.
+    pub async fn wait(pid: Option<u32>, deadline: Instant) -> bool {
+        let Some(pid) = pid else { return true };
+        let mut delay = POLL_MIN;
+        while alive(pid) {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            // Clamped, so a long backoff cannot overshoot the escalation.
+            sleep(delay.min(deadline.saturating_duration_since(now))).await;
+            delay = (delay * 2).min(POLL_MAX);
+        }
+        true
+    }
+
+    fn signal(pid: Option<u32>, signal: i32) -> bool {
+        let Some(pid) = pid else { return false };
+        unsafe { libc::kill(-(pid as i32), signal) };
+        true
+    }
+
+    /// `kill(-pgid, 0)` fails with `ESRCH` only when the group is gone, which
+    /// makes it the liveness test. `EPERM` is a member we may not signal, and
+    /// that still counts as alive.
+    fn alive(pid: u32) -> bool {
+        if unsafe { libc::kill(-(pid as i32), 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+}
+
+#[cfg(not(unix))]
+mod group {
+    use tokio::time::Instant;
+
+    pub fn terminate(_pid: Option<u32>) -> bool {
+        false
+    }
+
+    pub fn kill(_pid: Option<u32>) -> bool {
+        false
+    }
+
+    pub async fn wait(_pid: Option<u32>, _deadline: Instant) -> bool {
+        true
     }
 }
 
