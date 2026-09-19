@@ -110,7 +110,8 @@ impl Unit {
     ///
     /// Serializing it this way keeps two runs of the same unit from ever
     /// overlapping — no two dev servers fighting over the same port.
-    fn set_handle(&self, handle: Arc<RunnerHandle>) -> anyhow::Result<Arc<RunnerHandle>> {
+    fn set_handle(&self, handle: RunnerHandle) -> anyhow::Result<Arc<RunnerHandle>> {
+        let handle = Arc::new(handle);
         let old_handle = self.handle.swap(Some(handle.clone()));
         match old_handle {
             None => {

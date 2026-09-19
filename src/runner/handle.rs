@@ -34,12 +34,11 @@ use crate::runner::{
 /// the cancelled token and finishes as `Killed` without ever running.
 pub struct RunnerHandle {
     /// Start gate. `None` when the handle was created already running.
-    start_notify: Option<Notify>,
+    start_notify: Option<Arc<Notify>>,
+    /// Token to abort the handle
     abort_token: CancellationToken,
-    /// Current state, readable without awaiting anything.
-    state: RunnerStateAtomic,
-    /// Resolves once, with the terminal state, for every waiter.
-    exit_state_receiver: tokio::sync::watch::Receiver<Option<RunnerState>>,
+    /// The state
+    state_receiver: tokio::sync::watch::Receiver<RunnerState>,
 }
 
 impl RunnerHandle {
@@ -48,12 +47,12 @@ impl RunnerHandle {
     /// It stays [`Waiting`](RunnerState::Waiting) until
     /// [`start`](RunnerHandle::start), or anything else that opens the gate —
     /// [`abort`](RunnerHandle::abort), [`wait`](RunnerHandle::wait).
-    pub fn new(runner: impl Runner) -> Arc<Self> {
+    pub fn new(runner: impl Runner) -> Self {
         Self::new_inner(runner, true, |_| ())
     }
 
     /// The same, with `on_exit` run once the state is terminal.
-    pub fn new_with_callback<F>(runner: impl Runner, on_exit: F) -> Arc<Self>
+    pub fn new_with_callback<F>(runner: impl Runner, on_exit: F) -> Self
     where
         F: FnOnce(RunnerState) + Send + 'static,
     {
@@ -65,70 +64,74 @@ impl RunnerHandle {
     ///
     /// The task holds an `Arc` back to the handle, so it keeps reporting state
     /// even once every external reference is dropped.
-    fn new_inner<F>(runner: impl Runner, paused: bool, on_exit: F) -> Arc<Self>
+    fn new_inner<F>(runner: impl Runner, paused: bool, on_exit: F) -> Self
     where
         F: FnOnce(RunnerState) + Send + 'static,
     {
-        let (exit_state_sender, exit_state_receiver) =
-            tokio::sync::watch::channel::<Option<RunnerState>>(None);
-        let handle = Arc::new(RunnerHandle {
-            start_notify: if paused { Some(Notify::new()) } else { None },
-            abort_token: CancellationToken::new(),
-            state: RunnerStateAtomic::new(if paused {
+        let (state_sender, state_receiver) =
+            tokio::sync::watch::channel::<RunnerState>(if paused {
                 RunnerState::Waiting
             } else {
                 RunnerState::Started
-            }),
-            exit_state_receiver,
-        });
+            });
+
+        let start_notify = if paused {
+            Some(Arc::new(Notify::new()))
+        } else {
+            None
+        };
+        let abort_token = CancellationToken::new();
 
         // Block to spawn the worker task
         {
-            let handle = handle.clone();
+            let notify = start_notify.clone();
+            let abort_token = abort_token.clone();
+            let state_sender = state_sender;
             _ = tokio::spawn(async move {
-                if let Some(start_notify) = &handle.start_notify {
-                    start_notify.notified().await;
+                let mut exit = RunnerExit::new(state_sender, on_exit);
+                if let Some(notify) = notify {
+                    notify.notified().await;
+                    exit.sender.send_modify(RunnerState::set_started);
                 }
                 let mut runner = runner;
                 // Eager check for cancelation
-                if handle.abort_token.is_cancelled() {
-                    let exit_state = RunnerState::Killed(None);
-                    handle.state.store(exit_state);
-                    _ = exit_state_sender.send(Some(exit_state));
-                    on_exit(exit_state);
+                if abort_token.is_cancelled() {
+                    exit.finish(RunnerState::Killed(None));
                     return;
                 }
-                handle.state.store_next(RunnerState::Running);
+                exit.sender.send_modify(RunnerState::set_running);
                 let runner_fut = runner.run();
                 let exit_state = tokio::select! {
                     wait_result = runner_fut => {
                         wait_result.map_or(RunnerState::ExitError(None), |i| i.into())
                     }
-                    _ = handle.abort_token.cancelled() => {
-                        handle.state.store(RunnerState::Killing);
+                    _ = abort_token.cancelled_owned() => {
+                        exit.sender.send_modify(RunnerState::set_killing);
                         let shutdown_state = runner.shutdown().await;
                         shutdown_state.map_or(RunnerState::Killed(None), |i| i.into())
                     }
                 };
-                handle.state.store(exit_state);
-                _ = exit_state_sender.send(Some(exit_state));
-                on_exit(exit_state);
+                exit.finish(exit_state);
             });
         };
-        handle
+
+        Self {
+            start_notify,
+            abort_token,
+            state_receiver,
+        }
     }
 
     /// State of the current runner
     ///
     /// A plain atomic load: cheap enough to poll from a render loop.
     pub fn state(&self) -> RunnerState {
-        self.state.load()
+        *self.state_receiver.borrow()
     }
 
     /// Open the start gate. Idempotent, and a no-op on a handle that was
     /// created already released.
     pub fn start(&self) {
-        self.state.store_next(RunnerState::Started);
         self.notify_start();
     }
 
@@ -138,7 +141,6 @@ impl RunnerHandle {
     /// start also gets to observe the cancellation and finish. Returns without
     /// waiting; use [`wait`](RunnerHandle::wait) for that.
     pub fn abort(&self) {
-        self.state.store_next(RunnerState::Killing);
         self.abort_token.cancel();
         self.notify_start();
     }
@@ -151,11 +153,9 @@ impl RunnerHandle {
     /// publishing a terminal state.
     pub async fn wait(&self) -> Option<RunnerState> {
         self.notify_start();
-        let mut receiver = self.exit_state_receiver.clone();
-        receiver
-            .wait_for(|s| s.is_some())
-            .await
-            .map_or(None, |v| *v)
+        let mut receiver = self.state_receiver.clone();
+        let result = receiver.wait_for(|s| s.is_finished()).await;
+        result.ok().map(|v| *v)
     }
 
     /// Notify the start handle
@@ -163,5 +163,55 @@ impl RunnerHandle {
         if let Some(start_notify) = &self.start_notify {
             start_notify.notify_one();
         }
+    }
+}
+
+/// Dropping the handle aborts the task
+impl Drop for RunnerHandle {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
+/// The supervising task's only way out, terminal state included.
+///
+/// A panic in `run` or `shutdown` used to unwind past the send, dropping the
+/// sender with the state still at `Running`: `wait` then returned `None`, but
+/// every reader that polls — `Unit::state`, and the menu built from it — saw a
+/// run that never ends, with no way back short of a restart. Publishing from
+/// `Drop` means the state is terminal however the task leaves, unwinding and
+/// runtime teardown included.
+struct RunnerExit<F: FnOnce(RunnerState)> {
+    /// Also the channel for the non-terminal transitions, which is why the
+    /// task reaches in rather than being handed a copy — `Sender` is not
+    /// `Clone`.
+    sender: tokio::sync::watch::Sender<RunnerState>,
+    /// Taken by whichever of `finish` and `drop` gets there first, so the
+    /// callback runs exactly once even if `finish` itself panicked.
+    on_exit: Option<F>,
+}
+
+impl<F: FnOnce(RunnerState)> RunnerExit<F> {
+    fn new(sender: tokio::sync::watch::Sender<RunnerState>, on_exit: F) -> Self {
+        Self {
+            sender,
+            on_exit: Some(on_exit),
+        }
+    }
+
+    /// Publish `state` and run the callback, the first time only.
+    fn finish(&mut self, state: RunnerState) {
+        if let Some(on_exit) = self.on_exit.take() {
+            self.sender.send_replace(state);
+            on_exit(state);
+        }
+    }
+}
+
+impl<F: FnOnce(RunnerState)> Drop for RunnerExit<F> {
+    /// `Killed(None)` because a task that left without saying how it ended was
+    /// not the run finishing on its own.
+    fn drop(&mut self) {
+        self.finish(RunnerState::Killed(None));
     }
 }

@@ -33,6 +33,19 @@ pub enum RunnerState {
 
 impl RunnerState {
     /// Whether the run reached a terminal state.
+    pub fn is_started(&self) -> bool {
+        matches!(
+            self,
+            RunnerState::Started
+                | RunnerState::Running
+                | RunnerState::Killing
+                | RunnerState::ExitSuccess
+                | RunnerState::ExitError(..)
+                | RunnerState::Killed(..)
+        )
+    }
+
+    /// Whether the run reached a terminal state.
     pub fn is_finished(&self) -> bool {
         matches!(
             self,
@@ -49,6 +62,35 @@ impl RunnerState {
                 | RunnerState::ExitError(..)
                 | RunnerState::Killed(..)
         )
+    }
+
+    /// Set started
+    pub fn set_started(&mut self) {
+        *self = match self {
+            RunnerState::Stopped | RunnerState::Waiting => RunnerState::Started,
+            _ => *self,
+        };
+    }
+
+    /// Set running
+    pub fn set_running(&mut self) {
+        *self = match self {
+            RunnerState::Stopped | RunnerState::Waiting | RunnerState::Started => {
+                RunnerState::Running
+            }
+            _ => *self,
+        };
+    }
+
+    /// Set killing
+    pub fn set_killing(&mut self) {
+        *self = match self {
+            RunnerState::Stopped
+            | RunnerState::Waiting
+            | RunnerState::Started
+            | RunnerState::Running => RunnerState::Killing,
+            _ => *self,
+        };
     }
 }
 

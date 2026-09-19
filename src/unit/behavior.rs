@@ -187,7 +187,7 @@ impl UnitBehavior {
     /// The handle comes back parked at the start gate; releasing it is the
     /// caller's job — see [`Unit::start`](crate::unit::Unit::start).
     /// `writer` is the log the process output should be sent to, if any.
-    pub fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+    pub fn spawn(&self, writer: Option<LogWriterRef>) -> Result<RunnerHandle> {
         self.inner.spawn(writer)
     }
 }
@@ -239,13 +239,13 @@ trait UnitBehaviorKind {
     }
 
     /// Build the runner for one run and wrap it in a paused handle.
-    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>>;
+    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<RunnerHandle>;
 }
 
 /// Runs nothing, succeeding immediately, via the `()` runner.
 struct BehaviorNoop {}
 impl UnitBehaviorKind for BehaviorNoop {
-    fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+    fn spawn(&self, _writer: Option<LogWriterRef>) -> Result<RunnerHandle> {
         Ok(RunnerHandle::new(()))
     }
 }
@@ -287,7 +287,7 @@ impl UnitBehaviorKind for BehaviorRun {
         }
     }
 
-    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<RunnerHandle> {
         if self.commands.is_empty() {
             return Ok(RunnerHandle::new(()));
         }
@@ -389,7 +389,7 @@ impl UnitBehaviorKind for BehaviorModes {
         }
     }
 
-    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<Arc<RunnerHandle>> {
+    fn spawn(&self, writer: Option<LogWriterRef>) -> Result<RunnerHandle> {
         if self.modes.is_empty() {
             return Ok(RunnerHandle::new(()));
         };
