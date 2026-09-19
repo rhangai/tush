@@ -15,9 +15,6 @@ use crate::{
 /// orderly restart possible: the replacement can exist, and be observed,
 /// before the outgoing run has finished dying.
 ///
-/// `new_inner` takes a flag for a handle that starts released, and nothing
-/// passes `false` yet — there is no constructor for it.
-///
 /// A handle covers exactly one run: once terminal it stays terminal, and
 /// restarting means a new handle.
 ///
@@ -33,11 +30,12 @@ use crate::{
 /// Aborting before the start gate opens is honoured: the task wakes up, sees
 /// the cancelled token and finishes as `Killed` without ever running.
 pub struct RunnerHandle {
-    /// Start gate. `None` when the handle was created already running.
+    /// The start gate the supervising task parks on, shared with it.
     start_notify: Arc<Notify>,
-    /// Token to abort the handle
+    /// Cancels the run wherever it has got to, the gate included.
     abort_token: CancellationToken,
-    /// The state
+    /// The read side of the state: a `watch`, so reading it is a borrow of
+    /// the last value and never waits on the task that writes it.
     state_receiver: tokio::sync::watch::Receiver<RunnerState>,
 }
 
@@ -153,11 +151,18 @@ impl Drop for RunnerHandle {
     }
 }
 
+/// The write side of a handle's state, held by the supervising task.
+///
+/// Apart from the handle so that every write goes through
+/// [`set`](RunnerHandleState::set) or
+/// [`modify`](RunnerHandleState::modify) and therefore through
+/// [`notify`](RunnerHandleState::notify) — a state that changed without
+/// waking the screen is a row that stays wrong until the next tick.
 #[derive(Clone)]
 struct RunnerHandleState {
-    /// The state
     state_sender: tokio::sync::watch::Sender<RunnerState>,
-    /// Event
+    /// `None` for a handle nobody asked to be told about: the runner still
+    /// works, its state is just read when someone looks.
     event_dispatcher: Option<EventDispatcher>,
 }
 

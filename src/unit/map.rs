@@ -24,7 +24,8 @@ use crate::{
 pub struct UnitMap {
     /// The units, by name.
     units: HashMap<SmallStr, Unit>,
-    /// Event dispatcher
+    /// The one dispatcher every unit in the map was given a clone of, so a
+    /// screen watches the session rather than one proc at a time.
     event_dispatcher: EventDispatcher,
 }
 
@@ -44,7 +45,10 @@ impl UnitMap {
         })
     }
 
-    /// Create the listener
+    /// A listener that wakes whenever any unit here changes state.
+    ///
+    /// Which unit is not part of it: the answer is always to look at the map
+    /// again, so saying more would only be something to keep in step.
     pub fn create_listener(&self) -> EventListener {
         self.event_dispatcher.create_listener()
     }

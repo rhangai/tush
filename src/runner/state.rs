@@ -5,9 +5,8 @@ use crate::base::ExitReason;
 /// Where a run currently is in its lifecycle.
 ///
 /// The variants are ordered: each one is "later" than the one above it, and
-/// [`RunnerStateAtomic::store_next`] relies on that to make progress
-/// monotonic. Everything from [`ExitSuccess`](RunnerState::ExitSuccess) down
-/// is terminal.
+/// the `set_*` methods below only ever move down that order. Everything from
+/// [`ExitSuccess`](RunnerState::ExitSuccess) down is terminal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RunnerState {
     /// Nothing was ever started (the state a unit reports with no handle).
@@ -29,7 +28,9 @@ pub enum RunnerState {
 }
 
 impl RunnerState {
-    /// Whether the run reached a terminal state.
+    /// Whether the start gate has opened, the runs that have since finished
+    /// included — everything but [`Stopped`](RunnerState::Stopped) and
+    /// [`Waiting`](RunnerState::Waiting).
     pub fn is_started(&self) -> bool {
         matches!(
             self,
@@ -61,7 +62,13 @@ impl RunnerState {
         )
     }
 
-    /// Set started
+    /// Move to [`Started`](RunnerState::Started), unless the run is further
+    /// on already.
+    ///
+    /// The three `set_*` methods are the whole of the forward-only rule: each
+    /// names the states it may leave and returns the rest untouched, so a
+    /// report that arrives late — a `run` closure firing after an abort —
+    /// is dropped instead of rewinding the run.
     pub fn set_started(&mut self) {
         *self = match self {
             RunnerState::Stopped | RunnerState::Waiting => RunnerState::Started,
@@ -69,7 +76,8 @@ impl RunnerState {
         };
     }
 
-    /// Set running
+    /// Move to [`Running`](RunnerState::Running), unless the run is further
+    /// on already.
     pub fn set_running(&mut self) {
         *self = match self {
             RunnerState::Stopped | RunnerState::Waiting | RunnerState::Started => {
@@ -79,7 +87,8 @@ impl RunnerState {
         };
     }
 
-    /// Set killing
+    /// Move to [`Killing`](RunnerState::Killing), unless the run has already
+    /// finished — how it finished outranks the abort that came too late.
     pub fn set_killing(&mut self) {
         *self = match self {
             RunnerState::Stopped

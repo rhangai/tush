@@ -93,7 +93,7 @@ impl Process {
         self.kill_inner(false).await
     }
 
-    /// Shutdown the process
+    /// Ends the process, giving it a chance to end itself first.
     ///
     /// `SIGTERM`s the whole group and gives it [`SHUTDOWN_TIMER`] ms to drain;
     /// whatever is left over is then `SIGKILL`ed as in [`Process::kill`].
@@ -261,6 +261,10 @@ mod group {
     }
 }
 
+/// The no-op half of the split above. `wait` is the exception that reports
+/// `true`, because what it answers is "the group is gone" — and a group that
+/// was never signalled into is gone. `false` would hold a graceful shutdown
+/// open waiting on something that does not exist.
 #[cfg(not(unix))]
 mod group {
     use tokio::time::Instant;
@@ -278,7 +282,7 @@ mod group {
     }
 }
 
-/// Inner data for process
+/// A process, in whichever of its three states it is.
 ///
 /// The lifecycle is `Setup -> Running`. `Empty` is the transient state used
 /// while the command is moved out of `Setup` during the spawn, and is also

@@ -14,6 +14,16 @@ use crate::{
     util::types::{SmallMultiVecStr, SmallVecStr},
 };
 
+/// What a behavior is handed to spawn with: the unit's surroundings, not the
+/// behavior's own configuration.
+///
+/// One parameter rather than one per thing. It replaced a bare
+/// `Option<LogWriterRef>` as soon as there was a second such thing to pass,
+/// and that swap rewrote every [`spawn`](UnitBehaviorKind::spawn) in the
+/// module; the next thing to add should not.
+///
+/// Both fields are optional: a unit built without a log, or with nobody
+/// listening, still runs.
 #[derive(Default)]
 pub struct UnitBehaviorContext {
     writer: Option<LogWriterRef>,
@@ -211,7 +221,6 @@ impl UnitBehavior {
     ///
     /// The handle comes back parked at the start gate; releasing it is the
     /// caller's job — see [`Unit::start`](crate::unit::Unit::start).
-    /// `writer` is the log the process output should be sent to, if any.
     pub fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle> {
         self.inner.spawn(ctx)
     }

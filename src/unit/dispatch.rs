@@ -15,9 +15,18 @@ pub enum UnitEvent {
     Stop,
 }
 
+/// What a dispatch decided the unit should do.
+///
+/// Smaller than the [`UnitEvent`] that prompted it, and deliberately: a
+/// [`StartMode`](UnitEvent::StartMode) has already moved the behavior onto
+/// that mode by the time this comes back, so all that is left to do is run it
+/// or stop it. `None` is the third answer and a common one — a behavior with
+/// nothing to say to the event it was handed.
 #[derive(Clone, Copy, Debug)]
 pub enum UnitAction {
+    /// Start the unit, on whatever mode its behavior is now on.
     Start,
+    /// Stop the current run.
     Stop,
 }
 

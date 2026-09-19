@@ -4,8 +4,9 @@
 //! down — today a [`Process`](crate::base::Process), tomorrow whatever else
 //! needs the same lifecycle. A [`RunnerHandle`] wraps one runner in a Tokio
 //! task and exposes the only three verbs the rest of the crate needs: start,
-//! abort, wait. [`RunnerState`] is the state machine both sides agree on, kept
-//! in a lock free [`RunnerStateAtomic`] so it can be polled from anywhere.
+//! abort, wait. [`RunnerState`] is the state machine both sides agree on,
+//! published through a `watch` channel so that anyone holding the handle can
+//! read the current state without waiting on the task that writes it.
 //!
 //! A handle supervises exactly one run. Restarting is not a operation on a
 //! handle — it is a new handle, which is what [`Unit`](crate::unit::Unit) does.
