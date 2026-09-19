@@ -34,4 +34,4 @@ pub use serial::RunnerSerial;
 pub use policy::RunnerPolicy;
 
 #[allow(unused_imports)]
-pub use state::{RunnerState, RunnerStateAtomic};
+pub use state::RunnerState;
