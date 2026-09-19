@@ -16,15 +16,11 @@
 //! the first place any of them can even be asked.
 
 mod app;
-mod error;
 mod map;
 mod target;
 
 #[allow(unused_imports)]
 pub use app::App;
-
-#[allow(unused_imports)]
-pub use error::{AppError, AppErrors};
 
 #[allow(unused_imports)]
 pub use target::{TARGET_SEPARATOR, Target};

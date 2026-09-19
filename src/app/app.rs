@@ -4,18 +4,17 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use smallvec::SmallVec;
 
-use crate::util::str::SmallStr;
 use crate::{
-    app::{
-        error::{AppError, AppErrors},
-        target::{TARGET_SEPARATOR, Target},
-    },
+    app::target::{TARGET_SEPARATOR, Target},
     config::{Config, ConfigProc},
+    error::AppErrors,
     runner::RunnerHandle,
     unit::{UnitAction, UnitBehavior, UnitEvent, UnitMap},
     util::{graph::DependencyGraph, types::SmallVecStr},
 };
+use crate::{error::AppError, util::str::SmallStr};
 
 /// A session that has been checked and is ready to be run.
 ///
@@ -171,7 +170,7 @@ impl App {
     /// name to build the graph while building takes them apart. Finishing the
     /// first means the second never has to wonder.
     fn validate_config(config: &Config) -> Option<AppErrors> {
-        let mut errors = Vec::new();
+        let mut errors: SmallVec<[AppError; 8]> = SmallVec::new();
         let declared: HashSet<&SmallStr> = config.procs.iter().map(|proc| &proc.key).collect();
 
         let mut graph: DependencyGraph<&SmallStr> = DependencyGraph::new();
@@ -196,9 +195,7 @@ impl App {
             }
 
             if proc.run.is_some() && proc.modes.is_some() {
-                errors.push(AppError::RunAndModes {
-                    proc: proc.key.clone(),
-                });
+                errors.push(AppError::RunAndModes(proc.key.clone()));
             }
 
             for depends in &proc.depends {
@@ -220,14 +217,18 @@ impl App {
         // produce an order. The order itself is thrown away here, and will be
         // what `App` keeps once there is something to start.
         let resolved = graph.resolve();
-        errors.extend(resolved.cycles().map(|cycle| AppError::Cycle {
-            procs: cycle.iter().map(|i| (*i).clone()).collect(),
-        }));
+        for cycle in resolved.cycles() {
+            let mut cycle_procs = SmallVecStr::new();
+            for key in cycle {
+                cycle_procs.push((**key).clone());
+            }
+            errors.push(AppError::Cycle(cycle_procs))
+        }
 
         if errors.is_empty() {
             None
         } else {
-            Some(AppErrors::new(errors))
+            Some(AppErrors::Errors(errors))
         }
     }
 }
