@@ -113,7 +113,7 @@ impl<C: UiClient> Ui<C> {
     fn request_log(&mut self) {
         // Cloned to end the borrow on the client before it is handed a `&mut`
         // of itself.
-        let key = self.selected().map(|unit| unit.unit_key.clone());
+        let key = self.selected().map(|unit| unit.unit_key);
         self.client.set_log(key, self.render.log_region());
     }
 
@@ -208,7 +208,8 @@ impl<C: UiClient> Ui<C> {
         let Some(unit) = self.selected() else {
             return;
         };
-        let (key, title) = (unit.unit_key.clone(), unit.name.clone());
+        let key = unit.unit_key;
+        let title = unit.name.clone();
         let mut items = self.render.take_menu_items();
         self.client.choices(key, &mut items);
         self.render.open_menu(key, title, items);

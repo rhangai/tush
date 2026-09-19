@@ -117,7 +117,7 @@ impl UiRenderMenuState {
         };
         match self.items.get(self.cursor) {
             Some(item) if item.enabled => UiMenuChoice::Send {
-                unit: key.clone(),
+                unit: *key,
                 event: item.event,
             },
             _ => UiMenuChoice::Cancel,
