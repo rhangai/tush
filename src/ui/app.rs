@@ -162,7 +162,7 @@ impl UiClient for UiApp {
 
     /// Straight out of the unit, which holds the list this asks for.
     ///
-    /// The `Err` arm is a name the map does not have, and the names came from
+    /// The `Err` arm is a key the map does not hold, and the keys came out of
     /// the map — so it leaves `out` empty rather than failing.
     fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
         let unit_map = self.app.unit_map();
@@ -174,8 +174,8 @@ impl UiClient for UiApp {
     /// Do it, and drop whatever it had to say about it.
     ///
     /// Fire and forget is the contract, so the `Result` dies here — hiding
-    /// nothing, since the only failure is a name the map does not hold and
-    /// the names came out of the map. When the session gets a channel to
+    /// nothing, since the only failure is a key the map does not hold and the
+    /// keys came out of the map. When the session gets a channel to
     /// report back through, this is where it is written to.
     fn send(&self, command: UiCommand) {
         let units = self.app.unit_map();

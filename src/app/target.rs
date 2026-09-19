@@ -5,10 +5,11 @@ use anyhow::{Result, bail};
 
 /// What tells one kind of target from another.
 ///
-/// Reserved: keys and group names may not contain it, which
-/// [`App::validate_config`](crate::app::App) refuses at the door. Otherwise
-/// `group:web` means one thing or another depending on what the file happens
-/// to declare.
+/// Reserved: keys and group names may not contain it, which building the
+/// session refuses at the door — see
+/// [`ReservedCharacter`](crate::error::AppConfigError::ReservedCharacter).
+/// Otherwise `group:web` means one thing or another depending on what the
+/// file happens to declare.
 pub const TARGET_SEPARATOR: char = ':';
 
 /// The prefix that means a group rather than a proc.

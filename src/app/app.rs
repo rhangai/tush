@@ -23,7 +23,8 @@ impl App {
     /// `depends` names a proc that exists, and that nothing depends on itself
     /// directly or through others.
     ///
-    /// None of it stops at the first failure — see [`AppErrors`]. Which is
+    /// None of it stops at the first failure — see
+    /// [`AppConfigError::Errors`](crate::error::AppConfigError). Which is
     /// also why a missing dependency does not prevent the cycle check: the
     /// edge is simply not added, so both kinds of problem come back together.
     pub fn new(config: &Config) -> Result<Self> {
@@ -38,7 +39,8 @@ impl App {
         &self.unit_map
     }
 
-    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    /// Stop every proc and wait until each one is really gone — see
+    /// [`UnitMap::shutdown`](crate::unit::UnitMap::shutdown).
     pub async fn shutdown(&self) {
         self.unit_map.shutdown().await;
     }

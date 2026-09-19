@@ -101,8 +101,8 @@ impl fmt::Debug for SmallStr {
 }
 
 /// Not reachable through the deref: `{}` does not follow one, and a proc's
-/// name is formatted into every message [`AppError`](crate::app::AppError)
-/// has.
+/// name is formatted into nearly every message
+/// [`AppConfigError`](crate::error::AppConfigError) has.
 impl fmt::Display for SmallStr {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.as_str(), formatter)

@@ -63,7 +63,8 @@ impl Unit {
     /// What it is called on screen.
     ///
     /// Owned because the behavior is behind a lock and nothing may borrow out
-    /// of it — but cheaply, an [`SmallStr`] being a refcount and not a copy.
+    /// of it — cheaply, a name being short enough to sit inside the
+    /// [`SmallStr`] and so to be copied rather than allocated.
     pub fn name(&self) -> SmallStr {
         self.behavior.lock().name()
     }

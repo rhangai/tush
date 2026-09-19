@@ -39,8 +39,8 @@ pub struct UiUnit {
 ///
 /// One type rather than a method per verb because this is what goes on the
 /// wire: the socket client serializes a `UiCommand` and the server plays it
-/// back into an [`App`](crate::app::App). The key is owned for the same
-/// reason — a command outlives the frame that made it.
+/// back into an [`App`](crate::app::App). The key goes in by copy, a command
+/// outliving the frame that made it.
 #[derive(Clone, Debug)]
 pub enum UiCommand {
     /// Run it, restarting it if it was already running.

@@ -6,7 +6,8 @@
 //! itself. The conversion is [`App::new`], and it is the only way to get one,
 //! so holding an `App` is holding the answer to those questions.
 //!
-//! When it is not sound, what comes back is [`AppErrors`]: every problem
+//! When it is not sound, what comes back is
+//! [`AppConfigError::Errors`](crate::error::AppConfigError): every problem
 //! found, not the first one, because a config with three mistakes in it is
 //! about to be fixed and one mistake per run is three runs of the same
 //! discovery.

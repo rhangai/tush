@@ -13,6 +13,12 @@ use crate::{
     util::{graph::DependencyGraph, str::SmallStr},
 };
 
+/// Every proc of a checked config, as a unit, under the key it was interned
+/// as.
+///
+/// The layer over [`UnitMap`] that owns the interner, and so the only place a
+/// name becomes an [`AppUnitKey`]: everything above it — the screen, the
+/// commands it sends — addresses a unit by key and never by text.
 pub struct AppUnitMap {
     interner: DefaultStringInterner,
     unit_map: Arc<UnitMap<DefaultSymbol>>,
@@ -20,6 +26,15 @@ pub struct AppUnitMap {
     groups: GroupHashMap,
 }
 
+/// How a unit is addressed once the config has been checked.
+///
+/// The interned key rather than the name it was interned from: a key is read
+/// out of a row, copied into a command and compared every frame, and a name
+/// there is a string to clone and hash where this is an integer.
+///
+/// The symbol is private, so every key that exists came from
+/// [`key`](AppUnitMap::key) or [`keys`](AppUnitMap::keys) — which is to say
+/// from the one interner it means anything against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppUnitKey {
     value: DefaultSymbol,
@@ -28,6 +43,10 @@ pub struct AppUnitKey {
 type GroupHashMap = HashMap<DefaultSymbol, SmallVec<[DefaultSymbol; 16]>>;
 
 impl AppUnitMap {
+    /// Check `config`, intern every key, and build a unit per proc.
+    ///
+    /// Every problem is collected before any of them is reported — see
+    /// [`AppConfigError::Errors`].
     pub fn new(config: &Config) -> Result<Self, AppConfigError> {
         let mut errors: Vec<AppConfigError> = Vec::new();
         let mut interner: DefaultStringInterner = DefaultStringInterner::new();
@@ -151,6 +170,10 @@ impl AppUnitMap {
         behavior.with_short(short)
     }
 
+    /// The key `name` was interned as, if a proc was declared under it.
+    ///
+    /// The one door from text to [`AppUnitKey`]: what comes off a command
+    /// line or out of a config is a name, and everything past here is a key.
     pub fn key(&self, name: &str) -> Result<AppUnitKey, AppError> {
         self.interner
             .get(name)
@@ -196,11 +219,13 @@ impl AppUnitMap {
         self.unit_map.log_reader(&key.value)
     }
 
+    /// Every unit's key, in the `HashMap`'s order, which is to say in none —
+    /// a caller showing these to a person has to impose one.
     pub fn keys(&self) -> impl Iterator<Item = AppUnitKey> {
         self.unit_map.keys().map(|k| AppUnitKey { value: *k })
     }
 
-    /// Hand `event` to the unit under `name` and carry out what it asks for.
+    /// Hand `event` to the unit under `key` and carry out what it asks for.
     ///
     /// The behavior decides, which is why this is not two methods: an event
     /// may move a unit onto another mode before the start it also asks for,

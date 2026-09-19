@@ -11,18 +11,24 @@
 //!   the session built from it.
 //! - [`base`] — the low level pieces: child [`Process`](base::Process)
 //!   handling and the [`ExitReason`](base::ExitReason) of a finished process.
+//! - [`mod@cli`] — the command line, as `clap` reads it.
 //! - [`mod@config`] — the config file parsed into the [`config::Config`]
 //!   the units are declared from.
+//! - [`mod@error`] — every error type in the crate.
 //! - [`mod@log`] — capture of a process's output into the bounded
 //!   [`Log`](log::Log) history.
 //! - [`runner`] — the async supervision layer: the [`Runner`](runner::Runner)
 //!   trait, its [`RunnerHandle`](runner::RunnerHandle) and the
 //!   [`RunnerState`](runner::RunnerState) machine.
+//! - [`mod@ui`] — the terminal screen, and the [`UiClient`](ui::UiClient) it
+//!   reads a session through.
 //! - [`mod@unit`] — the user facing concept: a [`Unit`](unit::Unit) is a
 //!   named, restartable entry whose [`UnitBehavior`](unit::UnitBehavior)
 //!   decides what it does.
-//! - [`util`] — shared data structures, currently the recycling ring buffer
-//!   the logs keep their chunks in.
+//! - [`util`] — shared data structures with nothing to do with processes: the
+//!   [`SmallStr`](util::str::SmallStr) every name is held as, the recycling
+//!   ring the logs keep their chunks in, the dependency graph the config is
+//!   checked with.
 //!
 //! # Layering
 //!
@@ -69,7 +75,7 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Build a session, start what was asked for, and show it.
+/// Build a session and show it.
 ///
 /// This is the mode that owns what it runs, so quitting the screen has to
 /// take the processes with it. The UI returning is only the screen being
@@ -77,9 +83,8 @@ async fn main() -> Result<()> {
 /// children actually gone, and it is deliberately awaited rather than left to
 /// `Drop`, which cannot.
 ///
-/// The starting happens before the screen does, so that a target that names
-/// nothing is a message on a terminal that still works rather than one behind
-/// a screen that is being torn down.
+/// Nothing is started here: the session comes up with every proc stopped,
+/// and the screen is what runs them.
 async fn run(args: RunArgs) -> Result<()> {
     if args.no_tui {
         bail!("`--no-tui` is not built yet");

@@ -11,7 +11,11 @@ use crate::{
     unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior, unit::Unit},
 };
 
-/// Every [`Unit`] in a session, by name.
+/// Every [`Unit`] in a session, under the key its caller addresses it by.
+///
+/// Generic over that key so the caller can use whatever it already holds —
+/// the app interns names and addresses units by the symbol, the tests here by
+/// the text itself — while the map only ever hashes it.
 ///
 /// **Shared, not owned.** Every method takes `&self`, so a map behind an
 /// `Arc` can be handed to the input task, the render loop and whatever
@@ -23,7 +27,7 @@ use crate::{
 /// slow or async: a state is an atomic load, stopping is a cancellation that
 /// does not wait, and starting hands the run to a task rather than doing it.
 pub struct UnitMap<K> {
-    /// The units, by name.
+    /// The units, by key.
     units: HashMap<K, Unit>,
     /// The one dispatcher every unit in the map was given a clone of, so a
     /// screen watches the session rather than one proc at a time.
@@ -149,8 +153,8 @@ where
     /// State of the unit under `key`.
     ///
     /// [`Stopped`](RunnerState::Stopped) for a unit that was declared and
-    /// never started — which is a different thing from a name that was never
-    /// declared, and that is the error.
+    /// never started — which is a different thing from a key nothing was
+    /// declared under, and that is the error.
     pub fn state<Q>(&self, key: &Q) -> Result<RunnerState, UnitMapError>
     where
         K: Borrow<Q> + Eq + Hash,
@@ -177,7 +181,7 @@ where
         self.units.contains_key(key)
     }
 
-    /// The name every unit was declared under.
+    /// Every key a unit was declared under.
     ///
     /// In no particular order — the map is a `HashMap`, and the declaration
     /// order did not survive being put into one. A caller that shows these to
@@ -212,7 +216,7 @@ where
 
     /// Run `f` on the unit under `key`, or fail naming what was asked for.
     ///
-    /// An unknown name is a mistake in a config or a command and not a state
+    /// An unknown key is a mistake in a config or a command and not a state
     /// a unit can be in, so it is an error rather than a quiet no-op — said
     /// once, here, for every method.
     fn with<Q, T>(&self, key: &Q, f: impl FnOnce(&Unit) -> T) -> Result<T, UnitMapError>

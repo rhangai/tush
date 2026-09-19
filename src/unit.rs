@@ -10,9 +10,9 @@
 //! what lets a unit be restarted under a different behavior — the `modes` in
 //! the config: build vs. watch.
 //!
-//! [`UnitMap`] is the layer above: every unit of a session, by name, shared
-//! rather than owned, so anything holding the map can start, stop and ask
-//! after any of them.
+//! [`UnitMap`] is the layer above: every unit of a session under the key its
+//! caller addresses it by, shared rather than owned, so anything holding the
+//! map can start, stop and ask after any of them.
 
 mod behavior;
 mod dispatch;

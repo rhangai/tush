@@ -80,8 +80,8 @@ pub struct UnitBehavior {
     /// for: a view refreshing several times a second reads the current mode's
     /// name out of here on every frame, and the behavior is behind a lock, so
     /// nothing may borrow out of it. With a `String` that is an allocation
-    /// and a copy per unit per frame, for text that never changes; with this
-    /// it is a refcount.
+    /// and a copy per unit per frame, for text that never changes; a name fits
+    /// inside a [`SmallStr`], so here it is the copy alone.
     name: SmallStr,
     /// A shorter name for it, when the config declared one.
     ///
@@ -201,7 +201,7 @@ impl UnitBehavior {
     /// Everything that can be asked of this behavior right now.
     ///
     /// Into a `Vec` the caller owns and reuses, so a menu that opens over and
-    /// over costs the [`SmallStr`] refcounts and no allocation.
+    /// over refills that capacity rather than asking for it again.
     ///
     /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, which is
     /// also what makes it the last entry of every menu.

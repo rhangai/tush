@@ -1,5 +1,9 @@
+//! Every error type in the crate, gathered rather than kept beside the code
+//! that returns them.
+
 use crate::util::str::SmallStr;
 
+/// What starting or killing a child process can fail with.
 #[derive(thiserror::Error, Debug)]
 pub enum ProcessError {
     #[error("empty process")]
@@ -16,13 +20,15 @@ pub enum ProcessError {
     KillError(std::io::Error),
 }
 
+/// What supervising one run can fail with — so far, only the process itself.
 #[derive(thiserror::Error, Debug)]
 pub enum RunnerError {
     #[error("Error {0}")]
     Process(#[from] ProcessError),
 }
 
-/// UnitMap Error
+/// What starting a unit can fail with: a command with nothing in it, or
+/// the run underneath.
 #[derive(Debug, thiserror::Error)]
 pub enum UnitError {
     #[error("unit not found")]
@@ -31,7 +37,8 @@ pub enum UnitError {
     Runner(RunnerError),
 }
 
-/// UnitMap Error
+/// What addressing a unit through a [`UnitMap`](crate::unit::UnitMap) can
+/// fail with.
 #[derive(Debug, thiserror::Error)]
 pub enum UnitMapError {
     #[error("unit not found")]
@@ -42,7 +49,7 @@ pub enum UnitMapError {
     Unknown,
 }
 
-/// UnitMap Error
+/// What takes the screen down: the terminal, never the session behind it.
 #[derive(Debug, thiserror::Error)]
 pub enum UiError {
     #[error("unit not found")]
@@ -56,8 +63,12 @@ pub enum UiError {
 /// One thing wrong with a config.
 #[derive(thiserror::Error, Debug)]
 pub enum AppConfigError {
+    /// An invariant of the checking itself that did not hold, named at the
+    /// place it broke. Not a mistake in the config.
     #[error("{0}")]
     Unknown(&'static str),
+    /// A key that was interned and did not come back — the same kind of
+    /// thing, said about one key.
     #[error("key `{0}` should exist")]
     LogicErrorKey(SmallStr),
     /// A proc declared `run` and `modes` both.
@@ -76,13 +87,17 @@ pub enum AppConfigError {
     /// first. A cycle of one is a proc that depends on itself.
     #[error("{} depend on each other in a circle", HelperQuoted(.0))]
     Cycle(Vec<SmallStr>),
-    /// Procs that wait on each other in a circle, so none of them can be
-    /// first. A cycle of one is a proc that depends on itself.
+    /// Every problem one pass over the config found, because a config with
+    /// three mistakes in it is about to be fixed and one mistake per run is
+    /// three runs of the same discovery.
     #[error("{}", HelperLines(.0, "there were problems with the configuration:"))]
     Errors(Vec<AppConfigError>),
 }
 
-/// One thing wrong with a config.
+/// What addressing a unit in a session that is already built can fail with.
+///
+/// Apart from [`AppConfigError`], which is everything the checking found: by
+/// the time there is a session to address, those questions are answered.
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {
     #[error("key `{0}` does not exist")]
