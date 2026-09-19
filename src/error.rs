@@ -55,11 +55,11 @@ pub enum UiError {
 
 /// One thing wrong with a config.
 #[derive(thiserror::Error, Debug)]
-pub enum AppError {
+pub enum AppConfigError {
     #[error("{0}")]
     Unknown(&'static str),
     #[error("key `{0}` should exist")]
-    UnknownKey(SmallStr),
+    LogicErrorKey(SmallStr),
     /// A proc declared `run` and `modes` both.
     #[error("`{0}` declares both `run` and `modes`")]
     RunAndModes(SmallStr),
@@ -79,7 +79,16 @@ pub enum AppError {
     /// Procs that wait on each other in a circle, so none of them can be
     /// first. A cycle of one is a proc that depends on itself.
     #[error("{}", HelperLines(.0, "there were problems with the configuration:"))]
-    Errors(Vec<AppError>),
+    Errors(Vec<AppConfigError>),
+}
+
+/// One thing wrong with a config.
+#[derive(thiserror::Error, Debug)]
+pub enum AppError {
+    #[error("key `{0}` does not exist")]
+    InvalidKey(SmallStr),
+    #[error("{0}")]
+    MapError(#[from] UnitMapError),
 }
 
 struct HelperQuoted<'a, T>(&'a T);

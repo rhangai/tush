@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::util::str::SmallStr;
+use crate::app::AppUnitKey;
 use crate::{
     app::App,
     log::{LogReader, LogRegion},
@@ -14,7 +14,7 @@ struct AppLog {
     /// Which unit it belongs to. A pane moving to another one throws this
     /// away rather than re-pointing it: the revision counted against one
     /// log's chunks means nothing against another's.
-    key: SmallStr,
+    key: AppUnitKey,
     /// A reader over that unit's log, which is to say a mirror of it.
     reader: LogReader,
     /// The region last asked for.
@@ -57,13 +57,13 @@ impl UiApp {
     /// The names are taken once because a proc is not renamed — unlike the
     /// mode, which is read every sync.
     pub fn new(app: Arc<App>) -> Self {
-        let units = app.unit_map();
-        let mut list: Vec<UiUnit> = units
+        let unit_map = app.unit_map();
+        let mut list: Vec<UiUnit> = unit_map
             .keys()
-            .map(|key| UiUnit {
-                name: units.name(key).unwrap_or_else(|_| key.clone()),
-                name_short: units.name_short(key).unwrap_or_default(),
-                key: key.to_owned(),
+            .map(|unit_key| UiUnit {
+                name: unit_map.name(unit_key).unwrap_or_default(),
+                name_short: unit_map.name_short(unit_key).unwrap_or(None),
+                unit_key,
                 mode: None,
                 mode_short: None,
                 state: RunnerState::Stopped,
@@ -105,13 +105,13 @@ impl UiClient for UiApp {
     fn sync(&mut self) {
         let units = self.app.unit_map();
         for unit in &mut self.units {
-            if let Ok(state) = units.state(&unit.key) {
+            if let Ok(state) = units.state(unit.unit_key) {
                 unit.state = state;
             }
-            if let Ok(mode) = units.mode(&unit.key) {
+            if let Ok(mode) = units.mode(unit.unit_key) {
                 unit.mode = mode;
             }
-            if let Ok(short) = units.mode_short(&unit.key) {
+            if let Ok(short) = units.mode_short(unit.unit_key) {
                 unit.mode_short = short;
             }
         }
@@ -127,7 +127,7 @@ impl UiClient for UiApp {
     /// A new reader only when the unit changed. Resolving the region is
     /// [`sync`](UiClient::sync)'s job, so the lines and the states in one
     /// frame are taken at the same moment.
-    fn set_log(&mut self, key: Option<SmallStr>, region: LogRegion) {
+    fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion) {
         let Some(key) = key else {
             self.log = None;
             return;
@@ -135,7 +135,7 @@ impl UiClient for UiApp {
         match &mut self.log {
             Some(log) if log.key == key => log.wanted = region,
             _ => {
-                let Some(reader) = self.app.unit_map().log_reader(key.as_str()) else {
+                let Some(reader) = self.app.unit_map().log_reader(key) else {
                     self.log = None;
                     return;
                 };
@@ -164,7 +164,7 @@ impl UiClient for UiApp {
     ///
     /// The `Err` arm is a name the map does not have, and the names came from
     /// the map — so it leaves `out` empty rather than failing.
-    fn choices(&self, key: &str, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
         let unit_map = self.app.unit_map();
         if unit_map.choices(key, out).is_err() {
             out.clear();
@@ -181,13 +181,13 @@ impl UiClient for UiApp {
         let units = self.app.unit_map();
         match command {
             UiCommand::Start { key } => {
-                _ = units.start(&key);
+                _ = units.start(key);
             }
             UiCommand::Stop { key } => {
-                _ = units.stop(&key);
+                _ = units.stop(key);
             }
             UiCommand::Dispatch { key, event } => {
-                _ = units.dispatch(&key, event);
+                _ = units.dispatch(key, event);
             }
         };
     }

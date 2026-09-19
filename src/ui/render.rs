@@ -23,6 +23,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
+    app::AppUnitKey,
     log::LogRegion,
     ui::{client::UiClient, theme::UiTheme},
     unit::UnitChoice,
@@ -198,7 +199,7 @@ impl UiRender {
     }
 
     /// Open the menu over `key`, titled `title`, listing `items`.
-    pub fn open_menu(&mut self, key: SmallStr, title: SmallStr, items: Vec<UnitChoice>) {
+    pub fn open_menu(&mut self, key: AppUnitKey, title: SmallStr, items: Vec<UnitChoice>) {
         self.menu.open(key, title, items);
     }
 

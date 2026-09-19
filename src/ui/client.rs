@@ -1,3 +1,4 @@
+use crate::app::AppUnitKey;
 use crate::util::str::SmallStr;
 use crate::{
     log::LogRegion,
@@ -12,7 +13,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct UiUnit {
     /// How a [`UiCommand`] addresses it. Not shown; see [`name`](UiUnit::name).
-    pub key: SmallStr,
+    pub unit_key: AppUnitKey,
     /// What to call it on screen.
     ///
     /// Apart from the key because the config lets a proc name itself, and
@@ -43,14 +44,14 @@ pub struct UiUnit {
 #[derive(Clone, Debug)]
 pub enum UiCommand {
     /// Run it, restarting it if it was already running.
-    Start { key: SmallStr },
+    Start { key: AppUnitKey },
     /// Stop it.
-    Stop { key: SmallStr },
+    Stop { key: AppUnitKey },
     /// Hand it an event and let its behavior decide.
     ///
     /// What every menu entry sends, the entries having come out of the
     /// behavior in the first place.
-    Dispatch { key: SmallStr, event: UnitEvent },
+    Dispatch { key: AppUnitKey, event: UnitEvent },
 }
 
 /// What a client has for the log pane: some lines, and what they are.
@@ -99,7 +100,7 @@ pub trait UiClient {
     /// Called when a menu opens, not per frame. Local and instant like every
     /// read here, so a client with a connection answers from its last sync,
     /// filling nothing if that is nothing.
-    fn choices(&self, key: &str, out: &mut Vec<UnitChoice>);
+    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>);
 
     /// Ask for something to happen, without waiting to find out whether it did.
     ///
@@ -120,7 +121,7 @@ pub trait UiClient {
     ///
     /// Called every frame; whether anything has to happen is the client's
     /// call, since it holds the region, the revision and the connection.
-    fn set_log(&mut self, key: Option<SmallStr>, region: LogRegion);
+    fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion);
 
     /// The lines for the pane, as of the last [`sync`](UiClient::sync).
     ///

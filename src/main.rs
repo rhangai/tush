@@ -88,11 +88,6 @@ async fn run(args: RunArgs) -> Result<()> {
 
     let config = Config::from_path(&args.session.config)?;
     let app = Arc::new(App::new(&config)?);
-    let targets = app.resolve(&args.session.targets)?;
-
-    for key in &targets {
-        app.unit_map().start(key)?;
-    }
 
     let result = Ui::run(UiApp::new(app.clone()), refresh, UiTheme::default()).await;
     app.unit_map().shutdown().await;

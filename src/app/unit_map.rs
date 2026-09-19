@@ -6,23 +6,30 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::{
     app::TARGET_SEPARATOR,
     config::{Config, ConfigProc},
-    error::AppError,
-    unit::{UnitAction, UnitBehavior, UnitEvent, UnitMap},
+    error::{AppConfigError, AppError},
+    log::LogReader,
+    runner::RunnerState,
+    unit::{UnitAction, UnitBehavior, UnitChoice, UnitEvent, UnitMap},
     util::{graph::DependencyGraph, str::SmallStr},
 };
 
 pub struct AppUnitMap {
     interner: DefaultStringInterner,
-    units: Arc<UnitMap<DefaultSymbol>>,
+    unit_map: Arc<UnitMap<DefaultSymbol>>,
     dependency_graph: DependencyGraph<DefaultSymbol>,
     groups: GroupHashMap,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppUnitKey {
+    value: DefaultSymbol,
 }
 
 type GroupHashMap = HashMap<DefaultSymbol, SmallVec<[DefaultSymbol; 16]>>;
 
 impl AppUnitMap {
-    pub fn new(config: &Config) -> Result<Self, AppError> {
-        let mut errors: Vec<AppError> = Vec::new();
+    pub fn new(config: &Config) -> Result<Self, AppConfigError> {
+        let mut errors: Vec<AppConfigError> = Vec::new();
         let mut interner: DefaultStringInterner = DefaultStringInterner::new();
 
         let dependency_graph = Self::build_dep_graph(&mut errors, &mut interner, config);
@@ -31,22 +38,22 @@ impl AppUnitMap {
         let mut groups: GroupHashMap = HashMap::new();
         for proc in &config.procs {
             let Some(key) = interner.get(proc.key.as_ref()) else {
-                errors.push(AppError::UnknownKey(proc.key.clone()));
+                errors.push(AppConfigError::LogicErrorKey(proc.key.clone()));
                 continue;
             };
             let behavior = Self::build_behavior(proc);
             for group in &proc.groups {
-                let Some(group_key) = interner.get(group.as_ref()) else {
-                    errors.push(AppError::UnknownKey(group.clone()));
-                    continue;
-                };
+                let group_key = interner.get_or_intern(group.as_ref());
                 groups.entry(group_key).or_default().push(key);
             }
             behaviors.insert(key, behavior);
         }
+        if !errors.is_empty() {
+            return Err(AppConfigError::Errors(errors));
+        }
         Ok(Self {
             interner,
-            units: UnitMap::new(behaviors),
+            unit_map: UnitMap::new(behaviors),
             dependency_graph,
             groups,
         })
@@ -54,47 +61,47 @@ impl AppUnitMap {
 
     /// Build the dependency graph, while validating
     fn build_dep_graph(
-        errors: &mut Vec<AppError>,
-        interner: &mut DefaultStringInterner,
+        errors: &mut Vec<AppConfigError>,
+        units_interner: &mut DefaultStringInterner,
         config: &Config,
     ) -> DependencyGraph<DefaultSymbol> {
         let mut graph: DependencyGraph<DefaultSymbol> = DependencyGraph::new();
         for proc in &config.procs {
             if proc.key.contains(TARGET_SEPARATOR) {
-                errors.push(AppError::ReservedCharacter {
+                errors.push(AppConfigError::ReservedCharacter {
                     name: proc.key.clone(),
                     character: TARGET_SEPARATOR,
                 });
             }
             for group in &proc.groups {
                 if group.contains(TARGET_SEPARATOR) {
-                    errors.push(AppError::ReservedCharacter {
+                    errors.push(AppConfigError::ReservedCharacter {
                         name: group.clone(),
                         character: TARGET_SEPARATOR,
                     });
                 }
             }
             if proc.run.is_some() && proc.modes.is_some() {
-                errors.push(AppError::RunAndModes(proc.key.clone()));
+                errors.push(AppConfigError::RunAndModes(proc.key.clone()));
             }
-            let key = interner.get_or_intern(proc.key.as_ref());
+            let key = units_interner.get_or_intern(proc.key.as_ref());
             graph.insert(key);
         }
         for proc in &config.procs {
-            let Some(key) = interner.get(proc.key.as_ref()) else {
-                errors.push(AppError::Unknown("key should exist in interner"));
+            let Some(key) = units_interner.get(proc.key.as_ref()) else {
+                errors.push(AppConfigError::Unknown("key should exist in interner"));
                 continue;
             };
             for depends in &proc.depends {
-                let Some(depends_key) = interner.get(depends) else {
-                    errors.push(AppError::UnknownDependency {
+                let Some(depends_key) = units_interner.get(depends) else {
+                    errors.push(AppConfigError::UnknownDependency {
                         proc: proc.key.clone(),
                         depends: depends.clone(),
                     });
                     continue;
                 };
                 if !graph.contains(&depends_key) {
-                    errors.push(AppError::UnknownDependency {
+                    errors.push(AppConfigError::UnknownDependency {
                         proc: proc.key.clone(),
                         depends: depends.clone(),
                     });
@@ -110,11 +117,11 @@ impl AppUnitMap {
         for cycle in resolved.cycles() {
             let mut cycle_procs = Vec::with_capacity(cycle.len());
             for key in cycle {
-                if let Some(key_str) = interner.resolve(*key) {
+                if let Some(key_str) = units_interner.resolve(*key) {
                     cycle_procs.push(SmallStr::new(key_str));
                 };
             }
-            errors.push(AppError::Cycle(cycle_procs))
+            errors.push(AppConfigError::Cycle(cycle_procs))
         }
 
         graph
@@ -144,16 +151,53 @@ impl AppUnitMap {
         behavior.with_short(short)
     }
 
-    fn unit_key(&self, name: &str) -> Result<DefaultSymbol, AppError> {
+    pub fn key(&self, name: &str) -> Result<AppUnitKey, AppError> {
         self.interner
             .get(name)
-            .ok_or_else(|| AppError::UnknownKey(name.into()))
+            .map(|value| AppUnitKey { value })
+            .ok_or_else(|| AppError::InvalidKey(name.into()))
     }
 
-    pub fn start(&self, name: &str) -> Result<(), AppError> {
-        let key = self.unit_key(name)?;
-        self.units.start(&key);
+    pub fn start(&self, key: AppUnitKey) -> Result<(), AppError> {
+        self.unit_map.start(&key.value)?;
         Ok(())
+    }
+
+    pub fn stop(&self, key: AppUnitKey) -> Result<(), AppError> {
+        Ok(self.unit_map.stop(&key.value)?)
+    }
+
+    pub fn state(&self, key: AppUnitKey) -> Result<RunnerState, AppError> {
+        Ok(self.unit_map.state(&key.value)?)
+    }
+
+    pub fn mode(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
+        Ok(self.unit_map.mode(&key.value)?)
+    }
+
+    pub fn mode_short(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
+        Ok(self.unit_map.mode_short(&key.value)?)
+    }
+
+    pub fn name(&self, key: AppUnitKey) -> Result<SmallStr, AppError> {
+        Ok(self.unit_map.name(&key.value)?)
+    }
+
+    pub fn name_short(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
+        Ok(self.unit_map.name_short(&key.value)?)
+    }
+
+    pub fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) -> Result<(), AppError> {
+        self.unit_map.choices(&key.value, out)?;
+        Ok(())
+    }
+
+    pub fn log_reader(&self, key: AppUnitKey) -> Option<LogReader> {
+        self.unit_map.log_reader(&key.value)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = AppUnitKey> {
+        self.unit_map.keys().map(|k| AppUnitKey { value: *k })
     }
 
     /// Hand `event` to the unit under `name` and carry out what it asks for.
@@ -161,24 +205,23 @@ impl AppUnitMap {
     /// The behavior decides, which is why this is not two methods: an event
     /// may move a unit onto another mode before the start it also asks for,
     /// and only the behavior can do that.
-    pub fn dispatch(&self, name: &str, event: UnitEvent) -> anyhow::Result<()> {
-        let key = self.unit_key(name)?;
-        let Some(action) = self.units.dispatch(&key, event)? else {
+    pub fn dispatch(&self, key: AppUnitKey, event: UnitEvent) -> anyhow::Result<()> {
+        let Some(action) = self.unit_map.dispatch(&key.value, event)? else {
             return Ok(());
         };
         match action {
             UnitAction::Start => {
-                _ = self.units.start(&key)?;
+                _ = self.unit_map.start(&key.value)?;
                 Ok(())
             }
             UnitAction::Stop => {
-                self.units.stop(&key)?;
+                self.unit_map.stop(&key.value)?;
                 Ok(())
             }
         }
     }
 
     pub async fn shutdown(&self) {
-        self.units.shutdown().await;
+        self.unit_map.shutdown().await;
     }
 }

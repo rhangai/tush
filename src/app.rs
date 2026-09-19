@@ -24,3 +24,6 @@ pub use app::App;
 
 #[allow(unused_imports)]
 pub use target::{TARGET_SEPARATOR, Target};
+
+#[allow(unused_imports)]
+pub use unit_map::AppUnitKey;

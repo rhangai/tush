@@ -10,7 +10,7 @@ use crossterm::{
 use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
-use crate::util::str::SmallStr;
+use crate::app::AppUnitKey;
 use crate::{
     error::UiError,
     ui::{
@@ -113,7 +113,7 @@ impl<C: UiClient> Ui<C> {
     fn request_log(&mut self) {
         // Cloned to end the borrow on the client before it is handed a `&mut`
         // of itself.
-        let key = self.selected().map(|unit| unit.key.clone());
+        let key = self.selected().map(|unit| unit.unit_key.clone());
         self.client.set_log(key, self.render.log_region());
     }
 
@@ -188,7 +188,7 @@ impl<C: UiClient> Ui<C> {
             KeyCode::Down | KeyCode::Char('j') => self.render.select_menu(Move::Next),
             KeyCode::Up | KeyCode::Char('k') => self.render.select_menu(Move::Previous),
             KeyCode::Enter => match self.render.menu_choice() {
-                UiMenuChoice::Send { key: unit, event } => {
+                UiMenuChoice::Send { unit, event } => {
                     self.render.close_menu();
                     self.client.send(UiCommand::Dispatch { key: unit, event });
                 }
@@ -208,9 +208,9 @@ impl<C: UiClient> Ui<C> {
         let Some(unit) = self.selected() else {
             return;
         };
-        let (key, title) = (unit.key.clone(), unit.name.clone());
+        let (key, title) = (unit.unit_key.clone(), unit.name.clone());
         let mut items = self.render.take_menu_items();
-        self.client.choices(&key, &mut items);
+        self.client.choices(key, &mut items);
         self.render.open_menu(key, title, items);
     }
 
@@ -231,11 +231,11 @@ impl<C: UiClient> Ui<C> {
 
     /// Send the command `command` builds for the selected unit's key, if
     /// there is one selected.
-    fn send(&mut self, command: impl FnOnce(SmallStr) -> UiCommand) {
+    fn send(&mut self, command: impl FnOnce(AppUnitKey) -> UiCommand) {
         let Some(unit) = self.selected() else {
             return;
         };
-        self.client.send(command(unit.key.clone()));
+        self.client.send(command(unit.unit_key));
     }
 
     /// The unit under the cursor, if the list is not empty.

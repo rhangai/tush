@@ -6,7 +6,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::util::str::SmallStr;
+use crate::{app::AppUnitKey, util::str::SmallStr};
 use crate::{
     ui::{
         render::{Move, room, set_clipped},
@@ -39,7 +39,7 @@ const CANCEL_GAP: u16 = 1;
 pub struct UiRenderMenuState {
     /// The unit it is open for, `None` when closed. Kept rather than re-read
     /// from the selection, which a resize can move underneath it.
-    key: Option<SmallStr>,
+    unit_key: Option<AppUnitKey>,
     /// What that unit is called, for the title.
     title: SmallStr,
     /// The entries, kept across a close so the next open refills them.
@@ -52,7 +52,7 @@ pub struct UiRenderMenuState {
 impl UiRenderMenuState {
     /// Whether the menu has the keys.
     pub fn is_open(&self) -> bool {
-        self.key.is_some()
+        self.unit_key.is_some()
     }
 
     /// Lend out the entry buffer to be refilled, keeping its capacity.
@@ -70,7 +70,7 @@ impl UiRenderMenuState {
     /// run what the row was offering; failing that the first enabled entry,
     /// failing that the way out. Between them it never lands on a disabled
     /// row, so <kbd>Enter</kbd> is never a press that does nothing.
-    pub fn open(&mut self, key: SmallStr, title: SmallStr, items: Vec<UnitChoice>) {
+    pub fn open(&mut self, key: AppUnitKey, title: SmallStr, items: Vec<UnitChoice>) {
         self.cursor = items
             .iter()
             .position(|item| item.current && item.enabled)
@@ -78,12 +78,12 @@ impl UiRenderMenuState {
             .unwrap_or(items.len());
         self.items = items;
         self.title = title;
-        self.key = Some(key);
+        self.unit_key = Some(key);
     }
 
     /// Give the keys back, keeping the buffer.
     pub fn close(&mut self) {
-        self.key = None;
+        self.unit_key = None;
     }
 
     /// Move to the next row that can be chosen, stepping over the disabled
@@ -112,12 +112,12 @@ impl UiRenderMenuState {
     ///
     /// [`open`]: Self::open
     pub fn chosen(&self) -> UiMenuChoice {
-        let Some(key) = self.key.as_ref() else {
+        let Some(key) = self.unit_key.as_ref() else {
             return UiMenuChoice::Cancel;
         };
         match self.items.get(self.cursor) {
             Some(item) if item.enabled => UiMenuChoice::Send {
-                key: key.clone(),
+                unit: key.clone(),
                 event: item.event,
             },
             _ => UiMenuChoice::Cancel,
@@ -157,7 +157,7 @@ impl UiRenderMenuState {
 /// Not an `Option`, because closing is an answer and not the absence of one.
 pub enum UiMenuChoice {
     /// Send this to the unit, and close.
-    Send { key: SmallStr, event: UnitEvent },
+    Send { unit: AppUnitKey, event: UnitEvent },
     /// Close, and ask for nothing.
     Cancel,
 }
