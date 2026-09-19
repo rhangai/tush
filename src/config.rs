@@ -145,10 +145,12 @@ pub struct ConfigProc {
     /// `group` in the file, singular, because that is how it reads at the
     /// declaration of one proc.
     #[serde(default, rename = "group")]
+    #[serde(deserialize_with = "deserialize_vecstr")]
     pub groups: SmallVecStr,
     /// What has to be up before it may start, and the edges of the
     /// dependency graph.
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_vecstr")]
     pub depends: SmallVecStr,
     /// `run:` — the one way this proc runs.
     #[serde(default)]
@@ -233,6 +235,52 @@ where
         }
     }
     deserializer.deserialize_map(ConfigProcVisitor)
+}
+
+/// Reads the `procs` mapping as a list, moving each key into the proc it opened.
+///
+/// A mapping is how a person writes it — the key names the proc and cannot
+/// repeat — and a list is how the rest of the crate wants it, ordered and
+/// indexable.
+fn deserialize_vecstr<'rde, D>(deserializer: D) -> Result<SmallVecStr, D::Error>
+where
+    D: Deserializer<'rde>,
+{
+    /// Reads the mapping, one proc per key.
+    struct SmallStrVisitor;
+    impl<'de> Visitor<'de> for SmallStrVisitor {
+        type Value = SmallVecStr;
+
+        /// What the error says the file should have held.
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("string or list of strings")
+        }
+
+        fn visit_str<E>(self, str: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            let mut v = SmallVecStr::with_capacity(1);
+            v.push(SmallStr::new(str));
+            Ok(v)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut v = if let Some(hint) = seq.size_hint() {
+                SmallVecStr::with_capacity(hint)
+            } else {
+                SmallVecStr::new()
+            };
+            while let Some(str) = seq.next_element::<SmallStr>()? {
+                v.push(str)
+            }
+            Ok(v)
+        }
+    }
+    deserializer.deserialize_any(SmallStrVisitor)
 }
 
 /// Streams the words straight into the [`JaggedVec`](crate::util::vec::JaggedVec).
