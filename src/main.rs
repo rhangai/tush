@@ -91,10 +91,10 @@ async fn run(args: RunArgs) -> Result<()> {
     let targets = app.resolve(&args.session.targets)?;
 
     for key in &targets {
-        app.units().start(key)?;
+        app.unit_map().start(key)?;
     }
 
     let result = Ui::run(UiApp::new(app.clone()), refresh, UiTheme::default()).await;
-    app.units().shutdown().await;
+    app.unit_map().shutdown().await;
     Ok(result?)
 }

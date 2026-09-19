@@ -57,7 +57,7 @@ impl UiApp {
     /// The names are taken once because a proc is not renamed — unlike the
     /// mode, which is read every sync.
     pub fn new(app: Arc<App>) -> Self {
-        let units = app.units();
+        let units = app.unit_map();
         let mut list: Vec<UiUnit> = units
             .keys()
             .map(|key| UiUnit {
@@ -103,7 +103,7 @@ impl UiClient for UiApp {
     /// The `Err` arm is unreachable — the keys came out of the map and the
     /// map cannot lose one — but skipping the row is cheaper than proving it.
     fn sync(&mut self) {
-        let units = self.app.units();
+        let units = self.app.unit_map();
         for unit in &mut self.units {
             if let Ok(state) = units.state(&unit.key) {
                 unit.state = state;
@@ -135,7 +135,7 @@ impl UiClient for UiApp {
         match &mut self.log {
             Some(log) if log.key == key => log.wanted = region,
             _ => {
-                let Some(reader) = self.app.units().log_reader(key.as_str()) else {
+                let Some(reader) = self.app.unit_map().log_reader(key.as_str()) else {
                     self.log = None;
                     return;
                 };
@@ -165,7 +165,8 @@ impl UiClient for UiApp {
     /// The `Err` arm is a name the map does not have, and the names came from
     /// the map — so it leaves `out` empty rather than failing.
     fn choices(&self, key: &str, out: &mut Vec<UnitChoice>) {
-        if self.app.units().choices(key, out).is_err() {
+        let unit_map = self.app.unit_map();
+        if unit_map.choices(key, out).is_err() {
             out.clear();
         }
     }
@@ -177,7 +178,7 @@ impl UiClient for UiApp {
     /// the names came out of the map. When the session gets a channel to
     /// report back through, this is where it is written to.
     fn send(&self, command: UiCommand) {
-        let units = self.app.units();
+        let units = self.app.unit_map();
         match command {
             UiCommand::Start { key } => {
                 _ = units.start(&key);
@@ -186,7 +187,7 @@ impl UiClient for UiApp {
                 _ = units.stop(&key);
             }
             UiCommand::Dispatch { key, event } => {
-                _ = self.app.dispatch(&key, event);
+                _ = units.dispatch(&key, event);
             }
         };
     }

@@ -1,6 +1,4 @@
-use smallvec::SmallVec;
-
-use crate::util::{str::SmallStr, types::SmallVecStr};
+use crate::util::str::SmallStr;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ProcessError {
@@ -60,6 +58,8 @@ pub enum UiError {
 pub enum AppError {
     #[error("{0}")]
     Unknown(&'static str),
+    #[error("key `{0}` should exist")]
+    UnknownKey(SmallStr),
     /// A proc declared `run` and `modes` both.
     #[error("`{0}` declares both `run` and `modes`")]
     RunAndModes(SmallStr),
@@ -75,20 +75,21 @@ pub enum AppError {
     /// Procs that wait on each other in a circle, so none of them can be
     /// first. A cycle of one is a proc that depends on itself.
     #[error("{} depend on each other in a circle", HelperQuoted(.0))]
-    Cycle(SmallVecStr),
-}
-
-/// One thing wrong with a config.
-#[derive(thiserror::Error, Debug)]
-pub enum AppErrors {
+    Cycle(Vec<SmallStr>),
+    /// Procs that wait on each other in a circle, so none of them can be
+    /// first. A cycle of one is a proc that depends on itself.
     #[error("{}", HelperLines(.0, "there were problems with the configuration:"))]
-    Errors(SmallVec<[AppError; 8]>),
+    Errors(Vec<AppError>),
 }
 
-struct HelperQuoted<'a>(&'a SmallVecStr);
-impl<'a> std::fmt::Display for HelperQuoted<'a> {
+struct HelperQuoted<'a, T>(&'a T);
+impl<'a, T> std::fmt::Display for HelperQuoted<'a, T>
+where
+    &'a T: IntoIterator,
+    <&'a T as IntoIterator>::Item: std::fmt::Display,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, item) in self.0.iter().enumerate() {
+        for (i, item) in self.0.into_iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }

@@ -16,8 +16,8 @@
 //! the first place any of them can even be asked.
 
 mod app;
-mod map;
 mod target;
+mod unit_map;
 
 #[allow(unused_imports)]
 pub use app::App;
