@@ -1,7 +1,6 @@
-use anyhow::Result;
-
 use crate::{
     base::ExitReason,
+    error::RunnerError,
     runner::{Runner, policy::RunnerPolicy},
 };
 
@@ -77,7 +76,10 @@ impl<R: Runner> Runner for RunnerSerial<R> {
     /// A runner that returns `Err` — one that could not be started at all,
     /// rather than one that ran and failed — ends the sequence whatever the
     /// policy says. The policy weighs exit reasons, and that is not one.
-    async fn run(&mut self, on_run: impl FnOnce() + Send + 'static) -> Result<ExitReason> {
+    async fn run(
+        &mut self,
+        on_run: impl FnOnce() + Send + 'static,
+    ) -> Result<ExitReason, RunnerError> {
         let mut failure = None;
         let mut first_on_run = Some(on_run);
         for index in 0..self.runners.len() {
@@ -119,7 +121,7 @@ impl<R: Runner> Runner for RunnerSerial<R> {
     /// with a success would have the handle publish
     /// [`ExitSuccess`](crate::runner::RunnerState::ExitSuccess) for a
     /// sequence that never ran.
-    async fn shutdown(&mut self) -> Result<ExitReason> {
+    async fn shutdown(&mut self) -> Result<ExitReason, RunnerError> {
         let Some(index) = self.running.take() else {
             return Ok(ExitReason::Killed(None));
         };

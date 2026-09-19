@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
 use enum_dispatch::enum_dispatch;
 use tokio::process::Command;
 
+use crate::error::UnitError;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
@@ -221,7 +221,7 @@ impl UnitBehavior {
     ///
     /// The handle comes back parked at the start gate; releasing it is the
     /// caller's job — see [`Unit::start`](crate::unit::Unit::start).
-    pub fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle> {
+    pub fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
         self.inner.spawn(ctx)
     }
 }
@@ -273,13 +273,13 @@ trait UnitBehaviorKind {
     }
 
     /// Build the runner for one run and wrap it in a paused handle.
-    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle>;
+    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError>;
 }
 
 /// Runs nothing, succeeding immediately, via the `()` runner.
 struct BehaviorNoop {}
 impl UnitBehaviorKind for BehaviorNoop {
-    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle> {
+    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
         Ok(RunnerHandle::new((), ctx.event_dispatcher))
     }
 }
@@ -321,7 +321,7 @@ impl UnitBehaviorKind for BehaviorRun {
         }
     }
 
-    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle> {
+    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
         if self.commands.is_empty() {
             return Ok(RunnerHandle::new((), ctx.event_dispatcher));
         }
@@ -354,9 +354,9 @@ fn verb(state: RunnerState) -> &'static str {
 /// The first word is the program and the rest are its arguments, handed to
 /// the OS as they are: no shell, so nothing re-splits them and no quoting
 /// rule applies.
-fn command(argv: &[SmallStr]) -> Result<Command> {
+fn command(argv: &[SmallStr]) -> Result<Command, UnitError> {
     let Some((program, args)) = argv.split_first() else {
-        bail!("a command with no program to run");
+        return Err(UnitError::Invalid);
     };
     let mut command = Command::new(program.as_str());
     command.args(args.iter().map(|i| i.as_str()));
@@ -423,7 +423,7 @@ impl UnitBehaviorKind for BehaviorModes {
         }
     }
 
-    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle> {
+    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
         if self.modes.is_empty() {
             return Ok(RunnerHandle::new((), ctx.event_dispatcher));
         };

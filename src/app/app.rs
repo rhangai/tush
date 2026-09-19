@@ -26,7 +26,7 @@ use crate::{
 /// The start order is not here yet.
 pub struct App {
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
-    units: Arc<UnitMap>,
+    units: Arc<UnitMap<SmallStr>>,
     /// Group name to the keys declared under it — inverted from how the
     /// config writes it, a config being written per proc and used per group.
     groups: HashMap<SmallStr, SmallVecStr>,
@@ -116,7 +116,7 @@ impl App {
     }
 
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
-    pub fn units(&self) -> &Arc<UnitMap> {
+    pub fn units(&self) -> &Arc<UnitMap<SmallStr>> {
         &self.units
     }
 

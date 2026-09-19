@@ -1,4 +1,7 @@
-use crate::base::{ExitReason, Process};
+use crate::{
+    base::{ExitReason, Process},
+    error::RunnerError,
+};
 
 /// Something a [`RunnerHandle`](crate::runner::RunnerHandle) can drive to
 /// completion. Moved into a Tokio task, hence `Send + 'static`.
@@ -12,34 +15,42 @@ pub trait Runner: Send + 'static {
     fn run(
         &mut self,
         on_run: impl FnOnce() + Send + 'static,
-    ) -> impl Future<Output = anyhow::Result<ExitReason>> + Send;
+    ) -> impl Future<Output = Result<ExitReason, RunnerError>> + Send;
     /// Stop a run that is still in flight, as gracefully as possible.
-    fn shutdown(&mut self) -> impl Future<Output = anyhow::Result<ExitReason>> + Send;
+    fn shutdown(&mut self) -> impl Future<Output = Result<ExitReason, RunnerError>> + Send;
 }
 
 /// `run` spawns the child and waits; `shutdown` is the `SIGTERM` then
 /// `SIGKILL` sequence from [`Process::shutdown`].
 impl Runner for Process {
-    async fn run(&mut self, on_run: impl FnOnce() + Send + 'static) -> anyhow::Result<ExitReason> {
+    async fn run(
+        &mut self,
+        on_run: impl FnOnce() + Send + 'static,
+    ) -> Result<ExitReason, RunnerError> {
         self.start().await?;
         on_run();
-        self.wait().await
+        let reason = self.wait().await?;
+        Ok(reason)
     }
 
-    async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
-        Process::shutdown(self).await
+    async fn shutdown(&mut self) -> Result<ExitReason, RunnerError> {
+        let reason = Process::shutdown(self).await?;
+        Ok(reason)
     }
 }
 
 /// The no-op runner: succeeds immediately. A placeholder for behaviors with
 /// nothing to execute, and the simplest thing to test the handle against.
 impl Runner for () {
-    async fn run(&mut self, on_run: impl FnOnce() + Send + 'static) -> anyhow::Result<ExitReason> {
+    async fn run(
+        &mut self,
+        on_run: impl FnOnce() + Send + 'static,
+    ) -> Result<ExitReason, RunnerError> {
         on_run();
         Ok(ExitReason::Success)
     }
 
-    async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
+    async fn shutdown(&mut self) -> Result<ExitReason, RunnerError> {
         Ok(ExitReason::Success)
     }
 }

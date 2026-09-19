@@ -1,7 +1,8 @@
+use std::borrow::Borrow;
+use std::hash::Hash;
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Context, Result};
-
+use crate::error::UnitMapError;
 use crate::util::event::{EventDispatcher, EventListener};
 use crate::util::str::SmallStr;
 use crate::{
@@ -21,18 +22,21 @@ use crate::{
 /// the current run have exactly one owner. That works because no method is
 /// slow or async: a state is an atomic load, stopping is a cancellation that
 /// does not wait, and starting hands the run to a task rather than doing it.
-pub struct UnitMap {
+pub struct UnitMap<K> {
     /// The units, by name.
-    units: HashMap<SmallStr, Unit>,
+    units: HashMap<K, Unit>,
     /// The one dispatcher every unit in the map was given a clone of, so a
     /// screen watches the session rather than one proc at a time.
     event_dispatcher: EventDispatcher,
 }
 
-impl UnitMap {
+impl<K> UnitMap<K>
+where
+    K: Eq + Hash,
+{
     /// A map holding one unit per behavior.
-    pub fn new(behaviors: HashMap<SmallStr, UnitBehavior>) -> Arc<Self> {
-        let mut units: HashMap<SmallStr, Unit> = HashMap::new();
+    pub fn new(behaviors: HashMap<K, UnitBehavior>) -> Arc<Self> {
+        let mut units: HashMap<K, Unit> = HashMap::new();
         let event_dispatcher = EventDispatcher::new();
         for (key, behavior) in behaviors {
             let mut unit = Unit::new(behavior);
@@ -58,50 +62,87 @@ impl UnitMap {
     /// Restarts it if it was already running: see
     /// [`Unit::start`](crate::unit::Unit::start), which sees the old run out
     /// before the new one begins.
-    pub fn start(&self, key: &str) -> Result<Arc<RunnerHandle>> {
-        self.with(key, Unit::start)?
+    pub fn start<Q>(&self, key: &Q) -> Result<Arc<RunnerHandle>, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
+        let result = self.with(key, Unit::start)?;
+        result.map_err(UnitMapError::UnitStart)
     }
 
     /// Stop the unit under `key`.
     ///
     /// Returns without waiting for the process to be gone; the unit keeps
     /// reporting its terminal state through [`state`](UnitMap::state).
-    pub fn stop(&self, key: &str) -> Result<()> {
+    pub fn stop<Q>(&self, key: &Q) -> Result<(), UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::stop)
     }
 
     /// Hand `event` to the unit under `key`, and report what it asks for.
-    pub fn dispatch(&self, key: &str, event: UnitEvent) -> Result<Option<UnitAction>> {
+    pub fn dispatch<Q>(&self, key: &Q, event: UnitEvent) -> Result<Option<UnitAction>, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, |unit| Unit::dispatch(unit, event))
     }
 
     /// Everything that can be asked of the unit under `key` right now.
-    pub fn choices(&self, key: &str, out: &mut Vec<UnitChoice>) -> Result<()> {
+    pub fn choices<Q>(&self, key: &Q, out: &mut Vec<UnitChoice>) -> Result<(), UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, |unit| Unit::choices(unit, out))
     }
 
     /// The handle for the current run of `key`, if it has one.
-    pub fn clone_handle(&self, key: &str) -> Result<Option<Arc<RunnerHandle>>> {
+    pub fn clone_handle<Q>(&self, key: &Q) -> Result<Option<Arc<RunnerHandle>>, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::clone_handle)
     }
 
     /// What the unit under `key` is called on screen.
-    pub fn name(&self, key: &str) -> Result<SmallStr> {
+    pub fn name<Q>(&self, key: &Q) -> Result<SmallStr, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::name)
     }
 
     /// The shorter name for the unit under `key`, if it declared one.
-    pub fn name_short(&self, key: &str) -> Result<Option<SmallStr>> {
+    pub fn name_short<Q>(&self, key: &Q) -> Result<Option<SmallStr>, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::name_short)
     }
 
     /// Which of its modes the unit under `key` is currently on, if it has any.
-    pub fn mode(&self, key: &str) -> Result<Option<SmallStr>> {
+    pub fn mode<Q>(&self, key: &Q) -> Result<Option<SmallStr>, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::mode)
     }
 
     /// That mode's short name, if it declared one.
-    pub fn mode_short(&self, key: &str) -> Result<Option<SmallStr>> {
+    pub fn mode_short<Q>(&self, key: &Q) -> Result<Option<SmallStr>, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::mode_short)
     }
 
@@ -110,17 +151,29 @@ impl UnitMap {
     /// [`Stopped`](RunnerState::Stopped) for a unit that was declared and
     /// never started — which is a different thing from a name that was never
     /// declared, and that is the error.
-    pub fn state(&self, key: &str) -> Result<RunnerState> {
+    pub fn state<Q>(&self, key: &Q) -> Result<RunnerState, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::state)
     }
 
     /// A new reader over the log of `key`.
-    pub fn log_reader(&self, key: &str) -> Option<LogReader> {
+    pub fn log_reader<Q>(&self, key: &Q) -> Option<LogReader>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.with(key, Unit::log_reader).ok()
     }
 
     /// Whether a unit was declared under `key`.
-    pub fn contains(&self, key: &str) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
         self.units.contains_key(key)
     }
 
@@ -130,7 +183,7 @@ impl UnitMap {
     /// order did not survive being put into one. A caller that shows these to
     /// a person has to impose an order of its own, or the same session will
     /// list itself differently on every render.
-    pub fn keys(&self) -> impl Iterator<Item = &SmallStr> {
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.units.keys()
     }
 
@@ -162,11 +215,14 @@ impl UnitMap {
     /// An unknown name is a mistake in a config or a command and not a state
     /// a unit can be in, so it is an error rather than a quiet no-op — said
     /// once, here, for every method.
-    fn with<T>(&self, key: &str, f: impl FnOnce(&Unit) -> T) -> Result<T> {
-        let unit = self
-            .units
-            .get(key)
-            .with_context(|| format!("no unit named `{key}`"))?;
+    fn with<Q, T>(&self, key: &Q, f: impl FnOnce(&Unit) -> T) -> Result<T, UnitMapError>
+    where
+        K: Borrow<Q> + Eq + Hash,
+        Q: Hash + Eq + ?Sized,
+    {
+        let Some(unit) = self.units.get(key) else {
+            return Err(UnitMapError::NotFound);
+        };
         Ok(f(unit))
     }
 }
@@ -176,7 +232,7 @@ mod test {
     use super::*;
 
     /// A map with `keys` declared, each running nothing.
-    fn map(keys: &[&str]) -> Arc<UnitMap> {
+    fn map(keys: &[&str]) -> Arc<UnitMap<SmallStr>> {
         let mut behaviors: HashMap<SmallStr, UnitBehavior> = HashMap::new();
         for key in keys {
             let key = SmallStr::from(*key);

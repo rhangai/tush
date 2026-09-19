@@ -6,28 +6,13 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 
 use crate::base::ExitReason;
+use crate::error::ProcessError;
 use crate::log::LogWriterRef;
 
 /// How long a graceful shutdown waits after `SIGTERM` before escalating to
 /// `SIGKILL`, in milliseconds. The same budget bounds the wait after the
 /// `SIGKILL`, so a process stuck in an uninterruptible wait cannot hang us.
 const SHUTDOWN_TIMER: u64 = 10_000;
-
-#[derive(thiserror::Error, Debug)]
-pub enum ProcessError {
-    #[error("empty process")]
-    Empty,
-    #[error("error spawning process: {0}")]
-    SpawnError(std::io::Error),
-    #[error("invalid stdout")]
-    InvalidStdout,
-    #[error("invalid stderr")]
-    InvalidStderr,
-    #[error("process was not running")]
-    NotRunning,
-    #[error("error killing process: {0}")]
-    KillError(std::io::Error),
-}
 
 /// A child process whose stdout is captured into a [`Log`](crate::log::Log).
 ///
@@ -171,9 +156,7 @@ impl Process {
         // `start_kill` is the non-unix fallback, where there is no group to
         // signal and only the leader can be reached.
         if !group::kill(pid) && reason.is_none() {
-            child
-                .start_kill()
-                .map_err(|err| ProcessError::KillError(err))?;
+            child.start_kill().map_err(ProcessError::KillError)?;
         }
         let reason = match reason {
             Some(reason) => reason,
@@ -340,9 +323,7 @@ impl ProcessInner {
                 let (child, writer_task) = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
                     command.stderr(Stdio::piped());
-                    let mut child = command
-                        .spawn()
-                        .map_err(|err| ProcessError::SpawnError(err))?;
+                    let mut child = command.spawn().map_err(ProcessError::SpawnError)?;
                     let stdout = child.stdout.take().ok_or(ProcessError::InvalidStdout)?;
                     let stderr = child.stderr.take().ok_or(ProcessError::InvalidStderr)?;
                     let writer_task = writer.consume_spawn_stderr(stdout, stderr);
@@ -350,9 +331,7 @@ impl ProcessInner {
                 } else {
                     command.stdout(Stdio::null());
                     command.stderr(Stdio::null());
-                    let child = command
-                        .spawn()
-                        .map_err(|err| ProcessError::SpawnError(err))?;
+                    let child = command.spawn().map_err(ProcessError::SpawnError)?;
                     (child, None)
                 };
                 let pid = child.id();

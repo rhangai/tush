@@ -3,6 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use parking_lot::Mutex;
 
+use crate::error::UnitError;
 use crate::unit::behavior::UnitBehaviorContext;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
@@ -98,7 +99,7 @@ impl Unit {
     }
 
     /// Run it, in whatever mode its behavior is on.
-    pub fn start(&self) -> anyhow::Result<Arc<RunnerHandle>> {
+    pub fn start(&self) -> Result<Arc<RunnerHandle>, UnitError> {
         let mut ctx = UnitBehaviorContext::new().with_writer(self.log.writer());
         if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
             ctx = ctx.with_event_dispatcher(event_dispatcher.clone());
@@ -124,7 +125,7 @@ impl Unit {
     ///
     /// Serializing it this way keeps two runs of the same unit from ever
     /// overlapping — no two dev servers fighting over the same port.
-    fn set_handle(&self, handle: RunnerHandle) -> anyhow::Result<Arc<RunnerHandle>> {
+    fn set_handle(&self, handle: RunnerHandle) -> Result<Arc<RunnerHandle>, UnitError> {
         let handle = Arc::new(handle);
         let old_handle = self.handle.swap(Some(handle.clone()));
         match old_handle {

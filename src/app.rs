@@ -17,6 +17,7 @@
 
 mod app;
 mod error;
+mod map;
 mod target;
 
 #[allow(unused_imports)]

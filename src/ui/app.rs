@@ -178,10 +178,16 @@ impl UiClient for UiApp {
     /// report back through, this is where it is written to.
     fn send(&self, command: UiCommand) {
         let units = self.app.units();
-        let _ = match command {
-            UiCommand::Start { key } => units.start(&key).map(|_| ()),
-            UiCommand::Stop { key } => units.stop(&key),
-            UiCommand::Dispatch { key, event } => self.app.dispatch(&key, event).map(|_| ()),
+        match command {
+            UiCommand::Start { key } => {
+                _ = units.start(&key);
+            }
+            UiCommand::Stop { key } => {
+                _ = units.stop(&key);
+            }
+            UiCommand::Dispatch { key, event } => {
+                _ = self.app.dispatch(&key, event);
+            }
         };
     }
 }

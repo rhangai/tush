@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use anyhow::Result;
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
@@ -11,12 +10,15 @@ use crossterm::{
 use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
-use crate::ui::{
-    client::{UiClient, UiCommand, UiUnit},
-    render::{Move, UiMenuChoice, UiRender},
-    theme::UiTheme,
-};
 use crate::util::str::SmallStr;
+use crate::{
+    error::UiError,
+    ui::{
+        client::{UiClient, UiCommand, UiUnit},
+        render::{Move, UiMenuChoice, UiRender},
+        theme::UiTheme,
+    },
+};
 
 /// How many lines one notch of the wheel moves the log: three, which is what
 /// a terminal scrolls by and so what a hand expects.
@@ -51,7 +53,7 @@ impl<C: UiClient> Ui<C> {
     /// The terminal is restored whatever the loop did, error path included —
     /// which is why the result is held rather than `?`-ed. A failure that
     /// leaves raw mode on is a failure you cannot read the message of.
-    pub async fn run(client: C, refresh: Duration, theme: UiTheme) -> Result<()> {
+    pub async fn run(client: C, refresh: Duration, theme: UiTheme) -> Result<(), UiError> {
         let mut ui = Self {
             client,
             render: UiRender::new(theme),
@@ -77,7 +79,11 @@ impl<C: UiClient> Ui<C> {
     /// Syncing at the top rather than after a key is what makes a command's
     /// effect visible: `send` returns before the session has acted on it, so
     /// the frame that shows the result is the next one through here.
-    async fn main_loop(&mut self, terminal: &mut DefaultTerminal, refresh: Duration) -> Result<()> {
+    async fn main_loop(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        refresh: Duration,
+    ) -> Result<(), UiError> {
         let mut events = EventStream::new();
         let mut ticks = tokio::time::interval(refresh);
 
@@ -87,11 +93,13 @@ impl<C: UiClient> Ui<C> {
             self.request_log();
             self.client.sync();
             self.clamp_log();
-            terminal.draw(|frame| self.render.draw(frame, &self.client))?;
+            terminal
+                .draw(|frame| self.render.draw(frame, &self.client))
+                .map_err(UiError::DrawError)?;
             tokio::select! {
                 _ = ticks.tick() => {}
                 event = events.next() => match event {
-                    Some(event) => self.handle(event?),
+                    Some(event) => self.handle(event.map_err(UiError::EventError)?),
                     // The terminal's input ended under us — a closed pty,
                     // usually. There is nobody left to draw for.
                     None => break,

@@ -41,6 +41,7 @@ mod app;
 mod base;
 mod cli;
 mod config;
+mod error;
 mod log;
 mod runner;
 mod ui;
@@ -95,5 +96,5 @@ async fn run(args: RunArgs) -> Result<()> {
 
     let result = Ui::run(UiApp::new(app.clone()), refresh, UiTheme::default()).await;
     app.units().shutdown().await;
-    result
+    Ok(result?)
 }
