@@ -3,10 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::runner::{
-    Runner,
-    state::{RunnerState, RunnerStateAtomic},
-};
+use crate::runner::{Runner, state::RunnerState};
 
 /// One run, supervised.
 ///
@@ -69,11 +66,7 @@ impl RunnerHandle {
         F: FnOnce(RunnerState) + Send + 'static,
     {
         let (state_sender, state_receiver) =
-            tokio::sync::watch::channel::<RunnerState>(if paused {
-                RunnerState::Waiting
-            } else {
-                RunnerState::Started
-            });
+            tokio::sync::watch::channel::<RunnerState>(RunnerState::Waiting);
 
         let start_notify = if paused {
             Some(Arc::new(Notify::new()))
@@ -91,16 +84,16 @@ impl RunnerHandle {
                 let mut exit = RunnerExit::new(state_sender, on_exit);
                 if let Some(notify) = notify {
                     notify.notified().await;
-                    exit.sender.send_modify(RunnerState::set_started);
                 }
+                exit.sender.send_modify(RunnerState::set_started);
                 let mut runner = runner;
                 // Eager check for cancelation
                 if abort_token.is_cancelled() {
                     exit.finish(RunnerState::Killed(None));
                     return;
                 }
-                exit.sender.send_modify(RunnerState::set_running);
-                let runner_fut = runner.run();
+                let sender = exit.sender.clone();
+                let runner_fut = runner.run(move || sender.send_modify(RunnerState::set_running));
                 let exit_state = tokio::select! {
                     wait_result = runner_fut => {
                         wait_result.map_or(RunnerState::ExitError(None), |i| i.into())

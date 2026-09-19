@@ -77,14 +77,19 @@ impl<R: Runner> Runner for RunnerSerial<R> {
     /// A runner that returns `Err` — one that could not be started at all,
     /// rather than one that ran and failed — ends the sequence whatever the
     /// policy says. The policy weighs exit reasons, and that is not one.
-    async fn run(&mut self) -> Result<ExitReason> {
+    async fn run(&mut self, on_run: impl FnOnce() + Send + 'static) -> Result<ExitReason> {
         let mut failure = None;
+        let mut first_on_run = Some(on_run);
         for index in 0..self.runners.len() {
             // Published before the await, because the await is the only place
             // this can be cancelled, and after it there is nothing left to
             // tell `shutdown` where we were.
             self.running = Some(index);
-            let reason = self.runners[index].run().await;
+            let reason = if let Some(on_run) = first_on_run.take() {
+                self.runners[index].run(on_run).await
+            } else {
+                self.runners[index].run(|| {}).await
+            };
             // Cleared after it, for the same reason read the other way: this
             // runner is done, so it is not the one an abort should reach.
             // Nothing awaits between here and the next assignment, so there
