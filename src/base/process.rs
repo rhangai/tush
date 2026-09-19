@@ -1,7 +1,6 @@
 use std::num::NonZeroU8;
 use std::{process::Stdio, time::Duration};
 
-use anyhow::anyhow;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
@@ -13,6 +12,22 @@ use crate::log::LogWriterRef;
 /// `SIGKILL`, in milliseconds. The same budget bounds the wait after the
 /// `SIGKILL`, so a process stuck in an uninterruptible wait cannot hang us.
 const SHUTDOWN_TIMER: u64 = 10_000;
+
+#[derive(thiserror::Error, Debug)]
+pub enum ProcessError {
+    #[error("empty process")]
+    Empty,
+    #[error("error spawning process: {0}")]
+    SpawnError(std::io::Error),
+    #[error("invalid stdout")]
+    InvalidStdout,
+    #[error("invalid stderr")]
+    InvalidStderr,
+    #[error("process was not running")]
+    NotRunning,
+    #[error("error killing process: {0}")]
+    KillError(std::io::Error),
+}
 
 /// A child process whose stdout is captured into a [`Log`](crate::log::Log).
 ///
@@ -51,7 +66,7 @@ impl Process {
     }
 
     /// Create and immediately start a process piping its stdout into `writer`.
-    pub async fn spawn(command: Command, writer: LogWriterRef) -> anyhow::Result<Self> {
+    pub async fn spawn(command: Command, writer: LogWriterRef) -> Result<Self, ProcessError> {
         let mut child = Self::new(command, Some(writer));
         child.start().await?;
         Ok(child)
@@ -61,7 +76,7 @@ impl Process {
     ///
     /// Spawning an already running process is a no-op; spawning a consumed one
     /// is an error.
-    pub async fn start(&mut self) -> anyhow::Result<()> {
+    pub async fn start(&mut self) -> Result<(), ProcessError> {
         self.inner.start()
     }
 
@@ -70,7 +85,7 @@ impl Process {
     /// Errors if the process was never started. A failed `wait` is reported as
     /// [`ExitReason::Error(None)`](ExitReason::Error) rather than an `Err`,
     /// since the process is gone either way.
-    pub async fn wait(&mut self) -> anyhow::Result<ExitReason> {
+    pub async fn wait(&mut self) -> Result<ExitReason, ProcessError> {
         if let ProcessInner::Running { child, .. } = &mut self.inner {
             let wait_result = child.wait().await;
             self.writer_wait().await;
@@ -82,14 +97,14 @@ impl Process {
                 Err(_) => ExitReason::Error(None),
             })
         } else {
-            Err(anyhow!("Child is not running"))
+            Err(ProcessError::NotRunning)
         }
     }
 
     /// Kills the process.
     ///
     /// `SIGKILL`s the whole group and waits for it to be empty.
-    pub async fn kill(&mut self) -> anyhow::Result<ExitReason> {
+    pub async fn kill(&mut self) -> Result<ExitReason, ProcessError> {
         self.kill_inner(false).await
     }
 
@@ -97,7 +112,7 @@ impl Process {
     ///
     /// `SIGTERM`s the whole group and gives it [`SHUTDOWN_TIMER`] ms to drain;
     /// whatever is left over is then `SIGKILL`ed as in [`Process::kill`].
-    pub async fn shutdown(&mut self) -> anyhow::Result<ExitReason> {
+    pub async fn shutdown(&mut self) -> Result<ExitReason, ProcessError> {
         let reason = self.kill_inner(true).await?;
         self.writer_wait().await;
         Ok(reason)
@@ -124,9 +139,9 @@ impl Process {
     /// [`ExitReason`] is the leader's, since that is the one the runner shows —
     /// a leader that had already exited keeps its real status, so a clean exit
     /// stays [`ExitReason::Success`] rather than becoming `Killed`.
-    async fn kill_inner(&mut self, shutdown_gracefully: bool) -> anyhow::Result<ExitReason> {
+    async fn kill_inner(&mut self, shutdown_gracefully: bool) -> Result<ExitReason, ProcessError> {
         let ProcessInner::Running { child, pid, .. } = &mut self.inner else {
-            return Err(anyhow!("Process was not running"));
+            return Err(ProcessError::NotRunning);
         };
         let pid = *pid;
         let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_TIMER);
@@ -156,7 +171,9 @@ impl Process {
         // `start_kill` is the non-unix fallback, where there is no group to
         // signal and only the leader can be reached.
         if !group::kill(pid) && reason.is_none() {
-            child.start_kill()?;
+            child
+                .start_kill()
+                .map_err(|err| ProcessError::KillError(err))?;
         }
         let reason = match reason {
             Some(reason) => reason,
@@ -309,10 +326,10 @@ impl ProcessInner {
     /// The child gets its own process group so signals can be delivered to the
     /// whole tree, and the stdout pump runs detached: it ends by itself when
     /// the pipe closes.
-    pub fn start(&mut self) -> anyhow::Result<()> {
+    pub fn start(&mut self) -> Result<(), ProcessError> {
         let old = std::mem::replace(self, ProcessInner::Empty);
         match old {
-            ProcessInner::Empty => Err(anyhow!("Empty")),
+            ProcessInner::Empty => Err(ProcessError::Empty),
             ProcessInner::Running { .. } => Ok(()),
             ProcessInner::Setup {
                 mut command,
@@ -323,21 +340,19 @@ impl ProcessInner {
                 let (child, writer_task) = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
                     command.stderr(Stdio::piped());
-                    let mut child = command.spawn()?;
-                    let stdout = child
-                        .stdout
-                        .take()
-                        .ok_or(anyhow!("stdout should be piped after Stdio::piped()"))?;
-                    let stderr = child
-                        .stderr
-                        .take()
-                        .ok_or(anyhow!("stderr should be piped after Stdio::piped()"))?;
+                    let mut child = command
+                        .spawn()
+                        .map_err(|err| ProcessError::SpawnError(err))?;
+                    let stdout = child.stdout.take().ok_or(ProcessError::InvalidStdout)?;
+                    let stderr = child.stderr.take().ok_or(ProcessError::InvalidStderr)?;
                     let writer_task = writer.consume_spawn_stderr(stdout, stderr);
                     (child, Some(writer_task))
                 } else {
                     command.stdout(Stdio::null());
                     command.stderr(Stdio::null());
-                    let child = command.spawn()?;
+                    let child = command
+                        .spawn()
+                        .map_err(|err| ProcessError::SpawnError(err))?;
                     (child, None)
                 };
                 let pid = child.id();
