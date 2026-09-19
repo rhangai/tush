@@ -3,6 +3,8 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use parking_lot::Mutex;
 
+use crate::unit::behavior::UnitBehaviorContext;
+use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
     log::{Log, LogReader, LogWriterNotes},
@@ -29,6 +31,8 @@ pub struct Unit {
     behavior: Mutex<UnitBehavior>,
     /// The current run, or `None` before the first.
     handle: ArcSwapOption<RunnerHandle>,
+    /// Event dispatcher
+    event_dispatcher: Option<EventDispatcher>,
 }
 
 impl Unit {
@@ -41,7 +45,13 @@ impl Unit {
             log_notes,
             behavior: Mutex::new(behavior),
             handle: ArcSwapOption::const_empty(),
+            event_dispatcher: None,
         }
+    }
+
+    /// Set the event dispatcher
+    pub fn set_event_dispatcher(&mut self, event_dispatcher: EventDispatcher) {
+        self.event_dispatcher = Some(event_dispatcher);
     }
 
     /// Dump the log to stdout, for working on the log itself.
@@ -89,7 +99,11 @@ impl Unit {
 
     /// Run it, in whatever mode its behavior is on.
     pub fn start(&self) -> anyhow::Result<Arc<RunnerHandle>> {
-        let handle = self.behavior.lock().spawn(Some(self.log.writer()))?;
+        let mut ctx = UnitBehaviorContext::new().with_writer(self.log.writer());
+        if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
+            ctx = ctx.with_event_dispatcher(event_dispatcher.clone());
+        }
+        let handle = self.behavior.lock().spawn(ctx)?;
         self.set_handle(handle)
     }
 

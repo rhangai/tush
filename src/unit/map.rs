@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 
+use crate::util::event::{EventDispatcher, EventListener};
 use crate::util::str::SmallStr;
 use crate::{
     log::LogReader,
@@ -23,16 +24,29 @@ use crate::{
 pub struct UnitMap {
     /// The units, by name.
     units: HashMap<SmallStr, Unit>,
+    /// Event dispatcher
+    event_dispatcher: EventDispatcher,
 }
 
 impl UnitMap {
     /// A map holding one unit per behavior.
     pub fn new(behaviors: HashMap<SmallStr, UnitBehavior>) -> Arc<Self> {
         let mut units: HashMap<SmallStr, Unit> = HashMap::new();
+        let event_dispatcher = EventDispatcher::new();
         for (key, behavior) in behaviors {
-            units.insert(key, Unit::new(behavior));
+            let mut unit = Unit::new(behavior);
+            unit.set_event_dispatcher(event_dispatcher.clone());
+            units.insert(key, unit);
         }
-        Arc::new(Self { units })
+        Arc::new(Self {
+            units,
+            event_dispatcher,
+        })
+    }
+
+    /// Create the listener
+    pub fn create_listener(&self) -> EventListener {
+        self.event_dispatcher.create_listener()
     }
 
     /// Start the unit under `key`, using its own behavior.
