@@ -33,6 +33,8 @@ pub enum RunnerError {
 pub enum UnitError {
     #[error("unit not found")]
     Invalid,
+    #[error("unit already started")]
+    AlreadyStarted,
     #[error("unit not found")]
     Runner(RunnerError),
 }

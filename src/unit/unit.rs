@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use arc_swap::ArcSwapOption;
 use parking_lot::Mutex;
 
 use crate::error::UnitError;
@@ -31,7 +30,7 @@ pub struct Unit {
     /// What it runs, behind a lock because a dispatch may change it.
     behavior: Mutex<UnitBehavior>,
     /// The current run, or `None` before the first.
-    handle: ArcSwapOption<RunnerHandle>,
+    handle: Mutex<Option<Arc<RunnerHandle>>>,
     /// Event dispatcher
     event_dispatcher: Option<EventDispatcher>,
 }
@@ -45,7 +44,7 @@ impl Unit {
             log,
             log_notes,
             behavior: Mutex::new(behavior),
-            handle: ArcSwapOption::const_empty(),
+            handle: Mutex::new(None),
             event_dispatcher: None,
         }
     }
@@ -101,17 +100,34 @@ impl Unit {
 
     /// Run it, in whatever mode its behavior is on.
     pub fn start(&self) -> Result<Arc<RunnerHandle>, UnitError> {
-        let mut ctx = UnitBehaviorContext::new().with_writer(self.log.writer());
-        if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
-            ctx = ctx.with_event_dispatcher(event_dispatcher.clone());
-        }
-        let handle = self.behavior.lock().spawn(ctx)?;
-        self.set_handle(handle)
+        let handle = self.spawn()?;
+        self.modify_handle(|_| Ok(handle))
+    }
+
+    /// Ensure the unit is started
+    pub fn ensure_started(&self) -> Result<Arc<RunnerHandle>, UnitError> {
+        self.modify_handle(|h| {
+            if h.is_none() {
+                let handle = self.spawn()?;
+                Ok(handle)
+            } else {
+                Err(UnitError::AlreadyStarted)
+            }
+        })
     }
 
     /// The handle for the current run, if there is one.
     pub fn clone_handle(&self) -> Option<Arc<RunnerHandle>> {
-        self.handle.load_full()
+        self.handle.lock().clone()
+    }
+
+    /// Spawn the handler
+    fn spawn(&self) -> Result<RunnerHandle, UnitError> {
+        let mut ctx = UnitBehaviorContext::new().with_writer(self.log.writer());
+        if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
+            ctx = ctx.with_event_dispatcher(event_dispatcher.clone());
+        }
+        self.behavior.lock().spawn(ctx)
     }
 
     /// The restart handshake.
@@ -126,26 +142,37 @@ impl Unit {
     ///
     /// Serializing it this way keeps two runs of the same unit from ever
     /// overlapping — no two dev servers fighting over the same port.
-    fn set_handle(&self, handle: RunnerHandle) -> Result<Arc<RunnerHandle>, UnitError> {
-        let handle = Arc::new(handle);
-        let old_handle = self.handle.swap(Some(handle.clone()));
+    fn modify_handle(
+        &self,
+        modify: impl FnOnce(Option<&Arc<RunnerHandle>>) -> Result<RunnerHandle, UnitError>,
+    ) -> Result<Arc<RunnerHandle>, UnitError> {
+        let (old_handle, new_handle) = {
+            let mut lock = self.handle.lock();
+            let new_handle = Arc::new(modify(lock.as_ref())?);
+            let old_handle = {
+                let mut handle = Some(new_handle.clone());
+                std::mem::swap(&mut (*lock), &mut handle);
+                handle
+            };
+            (old_handle, new_handle)
+        };
         match old_handle {
             None => {
-                handle.start();
+                new_handle.start();
             }
             Some(old_handle) if old_handle.state().is_finished() => {
-                handle.start();
+                new_handle.start();
             }
             Some(old_handle) => {
                 old_handle.abort();
-                let handle = handle.clone();
+                let handle = new_handle.clone();
                 tokio::spawn(async move {
                     old_handle.wait().await;
                     handle.start();
                 });
             }
         }
-        Ok(handle)
+        Ok(new_handle)
     }
 
     /// Stop the current run.
@@ -153,7 +180,7 @@ impl Unit {
     /// Aborts the current run, if any, and returns without waiting for it.
     /// The handle stays in place so its terminal state remains observable.
     pub fn stop(&self) {
-        if let Some(handle) = self.handle.load().as_ref() {
+        if let Some(handle) = self.handle.lock().as_ref() {
             handle.abort();
         }
     }
@@ -163,7 +190,7 @@ impl Unit {
     /// [`Stopped`](RunnerState::Stopped) when the unit was never started.
     pub fn state(&self) -> RunnerState {
         self.handle
-            .load()
+            .lock()
             .as_ref()
             .map_or(RunnerState::Stopped, |s| s.state())
     }

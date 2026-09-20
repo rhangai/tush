@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::{app::unit_map::AppUnitMap, config::Config};
+use crate::{
+    app::{schedule::AppSchedule, unit_map::AppUnitMap},
+    config::Config,
+};
 
 /// A session that has been checked and is ready to be run.
 ///
@@ -28,10 +31,9 @@ impl App {
     /// also why a missing dependency does not prevent the cycle check: the
     /// edge is simply not added, so both kinds of problem come back together.
     pub fn new(config: &Config) -> Result<Self> {
-        let unit_map = AppUnitMap::new(config)?;
-        Ok(Self {
-            unit_map: Arc::new(unit_map),
-        })
+        let unit_map = Arc::new(AppUnitMap::new(config)?);
+        let schedule = AppSchedule::new(config, &unit_map)?;
+        Ok(Self { unit_map })
     }
 
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
