@@ -10,7 +10,6 @@ use crossterm::{
 use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
-use crate::app::AppUnitKey;
 use crate::{
     error::UiError,
     ui::{
@@ -18,6 +17,7 @@ use crate::{
         render::{Move, UiMenuChoice, UiRender},
         theme::UiTheme,
     },
+    unit::UnitKey,
 };
 
 /// How many lines one notch of the wheel moves the log: three, which is what
@@ -232,7 +232,7 @@ impl<C: UiClient> Ui<C> {
 
     /// Send the command `command` builds for the selected unit's key, if
     /// there is one selected.
-    fn send(&mut self, command: impl FnOnce(AppUnitKey) -> UiCommand) {
+    fn send(&mut self, command: impl FnOnce(UnitKey) -> UiCommand) {
         let Some(unit) = self.selected() else {
             return;
         };

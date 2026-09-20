@@ -26,7 +26,7 @@ pub use behavior::UnitBehavior;
 pub use dispatch::{UnitAction, UnitChoice, UnitEvent};
 
 #[allow(unused_imports)]
-pub use map::UnitMap;
+pub use map::{UnitKey, UnitMap};
 
 #[allow(unused_imports)]
 pub use unit::Unit;

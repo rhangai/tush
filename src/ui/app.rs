@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use crate::app::AppUnitKey;
 use crate::{
     app::App,
     log::{LogReader, LogRegion},
     runner::RunnerState,
     ui::client::{UiClient, UiCommand, UiLog, UiUnit},
-    unit::UnitChoice,
+    unit::{UnitChoice, UnitKey},
 };
 
 /// The one log a [`UiApp`] is following, and the last rectangle read out of it.
@@ -14,7 +13,7 @@ struct AppLog {
     /// Which unit it belongs to. A pane moving to another one throws this
     /// away rather than re-pointing it: the revision counted against one
     /// log's chunks means nothing against another's.
-    key: AppUnitKey,
+    unit_key: UnitKey,
     /// A reader over that unit's log, which is to say a mirror of it.
     reader: LogReader,
     /// The region last asked for.
@@ -103,15 +102,15 @@ impl UiClient for UiApp {
     /// The `Err` arm is unreachable — the keys came out of the map and the
     /// map cannot lose one — but skipping the row is cheaper than proving it.
     fn sync(&mut self) {
-        let units = self.app.unit_map();
+        let unit_map = self.app.unit_map();
         for unit in &mut self.units {
-            if let Ok(state) = units.state(unit.unit_key) {
+            if let Ok(state) = unit_map.state(unit.unit_key) {
                 unit.state = state;
             }
-            if let Ok(mode) = units.mode(unit.unit_key) {
+            if let Ok(mode) = unit_map.mode(unit.unit_key) {
                 unit.mode = mode;
             }
-            if let Ok(short) = units.mode_short(unit.unit_key) {
+            if let Ok(short) = unit_map.mode_short(unit.unit_key) {
                 unit.mode_short = short;
             }
         }
@@ -127,20 +126,20 @@ impl UiClient for UiApp {
     /// A new reader only when the unit changed. Resolving the region is
     /// [`sync`](UiClient::sync)'s job, so the lines and the states in one
     /// frame are taken at the same moment.
-    fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion) {
+    fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion) {
         let Some(key) = key else {
             self.log = None;
             return;
         };
         match &mut self.log {
-            Some(log) if log.key == key => log.wanted = region,
+            Some(log) if log.unit_key == key => log.wanted = region,
             _ => {
                 let Some(reader) = self.app.unit_map().log_reader(key) else {
                     self.log = None;
                     return;
                 };
                 self.log = Some(AppLog {
-                    key,
+                    unit_key: key,
                     reader,
                     region,
                     wanted: region,
@@ -164,7 +163,7 @@ impl UiClient for UiApp {
     ///
     /// The `Err` arm is a key the map does not hold, and the keys came out of
     /// the map — so it leaves `out` empty rather than failing.
-    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, key: UnitKey, out: &mut Vec<UnitChoice>) {
         let unit_map = self.app.unit_map();
         if unit_map.choices(key, out).is_err() {
             out.clear();

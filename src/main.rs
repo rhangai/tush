@@ -95,6 +95,6 @@ async fn run(args: RunArgs) -> Result<()> {
     let app = Arc::new(App::new(&config)?);
 
     let result = Ui::run(UiApp::new(app.clone()), refresh, UiTheme::default()).await;
-    app.unit_map().shutdown().await;
+    app.shutdown().await;
     Ok(result?)
 }

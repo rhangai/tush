@@ -6,7 +6,6 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{app::AppUnitKey, util::str::SmallStr};
 use crate::{
     ui::{
         render::{Move, room, set_clipped},
@@ -14,6 +13,7 @@ use crate::{
     },
     unit::{UnitChoice, UnitEvent},
 };
+use crate::{unit::UnitKey, util::str::SmallStr};
 
 /// What separates a verb from the mode it applies to.
 const VERB_GAP: &str = " ";
@@ -39,7 +39,7 @@ const CANCEL_GAP: u16 = 1;
 pub struct UiRenderMenuState {
     /// The unit it is open for, `None` when closed. Kept rather than re-read
     /// from the selection, which a resize can move underneath it.
-    unit_key: Option<AppUnitKey>,
+    unit_key: Option<UnitKey>,
     /// What that unit is called, for the title.
     title: SmallStr,
     /// The entries, kept across a close so the next open refills them.
@@ -70,7 +70,7 @@ impl UiRenderMenuState {
     /// run what the row was offering; failing that the first enabled entry,
     /// failing that the way out. Between them it never lands on a disabled
     /// row, so <kbd>Enter</kbd> is never a press that does nothing.
-    pub fn open(&mut self, key: AppUnitKey, title: SmallStr, items: Vec<UnitChoice>) {
+    pub fn open(&mut self, key: UnitKey, title: SmallStr, items: Vec<UnitChoice>) {
         self.cursor = items
             .iter()
             .position(|item| item.current && item.enabled)
@@ -157,7 +157,7 @@ impl UiRenderMenuState {
 /// Not an `Option`, because closing is an answer and not the absence of one.
 pub enum UiMenuChoice {
     /// Send this to the unit, and close.
-    Send { unit: AppUnitKey, event: UnitEvent },
+    Send { unit: UnitKey, event: UnitEvent },
     /// Close, and ask for nothing.
     Cancel,
 }

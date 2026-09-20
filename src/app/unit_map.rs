@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use smallvec::SmallVec;
-use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::{
     app::TARGET_SEPARATOR,
@@ -9,7 +8,7 @@ use crate::{
     error::{AppConfigError, AppError},
     log::LogReader,
     runner::RunnerState,
-    unit::{UnitAction, UnitBehavior, UnitChoice, UnitEvent, UnitMap},
+    unit::{UnitAction, UnitBehavior, UnitChoice, UnitEvent, UnitKey, UnitMap},
     util::{graph::DependencyGraph, str::SmallStr},
 };
 
@@ -17,30 +16,15 @@ use crate::{
 /// as.
 ///
 /// The layer over [`UnitMap`] that owns the interner, and so the only place a
-/// name becomes an [`AppUnitKey`]: everything above it — the screen, the
+/// name becomes an [`UnitKey`]: everything above it — the screen, the
 /// commands it sends — addresses a unit by key and never by text.
 pub struct AppUnitMap {
-    interner: DefaultStringInterner,
-    unit_map: Arc<UnitMap<DefaultSymbol>>,
-    dependency_graph: DependencyGraph<DefaultSymbol>,
+    unit_map: UnitMap,
+    dependency_graph: DependencyGraph<UnitKey>,
     groups: GroupHashMap,
 }
 
-/// How a unit is addressed once the config has been checked.
-///
-/// The interned key rather than the name it was interned from: a key is read
-/// out of a row, copied into a command and compared every frame, and a name
-/// there is a string to clone and hash where this is an integer.
-///
-/// The symbol is private, so every key that exists came from
-/// [`key`](AppUnitMap::key) or [`keys`](AppUnitMap::keys) — which is to say
-/// from the one interner it means anything against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AppUnitKey {
-    value: DefaultSymbol,
-}
-
-type GroupHashMap = HashMap<DefaultSymbol, SmallVec<[DefaultSymbol; 16]>>;
+type GroupHashMap = HashMap<SmallStr, SmallVec<[UnitKey; 16]>>;
 
 impl AppUnitMap {
     /// Check `config`, intern every key, and build a unit per proc.
@@ -49,30 +33,26 @@ impl AppUnitMap {
     /// [`AppConfigError::Errors`].
     pub fn new(config: &Config) -> Result<Self, AppConfigError> {
         let mut errors: Vec<AppConfigError> = Vec::new();
-        let mut interner: DefaultStringInterner = DefaultStringInterner::new();
+        let mut unit_map = UnitMap::with_capacity(16);
 
-        let dependency_graph = Self::build_dep_graph(&mut errors, &mut interner, config);
-        let mut behaviors: HashMap<DefaultSymbol, UnitBehavior> =
-            HashMap::with_capacity(config.procs.len());
+        let dependency_graph = Self::build_dep_graph(&mut errors, &mut unit_map, config);
         let mut groups: GroupHashMap = HashMap::new();
         for proc in &config.procs {
-            let Some(key) = interner.get(proc.key.as_ref()) else {
+            let Some(key) = unit_map.key(proc.key.as_ref()) else {
                 errors.push(AppConfigError::LogicErrorKey(proc.key.clone()));
                 continue;
             };
             let behavior = Self::build_behavior(proc);
             for group in &proc.groups {
-                let group_key = interner.get_or_intern(group.as_ref());
-                groups.entry(group_key).or_default().push(key);
+                groups.entry(group.clone()).or_default().push(key);
             }
-            behaviors.insert(key, behavior);
+            unit_map.insert(key, behavior);
         }
         if !errors.is_empty() {
             return Err(AppConfigError::Errors(errors));
         }
         Ok(Self {
-            interner,
-            unit_map: UnitMap::new(behaviors),
+            unit_map,
             dependency_graph,
             groups,
         })
@@ -81,10 +61,10 @@ impl AppUnitMap {
     /// Build the dependency graph, while validating
     fn build_dep_graph(
         errors: &mut Vec<AppConfigError>,
-        units_interner: &mut DefaultStringInterner,
+        unit_map: &mut UnitMap,
         config: &Config,
-    ) -> DependencyGraph<DefaultSymbol> {
-        let mut graph: DependencyGraph<DefaultSymbol> = DependencyGraph::new();
+    ) -> DependencyGraph<UnitKey> {
+        let mut graph: DependencyGraph<UnitKey> = DependencyGraph::new();
         for proc in &config.procs {
             if proc.key.contains(TARGET_SEPARATOR) {
                 errors.push(AppConfigError::ReservedCharacter {
@@ -103,16 +83,16 @@ impl AppUnitMap {
             if proc.run.is_some() && proc.modes.is_some() {
                 errors.push(AppConfigError::RunAndModes(proc.key.clone()));
             }
-            let key = units_interner.get_or_intern(proc.key.as_ref());
+            let key = unit_map.reserve(proc.key.as_ref());
             graph.insert(key);
         }
         for proc in &config.procs {
-            let Some(key) = units_interner.get(proc.key.as_ref()) else {
+            let Some(key) = unit_map.key(proc.key.as_ref()) else {
                 errors.push(AppConfigError::Unknown("key should exist in interner"));
                 continue;
             };
             for depends in &proc.depends {
-                let Some(depends_key) = units_interner.get(depends) else {
+                let Some(depends_key) = unit_map.key(depends) else {
                     errors.push(AppConfigError::UnknownDependency {
                         proc: proc.key.clone(),
                         depends: depends.clone(),
@@ -136,7 +116,7 @@ impl AppUnitMap {
         for cycle in resolved.cycles() {
             let mut cycle_procs = Vec::with_capacity(cycle.len());
             for key in cycle {
-                if let Some(key_str) = units_interner.resolve(*key) {
+                if let Some(key_str) = unit_map.key_str(*key) {
                     cycle_procs.push(SmallStr::new(key_str));
                 };
             }
@@ -172,57 +152,54 @@ impl AppUnitMap {
 
     /// The key `name` was interned as, if a proc was declared under it.
     ///
-    /// The one door from text to [`AppUnitKey`]: what comes off a command
+    /// The one door from text to [`UnitKey`]: what comes off a command
     /// line or out of a config is a name, and everything past here is a key.
-    pub fn key(&self, name: &str) -> Result<AppUnitKey, AppError> {
-        self.interner
-            .get(name)
-            .map(|value| AppUnitKey { value })
-            .ok_or_else(|| AppError::InvalidKey(name.into()))
+    pub fn key(&self, name: &str) -> Option<UnitKey> {
+        self.unit_map.key(name)
     }
 
-    pub fn start(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.unit_map.start(&key.value)?;
+    pub fn start(&self, key: UnitKey) -> Result<(), AppError> {
+        self.unit_map.start(key)?;
         Ok(())
     }
 
-    pub fn stop(&self, key: AppUnitKey) -> Result<(), AppError> {
-        Ok(self.unit_map.stop(&key.value)?)
+    pub fn stop(&self, key: UnitKey) -> Result<(), AppError> {
+        Ok(self.unit_map.stop(key)?)
     }
 
-    pub fn state(&self, key: AppUnitKey) -> Result<RunnerState, AppError> {
-        Ok(self.unit_map.state(&key.value)?)
+    pub fn state(&self, key: UnitKey) -> Result<RunnerState, AppError> {
+        Ok(self.unit_map.state(key)?)
     }
 
-    pub fn mode(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
-        Ok(self.unit_map.mode(&key.value)?)
+    pub fn mode(&self, key: UnitKey) -> Result<Option<SmallStr>, AppError> {
+        Ok(self.unit_map.mode(key)?)
     }
 
-    pub fn mode_short(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
-        Ok(self.unit_map.mode_short(&key.value)?)
+    pub fn mode_short(&self, key: UnitKey) -> Result<Option<SmallStr>, AppError> {
+        Ok(self.unit_map.mode_short(key)?)
     }
 
-    pub fn name(&self, key: AppUnitKey) -> Result<SmallStr, AppError> {
-        Ok(self.unit_map.name(&key.value)?)
+    pub fn name(&self, key: UnitKey) -> Result<SmallStr, AppError> {
+        Ok(self.unit_map.name(key)?)
     }
 
-    pub fn name_short(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
-        Ok(self.unit_map.name_short(&key.value)?)
+    pub fn name_short(&self, key: UnitKey) -> Result<Option<SmallStr>, AppError> {
+        Ok(self.unit_map.name_short(key)?)
     }
 
-    pub fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) -> Result<(), AppError> {
-        self.unit_map.choices(&key.value, out)?;
+    pub fn choices(&self, key: UnitKey, out: &mut Vec<UnitChoice>) -> Result<(), AppError> {
+        self.unit_map.choices(key, out)?;
         Ok(())
     }
 
-    pub fn log_reader(&self, key: AppUnitKey) -> Option<LogReader> {
-        self.unit_map.log_reader(&key.value)
+    pub fn log_reader(&self, key: UnitKey) -> Option<LogReader> {
+        self.unit_map.log_reader(key)
     }
 
     /// Every unit's key, in the `HashMap`'s order, which is to say in none —
     /// a caller showing these to a person has to impose one.
-    pub fn keys(&self) -> impl Iterator<Item = AppUnitKey> {
-        self.unit_map.keys().map(|k| AppUnitKey { value: *k })
+    pub fn keys(&self) -> impl Iterator<Item = UnitKey> {
+        self.unit_map.keys()
     }
 
     /// Hand `event` to the unit under `key` and carry out what it asks for.
@@ -230,17 +207,17 @@ impl AppUnitMap {
     /// The behavior decides, which is why this is not two methods: an event
     /// may move a unit onto another mode before the start it also asks for,
     /// and only the behavior can do that.
-    pub fn dispatch(&self, key: AppUnitKey, event: UnitEvent) -> anyhow::Result<()> {
-        let Some(action) = self.unit_map.dispatch(&key.value, event)? else {
+    pub fn dispatch(&self, key: UnitKey, event: UnitEvent) -> anyhow::Result<()> {
+        let Some(action) = self.unit_map.dispatch(key, event)? else {
             return Ok(());
         };
         match action {
             UnitAction::Start => {
-                _ = self.unit_map.start(&key.value)?;
+                _ = self.unit_map.start(key)?;
                 Ok(())
             }
             UnitAction::Stop => {
-                self.unit_map.stop(&key.value)?;
+                self.unit_map.stop(key)?;
                 Ok(())
             }
         }
