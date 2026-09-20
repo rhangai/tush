@@ -95,8 +95,14 @@ impl Unit {
     }
 
     /// Hand an event to the behavior, and take the action it asks for.
+    ///
+    /// The state is read before the lock rather than inside the call, because
+    /// `ensure_handle` takes `behavior` while holding `handle_manager`: holding
+    /// `behavior` while `state` waits for `handle_manager` is the other half of
+    /// a deadlock between the screen and the schedule.
     pub fn dispatch(&self, event: UnitEvent) -> Option<UnitAction> {
-        self.behavior.lock().dispatch(event, self.state())
+        let state = self.state();
+        self.behavior.lock().dispatch(event, state)
     }
 
     /// Everything that can be asked of this unit right now.
