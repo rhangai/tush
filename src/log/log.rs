@@ -16,6 +16,7 @@ use crate::{
     },
 };
 use parking_lot::Mutex;
+use smallvec::SmallVec;
 use tokio::{io::AsyncRead, task::JoinHandle};
 use unicode_width::UnicodeWidthChar;
 
@@ -777,8 +778,13 @@ impl Partials {
     /// By version, because slots are reused in whatever order they came free,
     /// and a list that reorders itself under a reader is a list nobody can
     /// follow.
+    ///
+    /// Inline to [`PARTIALS_MAX`], the number of slots there are to sort: a
+    /// `Vec` here allocated once per sync of a log with a line in flight, under
+    /// the lock every writer needs.
     fn taken(&self) -> impl Iterator<Item = &Partial> {
-        let mut taken: Vec<&Partial> = self.lines.iter().filter(|line| line.is_taken()).collect();
+        let mut taken: SmallVec<[&Partial; PARTIALS_MAX]> =
+            self.lines.iter().filter(|line| line.is_taken()).collect();
         taken.sort_by_key(|line| line.version);
         taken.into_iter()
     }
