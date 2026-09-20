@@ -46,6 +46,7 @@ impl EventDispatcher {
 }
 
 /// The receiving half, one per thing that redraws.
+#[derive(Clone)]
 pub struct EventListener {
     receiver: tokio::sync::watch::Receiver<()>,
 }

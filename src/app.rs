@@ -17,6 +17,7 @@
 //! the first place any of them can even be asked.
 
 mod app;
+mod schedule;
 mod target;
 mod unit_map;
 

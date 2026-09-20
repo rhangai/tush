@@ -1,15 +1,22 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use smallvec::SmallVec;
 
 use crate::{
     app::TARGET_SEPARATOR,
     config::{Config, ConfigProc},
-    error::{AppConfigError, AppError},
+    error::{AppConfigError, AppError, UnitMapError},
     log::LogReader,
     runner::RunnerState,
     unit::{UnitAction, UnitBehavior, UnitChoice, UnitEvent, UnitKey, UnitMap},
-    util::{graph::DependencyGraph, str::SmallStr},
+    util::{
+        event::{EventDispatcher, EventListener},
+        graph::{DependencyGraph, DependencyOrder},
+        str::SmallStr,
+    },
 };
 
 /// Every proc of a checked config, as a unit, under the key it was interned
@@ -21,10 +28,11 @@ use crate::{
 pub struct AppUnitMap {
     unit_map: UnitMap,
     dependency_graph: DependencyGraph<UnitKey>,
-    groups: GroupHashMap,
+    dependencies: HashMap<UnitKey, UnitKeyVec>,
+    groups: HashMap<SmallStr, UnitKeyVec>,
 }
 
-type GroupHashMap = HashMap<SmallStr, SmallVec<[UnitKey; 16]>>;
+type UnitKeyVec = SmallVec<[UnitKey; 16]>;
 
 impl AppUnitMap {
     /// Check `config`, intern every key, and build a unit per proc.
@@ -36,7 +44,7 @@ impl AppUnitMap {
         let mut unit_map = UnitMap::with_capacity(16);
 
         let dependency_graph = Self::build_dep_graph(&mut errors, &mut unit_map, config);
-        let mut groups: GroupHashMap = HashMap::new();
+        let mut groups: HashMap<SmallStr, UnitKeyVec> = HashMap::new();
         for proc in &config.procs {
             let Some(key) = unit_map.key(proc.key.as_ref()) else {
                 errors.push(AppConfigError::LogicErrorKey(proc.key.clone()));
@@ -51,9 +59,17 @@ impl AppUnitMap {
         if !errors.is_empty() {
             return Err(AppConfigError::Errors(errors));
         }
+        let mut dependencies: HashMap<UnitKey, UnitKeyVec> = HashMap::new();
+        for key in unit_map.keys() {
+            let deps: UnitKeyVec = dependency_graph.dependencies_copy(key).collect();
+            if !deps.is_empty() {
+                dependencies.insert(key, deps);
+            }
+        }
         Ok(Self {
             unit_map,
             dependency_graph,
+            dependencies,
             groups,
         })
     }
@@ -163,6 +179,11 @@ impl AppUnitMap {
         Ok(())
     }
 
+    pub fn ensure_started(&self, key: UnitKey) -> Result<(), AppError> {
+        self.unit_map.ensure_started(key)?;
+        Ok(())
+    }
+
     pub fn stop(&self, key: UnitKey) -> Result<(), AppError> {
         Ok(self.unit_map.stop(key)?)
     }
@@ -202,25 +223,45 @@ impl AppUnitMap {
         self.unit_map.keys()
     }
 
+    /// Write resolved into the hashset
+    pub fn write_resolved(&self, resolved: &mut HashSet<UnitKey>) {
+        self.unit_map.write_resolved(resolved);
+    }
+
+    /// Write resolved into the hashset
+    pub fn direct_dependencies(&self, key: UnitKey) -> Option<&UnitKeyVec> {
+        self.dependencies.get(&key)
+    }
+
+    /// Get the group
+    pub fn group(&self, group: &str) -> Option<&UnitKeyVec> {
+        self.groups.get(group)
+    }
+
+    /// Write resolved into the hashset
+    pub fn resolve_dependency_chain(&self, keys: &[UnitKey]) -> DependencyOrder<UnitKey> {
+        self.dependency_graph.resolve_from_many(keys)
+    }
+
+    pub fn create_listener(&self) -> EventListener {
+        self.unit_map.create_listener()
+    }
+
+    pub fn event_dispatcher(&self) -> &EventDispatcher {
+        self.unit_map.event_dispatcher()
+    }
+
     /// Hand `event` to the unit under `key` and carry out what it asks for.
     ///
     /// The behavior decides, which is why this is not two methods: an event
     /// may move a unit onto another mode before the start it also asks for,
     /// and only the behavior can do that.
-    pub fn dispatch(&self, key: UnitKey, event: UnitEvent) -> anyhow::Result<()> {
-        let Some(action) = self.unit_map.dispatch(key, event)? else {
-            return Ok(());
-        };
-        match action {
-            UnitAction::Start => {
-                _ = self.unit_map.start(key)?;
-                Ok(())
-            }
-            UnitAction::Stop => {
-                self.unit_map.stop(key)?;
-                Ok(())
-            }
-        }
+    pub fn dispatch(
+        &self,
+        key: UnitKey,
+        event: UnitEvent,
+    ) -> Result<Option<UnitAction>, UnitMapError> {
+        self.unit_map.dispatch(key, event)
     }
 
     pub async fn shutdown(&self) {

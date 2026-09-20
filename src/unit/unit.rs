@@ -122,6 +122,11 @@ impl Unit {
         self.handle.lock().runner_handle.clone()
     }
 
+    /// Check if resolved
+    pub fn resolved(&self) -> bool {
+        self.handle.lock().resolved
+    }
+
     /// Spawn the handler
     fn spawn(&self) -> Result<RunnerHandle, UnitError> {
         let mut ctx = UnitBehaviorContext::new().with_writer(self.log.writer());

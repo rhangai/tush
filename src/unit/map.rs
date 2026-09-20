@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::hash::Hash;
 use std::{collections::HashMap, sync::Arc};
 
@@ -82,7 +83,9 @@ impl UnitMap {
 
     /// Add a new unit
     pub fn insert(&mut self, key: UnitKey, behavior: UnitBehavior) {
-        self.units.insert(key.value, Unit::new(behavior));
+        let mut unit = Unit::new(behavior);
+        unit.set_event_dispatcher(self.event_dispatcher.clone());
+        self.units.insert(key.value, unit);
     }
 
     /// Reserve a key
@@ -110,6 +113,10 @@ impl UnitMap {
         self.event_dispatcher.create_listener()
     }
 
+    pub fn event_dispatcher(&self) -> &EventDispatcher {
+        &self.event_dispatcher
+    }
+
     /// Start the unit under `key`, using its own behavior.
     ///
     /// Restarts it if it was already running: see
@@ -117,6 +124,11 @@ impl UnitMap {
     /// before the new one begins.
     pub fn start(&self, key: UnitKey) -> Result<Arc<RunnerHandle>, UnitMapError> {
         let result = self.with(key, Unit::start)?;
+        result.map_err(UnitMapError::UnitStart)
+    }
+
+    pub fn ensure_started(&self, key: UnitKey) -> Result<Arc<RunnerHandle>, UnitMapError> {
+        let result = self.with(key, Unit::ensure_started)?;
         result.map_err(UnitMapError::UnitStart)
     }
 
@@ -194,6 +206,16 @@ impl UnitMap {
     /// list itself differently on every render.
     pub fn keys(&self) -> impl Iterator<Item = UnitKey> {
         self.units.keys().map(|k| UnitKey { value: *k })
+    }
+
+    /// Write
+    pub fn write_resolved(&self, resolved: &mut HashSet<UnitKey>) {
+        resolved.clear();
+        for (key, unit) in &self.units {
+            if unit.resolved() {
+                resolved.insert(UnitKey { value: *key });
+            }
+        }
     }
 
     /// Stop every unit, and wait until each one is really gone.

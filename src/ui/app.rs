@@ -177,16 +177,15 @@ impl UiClient for UiApp {
     /// keys came out of the map. When the session gets a channel to
     /// report back through, this is where it is written to.
     fn send(&self, command: UiCommand) {
-        let units = self.app.unit_map();
         match command {
             UiCommand::Start { key } => {
-                _ = units.start(key);
+                self.app.schedule(key);
             }
             UiCommand::Stop { key } => {
-                _ = units.stop(key);
+                self.app.stop(key);
             }
             UiCommand::Dispatch { key, event } => {
-                _ = units.dispatch(key, event);
+                _ = self.app.dispatch(key, event);
             }
         };
     }

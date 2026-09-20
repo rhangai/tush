@@ -54,10 +54,11 @@ mod ui;
 mod unit;
 mod util;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Result, bail};
 use clap::Parser;
+use tokio::time::sleep;
 
 use crate::{
     app::App,
@@ -93,6 +94,23 @@ async fn run(args: RunArgs) -> Result<()> {
 
     let config = Config::from_path(&args.session.config)?;
     let app = Arc::new(App::new(&config)?);
+    {
+        let app = app.clone();
+        tokio::spawn(async move { app.run().await });
+    }
+
+    for target in args.session.targets {
+        match target {
+            app::Target::Unit(unit) => {
+                if let Some(key) = app.unit_map().key(unit.as_ref()) {
+                    app.schedule(key);
+                };
+            }
+            app::Target::Group(group) => {
+                app.schedule_group(group.as_ref());
+            }
+        }
+    }
 
     let result = Ui::run(UiApp::new(app.clone()), refresh, UiTheme::default()).await;
     app.shutdown().await;
