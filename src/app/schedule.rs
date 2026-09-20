@@ -131,9 +131,8 @@ impl AppSchedule {
                 for remove in &remove {
                     lock.remove(remove);
                 }
+                remove.clear();
             }
         }
     }
 }
-
-struct AppScheduleRunner {}
