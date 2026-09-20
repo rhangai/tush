@@ -18,6 +18,8 @@ use crate::{
 pub struct App {
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
     unit_map: Arc<AppUnitMap>,
+    /// Holds the starts that cannot happen yet, and performs them when they
+    /// can — see [`AppSchedule`].
     schedule: AppSchedule,
 }
 
@@ -43,23 +45,31 @@ impl App {
         &self.unit_map
     }
 
-    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    /// Ask for a proc to start, once what it depends on is up.
+    ///
+    /// Returns before any of that has happened: what actually starts it is
+    /// [`run`](App::run), on its own task.
     pub fn schedule(&self, key: UnitKey) {
         self.schedule.schedule(key);
     }
 
-    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    /// Stop a proc, without waiting for it to be gone.
+    ///
+    /// The `Err` is a key no unit was declared under, and the keys come from
+    /// the map, so there is nothing for a caller to do with it.
     pub fn stop(&self, key: UnitKey) {
         _ = self.unit_map.stop(key);
     }
 
-    /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
+    /// [`schedule`](App::schedule) for every proc of a group.
     pub fn schedule_group(&self, group: &str) {
         self.schedule.schedule_group(group);
     }
 
-    /// Stop every proc and wait until each one is really gone — see
-    /// [`UnitMap::shutdown`](crate::unit::UnitMap::shutdown).
+    /// Drive the schedule for as long as the session lasts.
+    ///
+    /// Spawn it; it does not return on its own, and nothing that was
+    /// scheduled starts until it is running.
     pub async fn run(&self) {
         self.schedule.run().await;
     }
@@ -75,6 +85,10 @@ impl App {
     /// The behavior decides, which is why this is not two methods: an event
     /// may move a unit onto another mode before the start it also asks for,
     /// and only the behavior can do that.
+    ///
+    /// Carrying it out belongs here rather than in [`AppUnitMap`], which
+    /// cannot reach the schedule: a start it asks for is a start in
+    /// dependency order like any other.
     pub fn dispatch(&self, key: UnitKey, event: UnitEvent) -> anyhow::Result<()> {
         let Some(action) = self.unit_map().dispatch(key, event)? else {
             return Ok(());

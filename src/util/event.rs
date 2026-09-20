@@ -46,6 +46,10 @@ impl EventDispatcher {
 }
 
 /// The receiving half, one per thing that redraws.
+///
+/// `Clone` because [`changed`](EventListener::changed) needs `&mut`: a holder
+/// that keeps a listener in a field waits on a clone of it, and a clone comes
+/// up to date as of the moment it was taken.
 #[derive(Clone)]
 pub struct EventListener {
     receiver: tokio::sync::watch::Receiver<()>,

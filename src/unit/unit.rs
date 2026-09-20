@@ -20,9 +20,11 @@ use crate::{
 /// unit, so restarting a process keeps its scrollback intact and readers do not
 /// have to re-subscribe.
 ///
-/// The current handle lives in an [`ArcSwapOption`] so that
-/// [`state`](Unit::state) and [`stop`](Unit::stop) can be called from any task
-/// without locking, including while a restart is in flight.
+/// The current handle shares one lock with the flag saying whether a run has
+/// ever finished, because a restart changes both — see [`UnitCurrentHandle`].
+/// Nothing is awaited while it is held, so [`state`](Unit::state) and
+/// [`stop`](Unit::stop) can be called from any task, a restart in flight
+/// included.
 pub struct Unit {
     /// The output of every run, kept across all of them.
     log: Log,
@@ -30,9 +32,13 @@ pub struct Unit {
     log_notes: LogWriterNotes,
     /// What it runs, behind a lock because a dispatch may change it.
     behavior: Mutex<UnitBehavior>,
-    /// Event dispatcher
+    /// Whom to wake when a run resolves. `None` for a unit built on its own
+    /// rather than through a [`UnitMap`](crate::unit::UnitMap), which is the
+    /// only thing that has a dispatcher to give.
     event_dispatcher: Option<EventDispatcher>,
-    /// Where the unit is resolved
+    /// The current run and whether one has ever finished — see
+    /// [`UnitCurrentHandle`]. Behind an [`Arc`] because the task that waits
+    /// on a run holds a [`Weak`] to it and must not keep the unit alive.
     handle: Arc<Mutex<UnitCurrentHandle>>,
 }
 
@@ -50,7 +56,8 @@ impl Unit {
         }
     }
 
-    /// Set the event dispatcher
+    /// While the unit is still being built: `&mut self`, and
+    /// [`UnitMap::insert`](crate::unit::UnitMap::insert) is where it happens.
     pub fn set_event_dispatcher(&mut self, event_dispatcher: EventDispatcher) {
         self.event_dispatcher = Some(event_dispatcher);
     }
@@ -105,7 +112,11 @@ impl Unit {
         self.modify_handle(|_| Ok(handle))
     }
 
-    /// Ensure the unit is started
+    /// Start it only if it has never been started.
+    ///
+    /// [`AlreadyStarted`](UnitError::AlreadyStarted) is how "there was
+    /// nothing to do" comes back, so a caller that only wanted it running
+    /// drops the error rather than reporting it.
     pub fn ensure_started(&self) -> Result<Arc<RunnerHandle>, UnitError> {
         self.modify_handle(|h| {
             if h.is_none() {
@@ -122,12 +133,16 @@ impl Unit {
         self.handle.lock().runner_handle.clone()
     }
 
-    /// Check if resolved
+    /// Whether a run of this unit has ever reached the end.
+    ///
+    /// What anything depending on this unit waits for. It stays true once
+    /// set: a later restart does not put the dependents back on hold.
     pub fn resolved(&self) -> bool {
         self.handle.lock().resolved
     }
 
-    /// Spawn the handler
+    /// A run of the current mode, wired to this unit's log and, if it has
+    /// one, its dispatcher.
     fn spawn(&self) -> Result<RunnerHandle, UnitError> {
         let mut ctx = UnitBehaviorContext::new().with_writer(self.log.writer());
         if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
@@ -249,8 +264,19 @@ impl Drop for Unit {
     }
 }
 
+/// The current run and whether one has ever finished, under one lock.
+///
+/// Together because a restart has to swap the handle and read the flag in the
+/// same breath. Each run is waited on by a task that outlives it, and an
+/// aborted run finishes too — so without `handle_id` the waiter of a run that
+/// was killed and replaced would mark the unit resolved, and everything
+/// depending on it would start on the strength of a run that never completed.
 struct UnitCurrentHandle {
+    /// Which run is current. A waiter carries the id it was spawned with, and
+    /// may only resolve the unit while the two still agree.
     handle_id: NonZeroU32,
+    /// Never cleared: the unit is resolved from the first run that finishes
+    /// onwards, restarts included.
     resolved: bool,
     runner_handle: Option<Arc<RunnerHandle>>,
 }
@@ -279,6 +305,13 @@ impl UnitCurrentHandle {
         }
     }
 
+    /// Resolve the unit once `runner_handle` finishes, unless it has been
+    /// replaced by then.
+    ///
+    /// `false` where there is nothing left to resolve — the unit is gone, or
+    /// the wait was cut short. `skip_initial_check` is for the caller that
+    /// has just read `resolved` under the lock itself, so the same answer is
+    /// not fetched twice.
     async fn wait_for_resolved(
         unit: Weak<Mutex<UnitCurrentHandle>>,
         handle_id: NonZeroU32,

@@ -28,6 +28,9 @@ use crate::{
 pub struct AppUnitMap {
     unit_map: UnitMap,
     dependency_graph: DependencyGraph<UnitKey>,
+    /// What each unit depends on directly, answered once here because the
+    /// schedule asks it for every pending unit on every wake. Only units that
+    /// depend on something are in it.
     dependencies: HashMap<UnitKey, UnitKeyVec>,
     groups: HashMap<SmallStr, UnitKeyVec>,
 }
@@ -179,6 +182,8 @@ impl AppUnitMap {
         Ok(())
     }
 
+    /// Start `key` if it has never been started, and leave it alone
+    /// otherwise — unlike [`start`](AppUnitMap::start), which restarts it.
     pub fn ensure_started(&self, key: UnitKey) -> Result<(), AppError> {
         self.unit_map.ensure_started(key)?;
         Ok(())
@@ -223,22 +228,29 @@ impl AppUnitMap {
         self.unit_map.keys()
     }
 
-    /// Write resolved into the hashset
+    /// Fill `resolved` with every unit that has run to the end at least once.
+    ///
+    /// Clears it first and takes it by reference, so the loop that asks on
+    /// every wake keeps one set instead of building a new one each time.
     pub fn write_resolved(&self, resolved: &mut HashSet<UnitKey>) {
         self.unit_map.write_resolved(resolved);
     }
 
-    /// Write resolved into the hashset
+    /// What `key` must wait for, one edge out.
+    ///
+    /// `None` is "nothing to wait for" — both a unit that depends on nothing
+    /// and a key no unit was declared under, which want the same answer.
     pub fn direct_dependencies(&self, key: UnitKey) -> Option<&UnitKeyVec> {
         self.dependencies.get(&key)
     }
 
-    /// Get the group
+    /// Every unit declared under a group name, or `None` if none was.
     pub fn group(&self, group: &str) -> Option<&UnitKeyVec> {
         self.groups.get(group)
     }
 
-    /// Write resolved into the hashset
+    /// Everything `keys` need, transitively, in an order that starts them —
+    /// see [`resolve_from_many`](DependencyGraph::resolve_from_many).
     pub fn resolve_dependency_chain(&self, keys: &[UnitKey]) -> DependencyOrder<UnitKey> {
         self.dependency_graph.resolve_from_many(keys)
     }
@@ -251,11 +263,11 @@ impl AppUnitMap {
         self.unit_map.event_dispatcher()
     }
 
-    /// Hand `event` to the unit under `key` and carry out what it asks for.
+    /// Hand `event` to the unit under `key` and report back what it asks for.
     ///
-    /// The behavior decides, which is why this is not two methods: an event
-    /// may move a unit onto another mode before the start it also asks for,
-    /// and only the behavior can do that.
+    /// Reported and not done: a start has to go through the schedule, which
+    /// is above this layer, so the action is carried out by
+    /// [`App::dispatch`](crate::app::App::dispatch).
     pub fn dispatch(
         &self,
         key: UnitKey,

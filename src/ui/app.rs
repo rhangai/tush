@@ -172,10 +172,12 @@ impl UiClient for UiApp {
 
     /// Do it, and drop whatever it had to say about it.
     ///
-    /// Fire and forget is the contract, so the `Result` dies here — hiding
+    /// Fire and forget is the contract, so nothing comes back — hiding
     /// nothing, since the only failure is a key the map does not hold and the
-    /// keys came out of the map. When the session gets a channel to
-    /// report back through, this is where it is written to.
+    /// keys came out of the map. A start is scheduled rather than performed:
+    /// it waits on what the unit depends on, which is not a wait a screen can
+    /// make. When the session gets a channel to report back through, this is
+    /// where it is written to.
     fn send(&self, command: UiCommand) {
         match command {
             UiCommand::Start { key } => {

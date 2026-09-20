@@ -84,8 +84,10 @@ async fn main() -> Result<()> {
 /// children actually gone, and it is deliberately awaited rather than left to
 /// `Drop`, which cannot.
 ///
-/// Nothing is started here: the session comes up with every proc stopped,
-/// and the screen is what runs them.
+/// What comes up started is what the command line named, and nothing else;
+/// the screen is how the rest are run. Scheduling them before the UI is safe
+/// because [`App::run`] is already spawned and a request made before it is
+/// polled is one it still wakes for.
 async fn run(args: RunArgs) -> Result<()> {
     if args.no_tui {
         bail!("`--no-tui` is not built yet");

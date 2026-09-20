@@ -45,7 +45,7 @@ pub struct UnitMap {
 /// there is a string to clone and hash where this is an integer.
 ///
 /// The symbol is private, so every key that exists came from
-/// [`key`](AppUnitMap::key) or [`keys`](AppUnitMap::keys) — which is to say
+/// [`key`](UnitMap::key) or [`keys`](UnitMap::keys) — which is to say
 /// from the one interner it means anything against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UnitKey {
@@ -113,6 +113,8 @@ impl UnitMap {
         self.event_dispatcher.create_listener()
     }
 
+    /// The dispatcher the units here trigger, for something outside the map
+    /// that has to wake the same listeners.
     pub fn event_dispatcher(&self) -> &EventDispatcher {
         &self.event_dispatcher
     }
@@ -127,6 +129,10 @@ impl UnitMap {
         result.map_err(UnitMapError::UnitStart)
     }
 
+    /// Start the unit under `key` only if it has never been started.
+    ///
+    /// The other half of [`start`](UnitMap::start), for a caller that wants
+    /// it running rather than wants it run.
     pub fn ensure_started(&self, key: UnitKey) -> Result<Arc<RunnerHandle>, UnitMapError> {
         let result = self.with(key, Unit::ensure_started)?;
         result.map_err(UnitMapError::UnitStart)
@@ -208,7 +214,12 @@ impl UnitMap {
         self.units.keys().map(|k| UnitKey { value: *k })
     }
 
-    /// Write
+    /// Fill `resolved` with every unit that has run to the end at least once
+    /// — see [`Unit::resolved`](crate::unit::Unit::resolved).
+    ///
+    /// Clears it first and takes it by reference, so the caller that asks
+    /// this on every wake keeps one set instead of building a new one each
+    /// time.
     pub fn write_resolved(&self, resolved: &mut HashSet<UnitKey>) {
         resolved.clear();
         for (key, unit) in &self.units {
