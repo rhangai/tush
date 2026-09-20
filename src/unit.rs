@@ -29,4 +29,4 @@ pub use dispatch::{UnitAction, UnitChoice, UnitEvent};
 pub use map::{UnitKey, UnitMap};
 
 #[allow(unused_imports)]
-pub use unit::Unit;
+pub use unit::{Unit, UnitHandle};

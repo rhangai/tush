@@ -1,4 +1,5 @@
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
@@ -39,7 +40,7 @@ pub struct Unit {
     /// The current run and whether one has ever finished — see
     /// [`UnitCurrentHandle`]. Behind an [`Arc`] because the task that waits
     /// on a run holds a [`Weak`] to it and must not keep the unit alive.
-    handle: Arc<Mutex<UnitCurrentHandle>>,
+    handle_manager: Arc<Mutex<UnitHandleManager>>,
 }
 
 impl Unit {
@@ -50,7 +51,7 @@ impl Unit {
         Self {
             log,
             log_notes,
-            handle: Arc::new(Mutex::new(UnitCurrentHandle::new())),
+            handle_manager: UnitHandleManager::new(),
             behavior: Mutex::new(behavior),
             event_dispatcher: None,
         }
@@ -59,7 +60,8 @@ impl Unit {
     /// While the unit is still being built: `&mut self`, and
     /// [`UnitMap::insert`](crate::unit::UnitMap::insert) is where it happens.
     pub fn set_event_dispatcher(&mut self, event_dispatcher: EventDispatcher) {
-        self.event_dispatcher = Some(event_dispatcher);
+        self.event_dispatcher = Some(event_dispatcher.clone());
+        self.handle_manager.lock().event_dispatcher = Some(event_dispatcher);
     }
 
     /// Dump the log to stdout, for working on the log itself.
@@ -106,10 +108,37 @@ impl Unit {
         self.behavior.lock().choices(state, out);
     }
 
+    /// Ensure the handle is cretead
+    pub fn create(&self) -> Result<Arc<UnitHandle>, UnitError> {
+        let mut manager = self.handle_manager.lock();
+        manager.ensure_handle(|_| true, || self.spawn())
+    }
+
+    /// Ensure the handle is cretead
+    pub fn ensure_created(&self) -> Result<Arc<UnitHandle>, UnitError> {
+        let mut manager = self.handle_manager.lock();
+        manager.ensure_handle(|_| true, || self.spawn())
+    }
+
     /// Run it, in whatever mode its behavior is on.
-    pub fn start(&self) -> Result<Arc<RunnerHandle>, UnitError> {
+    pub fn start(&self) -> Result<Arc<UnitHandle>, UnitError> {
         let handle = self.spawn()?;
-        self.modify_handle(|_| Ok(handle))
+        let handle = {
+            let mut manager = self.handle_manager.lock();
+            manager.set_handle(handle)
+        };
+        handle.start();
+        Ok(handle)
+    }
+
+    /// Run it, in whatever mode its behavior is on.
+    pub fn start_or_resume(&self) -> Result<Arc<UnitHandle>, UnitError> {
+        let handle = {
+            let mut manager = self.handle_manager.lock();
+            manager.ensure_handle(|h| !h.is_started(), || self.spawn())?
+        };
+        handle.start();
+        Ok(handle)
     }
 
     /// Start it only if it has never been started.
@@ -117,20 +146,18 @@ impl Unit {
     /// [`AlreadyStarted`](UnitError::AlreadyStarted) is how "there was
     /// nothing to do" comes back, so a caller that only wanted it running
     /// drops the error rather than reporting it.
-    pub fn ensure_started(&self) -> Result<Arc<RunnerHandle>, UnitError> {
-        self.modify_handle(|h| {
-            if h.is_none() {
-                let handle = self.spawn()?;
-                Ok(handle)
-            } else {
-                Err(UnitError::AlreadyStarted)
-            }
-        })
+    pub fn ensure_started(&self) -> Result<Arc<UnitHandle>, UnitError> {
+        let handle = {
+            let mut manager = self.handle_manager.lock();
+            manager.ensure_handle(|_| true, || self.spawn())?
+        };
+        handle.start();
+        Ok(handle)
     }
 
     /// The handle for the current run, if there is one.
-    pub fn clone_handle(&self) -> Option<Arc<RunnerHandle>> {
-        self.handle.lock().runner_handle.clone()
+    pub fn clone_handle(&self) -> Option<Arc<UnitHandle>> {
+        self.handle_manager.lock().unit_handle.clone()
     }
 
     /// Whether a run of this unit has ever reached the end.
@@ -138,7 +165,7 @@ impl Unit {
     /// What anything depending on this unit waits for. It stays true once
     /// set: a later restart does not put the dependents back on hold.
     pub fn resolved(&self) -> bool {
-        self.handle.lock().resolved
+        self.handle_manager.lock().resolved
     }
 
     /// A run of the current mode, wired to this unit's log and, if it has
@@ -151,75 +178,12 @@ impl Unit {
         self.behavior.lock().spawn(ctx)
     }
 
-    /// The restart handshake.
-    ///
-    /// The new handle is published immediately, so callers see the incoming
-    /// run at once, but it is created paused and only released once the
-    /// outgoing one is really gone:
-    ///
-    /// - nothing was running, or the previous run already finished: start now;
-    /// - a run is still alive: abort it and start the new one from a detached
-    ///   task, after the old one has been waited on.
-    ///
-    /// Serializing it this way keeps two runs of the same unit from ever
-    /// overlapping — no two dev servers fighting over the same port.
-    fn modify_handle(
-        &self,
-        modify: impl FnOnce(Option<&Arc<RunnerHandle>>) -> Result<RunnerHandle, UnitError>,
-    ) -> Result<Arc<RunnerHandle>, UnitError> {
-        let (old_handle, new_handle, handle_id, eager_resolved) = {
-            let mut lock = self.handle.lock();
-            let new_handle = Arc::new(modify(lock.runner_handle.as_ref())?);
-            let old_handle = {
-                let mut handle = Some(new_handle.clone());
-                std::mem::swap(&mut lock.runner_handle, &mut handle);
-                handle
-            };
-            let handle_id = lock.create_handle_id();
-            (old_handle, new_handle, handle_id, lock.resolved)
-        };
-        let old_handle = old_handle.filter(|h| !h.state().is_finished());
-        let unit = Arc::downgrade(&self.handle);
-        match old_handle {
-            None => {
-                new_handle.start();
-                if !eager_resolved && !self.handle.lock().resolved {
-                    let new_handle = new_handle.clone();
-                    let event_dispatcher = self.event_dispatcher.clone();
-                    tokio::spawn(async move {
-                        let resolved =
-                            UnitCurrentHandle::wait_for_resolved(unit, handle_id, new_handle, true)
-                                .await;
-                        if resolved && let Some(event_dispatcher) = event_dispatcher {
-                            event_dispatcher.trigger();
-                        }
-                    });
-                }
-            }
-            Some(old_handle) => {
-                old_handle.abort();
-                let handle = new_handle.clone();
-                let event_dispatcher = self.event_dispatcher.clone();
-                tokio::spawn(async move {
-                    old_handle.wait().await;
-                    handle.start();
-                    let resolved =
-                        UnitCurrentHandle::wait_for_resolved(unit, handle_id, handle, false).await;
-                    if resolved && let Some(event_dispatcher) = event_dispatcher {
-                        event_dispatcher.trigger();
-                    }
-                });
-            }
-        }
-        Ok(new_handle)
-    }
-
     /// Stop the current run.
     ///
     /// Aborts the current run, if any, and returns without waiting for it.
     /// The handle stays in place so its terminal state remains observable.
     pub fn stop(&self) {
-        if let Some(handle) = self.handle.lock().runner_handle.as_ref() {
+        if let Some(handle) = self.handle_manager.lock().unit_handle.as_ref() {
             handle.abort();
         }
     }
@@ -228,9 +192,9 @@ impl Unit {
     ///
     /// [`Stopped`](RunnerState::Stopped) when the unit was never started.
     pub fn state(&self) -> RunnerState {
-        self.handle
+        self.handle_manager
             .lock()
-            .runner_handle
+            .unit_handle
             .as_ref()
             .map_or(RunnerState::Stopped, |s| s.state())
     }
@@ -264,76 +228,171 @@ impl Drop for Unit {
     }
 }
 
-/// The current run and whether one has ever finished, under one lock.
-///
-/// Together because a restart has to swap the handle and read the flag in the
-/// same breath. Each run is waited on by a task that outlives it, and an
-/// aborted run finishes too — so without `handle_id` the waiter of a run that
-/// was killed and replaced would mark the unit resolved, and everything
-/// depending on it would start on the strength of a run that never completed.
-struct UnitCurrentHandle {
-    /// Which run is current. A waiter carries the id it was spawned with, and
-    /// may only resolve the unit while the two still agree.
-    handle_id: NonZeroU32,
-    /// Never cleared: the unit is resolved from the first run that finishes
-    /// onwards, restarts included.
-    resolved: bool,
-    runner_handle: Option<Arc<RunnerHandle>>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct UnitHandleId(NonZeroU32);
+
+pub struct UnitHandle {
+    manager_weak: Weak<Mutex<UnitHandleManager>>,
+    handle_id: UnitHandleId,
+    runner_handle: RunnerHandle,
+    started: AtomicBool,
+    parent_runner_handle: Option<Arc<UnitHandle>>,
 }
 
-impl UnitCurrentHandle {
-    fn new() -> Self {
-        Self {
-            handle_id: NonZeroU32::new(1).expect("should never happen"),
-            resolved: false,
-            runner_handle: None,
-        }
+impl UnitHandle {
+    fn new(
+        manager_weak: Weak<Mutex<UnitHandleManager>>,
+        handle_id: UnitHandleId,
+        runner_handle: RunnerHandle,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            manager_weak,
+            handle_id,
+            runner_handle,
+            started: AtomicBool::new(false),
+            parent_runner_handle: None,
+        })
     }
 
-    fn create_handle_id(&mut self) -> NonZeroU32 {
-        if let Some(new_id) = self.handle_id.checked_add(1) {
-            self.handle_id = new_id;
-        } else {
-            self.handle_id = NonZeroU32::new(1).expect("should never happen");
-        }
-        self.handle_id
+    fn child(
+        self: Arc<Self>,
+        manager_weak: Weak<Mutex<UnitHandleManager>>,
+        handle_id: UnitHandleId,
+        runner_handle: RunnerHandle,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            manager_weak,
+            handle_id,
+            runner_handle,
+            started: AtomicBool::new(false),
+            parent_runner_handle: Some(self),
+        })
     }
 
-    fn set_resolved(&mut self, handle_id: NonZeroU32) {
-        if handle_id == self.handle_id {
-            self.resolved = true;
-        }
+    pub fn state(&self) -> RunnerState {
+        self.runner_handle.state()
     }
 
-    /// Resolve the unit once `runner_handle` finishes, unless it has been
-    /// replaced by then.
-    ///
-    /// `false` where there is nothing left to resolve — the unit is gone, or
-    /// the wait was cut short. `skip_initial_check` is for the caller that
-    /// has just read `resolved` under the lock itself, so the same answer is
-    /// not fetched twice.
-    async fn wait_for_resolved(
-        unit: Weak<Mutex<UnitCurrentHandle>>,
-        handle_id: NonZeroU32,
-        runner_handle: Arc<RunnerHandle>,
-        skip_initial_check: bool,
-    ) -> bool {
-        if !skip_initial_check {
-            let Some(unit) = unit.upgrade() else {
-                return false;
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+
+    pub fn start(self: &Arc<Self>) {
+        // Start and set the bool as started
+        if self
+            .started
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        let needs_resolve = self.needs_resolve();
+        if let Some(parent) = self.parent_runner_handle.as_ref() {
+            // Only wait if parent is pending
+            if parent.state().is_pending() {
+                let parent = parent.clone();
+                let handle = self.clone();
+                _ = tokio::spawn(async move {
+                    parent.abort_and_wait().await;
+                    handle.runner_handle.start();
+                    if needs_resolve {
+                        handle.resolve_task().await;
+                    }
+                });
+                return;
             };
-            if unit.lock().resolved {
-                return true;
-            }
+        };
+        self.runner_handle.start();
+        if needs_resolve {
+            tokio::spawn(self.clone().resolve_task());
         }
-        if !runner_handle.wait_for(|s| s.is_finished()).await {
-            return false;
-        }
-        let Some(unit) = unit.upgrade() else {
+    }
+
+    pub fn abort(&self) {
+        self.runner_handle.abort();
+    }
+
+    pub async fn abort_and_wait(&self) {
+        self.runner_handle.abort();
+        self.runner_handle.wait().await;
+    }
+
+    fn needs_resolve(&self) -> bool {
+        let Some(manager) = self.manager_weak.upgrade() else {
             return false;
         };
-        let mut lock = unit.lock();
-        lock.set_resolved(handle_id);
-        true
+        return !manager.lock().resolved;
+    }
+
+    async fn resolve_task(self: Arc<Self>) {
+        if !self.runner_handle.wait_for(|s| s.is_finished()).await {
+            return;
+        }
+        let Some(manager) = self.manager_weak.upgrade() else {
+            return;
+        };
+        manager.lock().set_resolved(self.handle_id);
+    }
+}
+
+struct UnitHandleManager {
+    handle_id: UnitHandleId,
+    resolved: bool,
+    unit_handle: Option<Arc<UnitHandle>>,
+    event_dispatcher: Option<EventDispatcher>,
+    manager_weak: Weak<Mutex<Self>>,
+}
+
+impl UnitHandleManager {
+    fn new() -> Arc<Mutex<Self>> {
+        Arc::<Mutex<Self>>::new_cyclic(|manager_weak| {
+            Mutex::new(Self {
+                handle_id: UnitHandleId(NonZeroU32::new(1).expect("should never happen")),
+                resolved: false,
+                unit_handle: None,
+                event_dispatcher: None,
+                manager_weak: manager_weak.clone(),
+            })
+        })
+    }
+
+    fn set_handle(&mut self, runner_handle: RunnerHandle) -> Arc<UnitHandle> {
+        self.handle_id.0 = if let Some(id) = self.handle_id.0.checked_add(1) {
+            id
+        } else {
+            NonZeroU32::new(1).expect("should never happen")
+        };
+        let unit_handle = if let Some(handle) = self.unit_handle.take()
+            && handle.is_started()
+        {
+            handle.child(self.manager_weak.clone(), self.handle_id, runner_handle)
+        } else {
+            UnitHandle::new(self.manager_weak.clone(), self.handle_id, runner_handle)
+        };
+        self.unit_handle = Some(unit_handle.clone());
+        unit_handle
+    }
+
+    fn ensure_handle(
+        &mut self,
+        test: impl FnOnce(&UnitHandle) -> bool,
+        f: impl FnOnce() -> Result<RunnerHandle, UnitError>,
+    ) -> Result<Arc<UnitHandle>, UnitError> {
+        if let Some(handle) = self.unit_handle.as_ref() {
+            // Check
+            if test(handle) {
+                return Ok(handle.clone());
+            }
+        };
+        Ok(self.set_handle(f()?))
+    }
+
+    fn set_resolved(&mut self, handle_id: UnitHandleId) {
+        if self.handle_id == handle_id {
+            self.resolved = true;
+            if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
+                event_dispatcher.trigger();
+            }
+        }
     }
 }

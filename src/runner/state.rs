@@ -43,6 +43,14 @@ impl RunnerState {
         )
     }
 
+    /// Whether the runner already setupped its task, and must be awaited
+    pub fn is_pending(&self) -> bool {
+        matches!(
+            self,
+            RunnerState::Started | RunnerState::Running | RunnerState::Killing
+        )
+    }
+
     /// Whether the run reached a terminal state.
     pub fn is_finished(&self) -> bool {
         matches!(

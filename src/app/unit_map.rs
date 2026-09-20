@@ -182,6 +182,16 @@ impl AppUnitMap {
         Ok(())
     }
 
+    pub fn ensure_created(&self, key: UnitKey) -> Result<(), AppError> {
+        self.unit_map.ensure_created(key)?;
+        Ok(())
+    }
+
+    pub fn start_or_resume(&self, key: UnitKey) -> Result<(), AppError> {
+        self.unit_map.start_or_resume(key)?;
+        Ok(())
+    }
+
     /// Start `key` if it has never been started, and leave it alone
     /// otherwise — unlike [`start`](AppUnitMap::start), which restarts it.
     pub fn ensure_started(&self, key: UnitKey) -> Result<(), AppError> {

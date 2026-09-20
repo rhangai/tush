@@ -143,11 +143,12 @@ impl AppScheduleRunnerTask {
             }
             unit_map.write_resolved(&mut resolved);
             for (scheduled, force) in &scheduled {
+                _ = unit_map.ensure_created(*scheduled);
                 let deps = unit_map.direct_dependencies(*scheduled);
                 let all_resolved = deps.into_iter().flatten().all(|dep| resolved.contains(dep));
                 if all_resolved {
                     if *force {
-                        _ = unit_map.start(*scheduled);
+                        _ = unit_map.start_or_resume(*scheduled);
                     } else {
                         _ = unit_map.ensure_started(*scheduled);
                     }

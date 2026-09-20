@@ -24,15 +24,25 @@ use crate::{
 ///
 /// Both fields are optional: a unit built without a log, or with nobody
 /// listening, still runs.
-#[derive(Default)]
 pub struct UnitBehaviorContext {
     writer: Option<LogWriterRef>,
+    spawn_paused: bool,
     event_dispatcher: Option<EventDispatcher>,
 }
 
 impl UnitBehaviorContext {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            writer: None,
+            spawn_paused: false,
+            event_dispatcher: None,
+        }
+    }
+    pub fn spawn_paused(self) -> Self {
+        Self {
+            spawn_paused: true,
+            ..self
+        }
     }
     pub fn with_writer(self, writer: LogWriterRef) -> Self {
         Self {

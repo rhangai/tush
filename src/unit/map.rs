@@ -5,11 +5,12 @@ use std::{collections::HashMap, sync::Arc};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::error::UnitMapError;
+use crate::unit::UnitHandle;
 use crate::util::event::{EventDispatcher, EventListener};
 use crate::util::str::SmallStr;
 use crate::{
     log::LogReader,
-    runner::{RunnerHandle, RunnerState},
+    runner::RunnerState,
     unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior, unit::Unit},
 };
 
@@ -124,7 +125,7 @@ impl UnitMap {
     /// Restarts it if it was already running: see
     /// [`Unit::start`](crate::unit::Unit::start), which sees the old run out
     /// before the new one begins.
-    pub fn start(&self, key: UnitKey) -> Result<Arc<RunnerHandle>, UnitMapError> {
+    pub fn start(&self, key: UnitKey) -> Result<Arc<UnitHandle>, UnitMapError> {
         let result = self.with(key, Unit::start)?;
         result.map_err(UnitMapError::UnitStart)
     }
@@ -133,8 +134,18 @@ impl UnitMap {
     ///
     /// The other half of [`start`](UnitMap::start), for a caller that wants
     /// it running rather than wants it run.
-    pub fn ensure_started(&self, key: UnitKey) -> Result<Arc<RunnerHandle>, UnitMapError> {
+    pub fn ensure_started(&self, key: UnitKey) -> Result<Arc<UnitHandle>, UnitMapError> {
         let result = self.with(key, Unit::ensure_started)?;
+        result.map_err(UnitMapError::UnitStart)
+    }
+
+    pub fn ensure_created(&self, key: UnitKey) -> Result<Arc<UnitHandle>, UnitMapError> {
+        let result = self.with(key, Unit::ensure_created)?;
+        result.map_err(UnitMapError::UnitStart)
+    }
+
+    pub fn start_or_resume(&self, key: UnitKey) -> Result<Arc<UnitHandle>, UnitMapError> {
+        let result = self.with(key, Unit::start_or_resume)?;
         result.map_err(UnitMapError::UnitStart)
     }
 
@@ -161,7 +172,7 @@ impl UnitMap {
     }
 
     /// The handle for the current run of `key`, if it has one.
-    pub fn clone_handle(&self, key: UnitKey) -> Result<Option<Arc<RunnerHandle>>, UnitMapError> {
+    pub fn clone_handle(&self, key: UnitKey) -> Result<Option<Arc<UnitHandle>>, UnitMapError> {
         self.with(key, Unit::clone_handle)
     }
 
@@ -239,16 +250,13 @@ impl UnitMap {
     /// Every unit is asked to stop before any of them is waited on, so the
     /// grace periods overlap instead of queueing up one shutdown at a time.
     pub async fn shutdown(&self) {
-        let handles: Vec<Arc<RunnerHandle>> = self
+        let handles: Vec<Arc<UnitHandle>> = self
             .units
             .values()
-            .filter_map(|unit| {
-                unit.stop();
-                unit.clone_handle()
-            })
+            .filter_map(|unit| unit.clone_handle())
             .collect();
         for handle in handles {
-            handle.wait().await;
+            handle.abort_and_wait().await;
         }
     }
 
