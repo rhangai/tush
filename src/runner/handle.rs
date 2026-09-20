@@ -3,10 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    runner::{Runner, state::RunnerState},
-    util::event::EventDispatcher,
-};
+use crate::runner::{Runner, state::RunnerState};
 
 /// One run, supervised.
 ///
@@ -45,15 +42,15 @@ impl RunnerHandle {
     /// It stays [`Waiting`](RunnerState::Waiting) until
     /// [`start`](RunnerHandle::start), or anything else that opens the gate —
     /// [`abort`](RunnerHandle::abort), [`wait`](RunnerHandle::wait).
-    pub fn new(runner: impl Runner, event_dispatcher: Option<EventDispatcher>) -> Self {
-        Self::new_inner(runner, event_dispatcher)
+    pub fn new(runner: impl Runner) -> Self {
+        Self::new_inner(runner)
     }
     /// Spawn the supervising task, which owns the runner for the rest of its
     /// life.
     ///
     /// The task holds an `Arc` back to the handle, so it keeps reporting state
     /// even once every external reference is dropped.
-    fn new_inner(runner: impl Runner, event_dispatcher: Option<EventDispatcher>) -> Self {
+    fn new_inner(runner: impl Runner) -> Self {
         let (state_sender, state_receiver) =
             tokio::sync::watch::channel::<RunnerState>(RunnerState::Waiting);
 
@@ -64,34 +61,30 @@ impl RunnerHandle {
         {
             let notify = start_notify.clone();
             let abort_token = abort_token.clone();
-            let state = RunnerHandleState {
-                state_sender,
-                event_dispatcher,
-            };
             _ = tokio::spawn(async move {
                 notify.notified().await;
-                state.modify(RunnerState::set_started);
+                state_sender.send_modify(RunnerState::set_started);
                 let mut runner = runner;
                 // Eager check for cancelation
                 if abort_token.is_cancelled() {
-                    state.set(RunnerState::Killed(None));
+                    state_sender.send_replace(RunnerState::Killed(None));
                     return;
                 }
                 let runner_fut = {
-                    let state = state.clone();
-                    runner.run(move || state.modify(RunnerState::set_running))
+                    let state_sender = state_sender.clone();
+                    runner.run(move || state_sender.send_modify(RunnerState::set_running))
                 };
                 let exit_state = tokio::select! {
                     wait_result = runner_fut => {
                         wait_result.map_or(RunnerState::ExitError(None), |i| i.into())
                     }
                     _ = abort_token.cancelled_owned() => {
-                        state.modify(RunnerState::set_killing);
+                        state_sender.send_modify(RunnerState::set_killing);
                         let shutdown_state = runner.shutdown().await;
                         shutdown_state.map_or(RunnerState::Killed(None), |i| i.into())
                     }
                 };
-                state.set(exit_state);
+                state_sender.send_replace(exit_state);
             });
         };
 
@@ -138,6 +131,14 @@ impl RunnerHandle {
         result.ok().map(|v| *v)
     }
 
+    /// Wait for the state
+    #[must_use]
+    pub async fn wait_for(&self, f: impl Fn(&RunnerState) -> bool) -> bool {
+        self.start_notify.notify_one();
+        let mut receiver = self.state_receiver.clone();
+        receiver.wait_for(f).await.is_ok()
+    }
+
     /// Notify the start handle
     fn notify_start(&self) {
         self.start_notify.notify_one();
@@ -148,38 +149,5 @@ impl RunnerHandle {
 impl Drop for RunnerHandle {
     fn drop(&mut self) {
         self.abort();
-    }
-}
-
-/// The write side of a handle's state, held by the supervising task.
-///
-/// Apart from the handle so that every write goes through
-/// [`set`](RunnerHandleState::set) or
-/// [`modify`](RunnerHandleState::modify) and therefore through
-/// [`notify`](RunnerHandleState::notify) — a state that changed without
-/// waking the screen is a row that stays wrong until the next tick.
-#[derive(Clone)]
-struct RunnerHandleState {
-    state_sender: tokio::sync::watch::Sender<RunnerState>,
-    /// `None` for a handle nobody asked to be told about: the runner still
-    /// works, its state is just read when someone looks.
-    event_dispatcher: Option<EventDispatcher>,
-}
-
-impl RunnerHandleState {
-    fn set(&self, state: RunnerState) {
-        self.state_sender.send_replace(state);
-        self.notify();
-    }
-
-    fn modify(&self, f: impl FnOnce(&mut RunnerState)) {
-        self.state_sender.send_modify(f);
-        self.notify();
-    }
-
-    fn notify(&self) {
-        if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
-            event_dispatcher.trigger();
-        }
     }
 }

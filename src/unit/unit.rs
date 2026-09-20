@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::num::NonZeroU32;
+use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 
@@ -29,10 +30,10 @@ pub struct Unit {
     log_notes: LogWriterNotes,
     /// What it runs, behind a lock because a dispatch may change it.
     behavior: Mutex<UnitBehavior>,
-    /// The current run, or `None` before the first.
-    handle: Mutex<Option<Arc<RunnerHandle>>>,
     /// Event dispatcher
     event_dispatcher: Option<EventDispatcher>,
+    /// Where the unit is resolved
+    handle: Arc<Mutex<UnitCurrentHandle>>,
 }
 
 impl Unit {
@@ -43,8 +44,8 @@ impl Unit {
         Self {
             log,
             log_notes,
+            handle: Arc::new(Mutex::new(UnitCurrentHandle::new())),
             behavior: Mutex::new(behavior),
-            handle: Mutex::new(None),
             event_dispatcher: None,
         }
     }
@@ -118,7 +119,7 @@ impl Unit {
 
     /// The handle for the current run, if there is one.
     pub fn clone_handle(&self) -> Option<Arc<RunnerHandle>> {
-        self.handle.lock().clone()
+        self.handle.lock().runner_handle.clone()
     }
 
     /// Spawn the handler
@@ -146,29 +147,47 @@ impl Unit {
         &self,
         modify: impl FnOnce(Option<&Arc<RunnerHandle>>) -> Result<RunnerHandle, UnitError>,
     ) -> Result<Arc<RunnerHandle>, UnitError> {
-        let (old_handle, new_handle) = {
+        let (old_handle, new_handle, handle_id, eager_resolved) = {
             let mut lock = self.handle.lock();
-            let new_handle = Arc::new(modify(lock.as_ref())?);
+            let new_handle = Arc::new(modify(lock.runner_handle.as_ref())?);
             let old_handle = {
                 let mut handle = Some(new_handle.clone());
-                std::mem::swap(&mut (*lock), &mut handle);
+                std::mem::swap(&mut lock.runner_handle, &mut handle);
                 handle
             };
-            (old_handle, new_handle)
+            let handle_id = lock.create_handle_id();
+            (old_handle, new_handle, handle_id, lock.resolved)
         };
+        let old_handle = old_handle.filter(|h| !h.state().is_finished());
+        let unit = Arc::downgrade(&self.handle);
         match old_handle {
             None => {
                 new_handle.start();
-            }
-            Some(old_handle) if old_handle.state().is_finished() => {
-                new_handle.start();
+                if !eager_resolved && !self.handle.lock().resolved {
+                    let new_handle = new_handle.clone();
+                    let event_dispatcher = self.event_dispatcher.clone();
+                    tokio::spawn(async move {
+                        let resolved =
+                            UnitCurrentHandle::wait_for_resolved(unit, handle_id, new_handle, true)
+                                .await;
+                        if resolved && let Some(event_dispatcher) = event_dispatcher {
+                            event_dispatcher.trigger();
+                        }
+                    });
+                }
             }
             Some(old_handle) => {
                 old_handle.abort();
                 let handle = new_handle.clone();
+                let event_dispatcher = self.event_dispatcher.clone();
                 tokio::spawn(async move {
                     old_handle.wait().await;
                     handle.start();
+                    let resolved =
+                        UnitCurrentHandle::wait_for_resolved(unit, handle_id, handle, false).await;
+                    if resolved && let Some(event_dispatcher) = event_dispatcher {
+                        event_dispatcher.trigger();
+                    }
                 });
             }
         }
@@ -180,7 +199,7 @@ impl Unit {
     /// Aborts the current run, if any, and returns without waiting for it.
     /// The handle stays in place so its terminal state remains observable.
     pub fn stop(&self) {
-        if let Some(handle) = self.handle.lock().as_ref() {
+        if let Some(handle) = self.handle.lock().runner_handle.as_ref() {
             handle.abort();
         }
     }
@@ -191,6 +210,7 @@ impl Unit {
     pub fn state(&self) -> RunnerState {
         self.handle
             .lock()
+            .runner_handle
             .as_ref()
             .map_or(RunnerState::Stopped, |s| s.state())
     }
@@ -221,5 +241,61 @@ impl Unit {
 impl Drop for Unit {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+struct UnitCurrentHandle {
+    handle_id: NonZeroU32,
+    resolved: bool,
+    runner_handle: Option<Arc<RunnerHandle>>,
+}
+
+impl UnitCurrentHandle {
+    fn new() -> Self {
+        Self {
+            handle_id: NonZeroU32::new(1).expect("should never happen"),
+            resolved: false,
+            runner_handle: None,
+        }
+    }
+
+    fn create_handle_id(&mut self) -> NonZeroU32 {
+        if let Some(new_id) = self.handle_id.checked_add(1) {
+            self.handle_id = new_id;
+        } else {
+            self.handle_id = NonZeroU32::new(1).expect("should never happen");
+        }
+        self.handle_id
+    }
+
+    fn set_resolved(&mut self, handle_id: NonZeroU32) {
+        if handle_id == self.handle_id {
+            self.resolved = true;
+        }
+    }
+
+    async fn wait_for_resolved(
+        unit: Weak<Mutex<UnitCurrentHandle>>,
+        handle_id: NonZeroU32,
+        runner_handle: Arc<RunnerHandle>,
+        skip_initial_check: bool,
+    ) -> bool {
+        if !skip_initial_check {
+            let Some(unit) = unit.upgrade() else {
+                return false;
+            };
+            if unit.lock().resolved {
+                return true;
+            }
+        }
+        if !runner_handle.wait_for(|s| s.is_finished()).await {
+            return false;
+        }
+        let Some(unit) = unit.upgrade() else {
+            return false;
+        };
+        let mut lock = unit.lock();
+        lock.set_resolved(handle_id);
+        true
     }
 }

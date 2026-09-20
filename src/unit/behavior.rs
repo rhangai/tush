@@ -279,8 +279,8 @@ trait UnitBehaviorKind {
 /// Runs nothing, succeeding immediately, via the `()` runner.
 struct BehaviorNoop {}
 impl UnitBehaviorKind for BehaviorNoop {
-    fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
-        Ok(RunnerHandle::new((), ctx.event_dispatcher))
+    fn spawn(&self, _ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
+        Ok(RunnerHandle::new(()))
     }
 }
 
@@ -323,19 +323,19 @@ impl UnitBehaviorKind for BehaviorRun {
 
     fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
         if self.commands.is_empty() {
-            return Ok(RunnerHandle::new((), ctx.event_dispatcher));
+            return Ok(RunnerHandle::new(()));
         }
         if self.commands.len() == 1 {
             let row = self.commands.get_row(0).unwrap();
             let process = Process::new(command(row)?, ctx.writer);
-            return Ok(RunnerHandle::new(process, ctx.event_dispatcher));
+            return Ok(RunnerHandle::new(process));
         }
         let mut serial = RunnerSerial::new();
         for argv in self.commands.iter() {
             let writer = ctx.writer.as_ref().map(LogWriterRef::share);
             serial.add(Process::new(command(argv)?, writer));
         }
-        Ok(RunnerHandle::new(serial, ctx.event_dispatcher))
+        Ok(RunnerHandle::new(serial))
     }
 }
 
@@ -425,7 +425,7 @@ impl UnitBehaviorKind for BehaviorModes {
 
     fn spawn(&self, ctx: UnitBehaviorContext) -> Result<RunnerHandle, UnitError> {
         if self.modes.is_empty() {
-            return Ok(RunnerHandle::new((), ctx.event_dispatcher));
+            return Ok(RunnerHandle::new(()));
         };
         let mode = &self.modes[self.index];
         mode.spawn(ctx)
