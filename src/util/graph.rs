@@ -113,6 +113,23 @@ where
         self.index.contains_key(key)
     }
 
+    /// What `key` directly depends on — one edge out, no walking.
+    ///
+    /// For the transitive answer, and in an order, use
+    /// [`resolve_from`](DependencyGraph::resolve_from). A key that names no
+    /// node yields nothing, like everything else here that takes a key.
+    ///
+    /// Comes back in the reverse of the order the dependencies were declared
+    /// in, which is the order petgraph keeps its edge list in; reverse it if
+    /// the declaration order is what a user will see.
+    pub fn dependencies(&self, key: &K) -> impl Iterator<Item = &K> {
+        self.index
+            .get(key)
+            .into_iter()
+            .flat_map(|&node| self.graph.neighbors(node))
+            .map(|node| &self.graph[node])
+    }
+
     /// How many nodes there are.
     pub fn len(&self) -> usize {
         self.graph.node_count()
@@ -146,7 +163,7 @@ where
     /// that a name I know?" — and the caller who does not care to ask gets
     /// the same "start nothing" that a hard error would have led to anyway.
     pub fn resolve_from(&self, key: &K) -> DependencyOrder<K> {
-        self.resolve_from_all([key])
+        self.resolve_from_many([key])
     }
 
     /// [`resolve_from`](DependencyGraph::resolve_from) for several keys at
@@ -156,7 +173,7 @@ where
     /// in it once, in a position that satisfies both. Keys that name no node
     /// are skipped; use [`contains`](DependencyGraph::contains) first if that
     /// should be an error.
-    pub fn resolve_from_all<'a, I>(&self, keys: I) -> DependencyOrder<K>
+    pub fn resolve_from_many<'a, I>(&self, keys: I) -> DependencyOrder<K>
     where
         I: IntoIterator<Item = &'a K>,
         K: 'a,
@@ -436,6 +453,50 @@ mod test {
         assert!(!resolved.has_cycles());
     }
 
+    #[test]
+    fn direct_dependencies_are_one_edge_out_and_no_further() {
+        let spec: &[(&str, &[&str])] = &[
+            ("a", &["b", "c"]),
+            ("b", &["deep"]),
+            ("c", &[]),
+            ("deep", &[]),
+        ];
+        let graph = graph(spec);
+        let mut direct = graph.dependencies(&"a").copied().collect::<Vec<_>>();
+        direct.sort_unstable();
+        assert_eq!(direct, ["b", "c"]);
+        assert_eq!(graph.dependencies(&"c").count(), 0);
+    }
+
+    /// Documented as reverse declaration order, so it is worth pinning: the
+    /// doc is what a caller will reverse against.
+    #[test]
+    fn direct_dependencies_come_back_in_reverse_declaration_order() {
+        assert_eq!(
+            graph(&[("a", &["x", "y", "z"])])
+                .dependencies(&"a")
+                .copied()
+                .collect::<Vec<_>>(),
+            ["z", "y", "x"]
+        );
+    }
+
+    /// Dependents are not dependencies — the edge points the other way.
+    #[test]
+    fn what_depends_on_the_key_is_not_a_dependency_of_it() {
+        assert_eq!(
+            graph(&[("a", &["b"]), ("b", &[])])
+                .dependencies(&"b")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_dependencies_of_an_unknown_key_are_nothing() {
+        assert_eq!(graph(&[("a", &[])]).dependencies(&"nope").count(), 0);
+    }
+
     fn order_from(
         spec: &[(&'static str, &[&'static str])],
         key: &'static str,
@@ -513,7 +574,7 @@ mod test {
         ];
         assert_eq!(
             graph(spec)
-                .resolve_from_all([&"server", &"site"])
+                .resolve_from_many([&"server", &"site"])
                 .order()
                 .copied()
                 .collect::<Vec<_>>(),
@@ -524,6 +585,6 @@ mod test {
     #[test]
     fn resolving_from_no_roots_gives_an_empty_order() {
         let graph = graph(&[("a", &[])]);
-        assert!(graph.resolve_from_all([]).is_empty());
+        assert!(graph.resolve_from_many([]).is_empty());
     }
 }
