@@ -3,7 +3,10 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::{
-    app::{schedule::AppSchedule, unit_map::AppUnitMap},
+    app::{
+        schedule::{AppSchedule, AppScheduleRunnerTask},
+        unit_map::AppUnitMap,
+    },
     config::Config,
     unit::{UnitAction, UnitEvent, UnitKey},
 };
@@ -48,7 +51,7 @@ impl App {
     /// Ask for a proc to start, once what it depends on is up.
     ///
     /// Returns before any of that has happened: what actually starts it is
-    /// [`run`](App::run), on its own task.
+    /// the task from [`run_tasks`](App::run_tasks).
     pub fn schedule(&self, key: UnitKey) {
         self.schedule.schedule(key);
     }
@@ -66,12 +69,25 @@ impl App {
         self.schedule.schedule_group(group);
     }
 
-    /// Drive the schedule for as long as the session lasts.
+    /// Everything this session needs running, as one thing to spawn.
     ///
-    /// Spawn it; it does not return on its own, and nothing that was
-    /// scheduled starts until it is running.
-    pub async fn run(&self) {
-        self.schedule.run().await;
+    /// Nothing that is scheduled starts until it is. Built and not spawned,
+    /// for a caller that wants it on a runtime of its own —
+    /// [`run_tasks`](App::run_tasks) is the usual way.
+    pub fn create_runner_task(&self) -> AppRunnerTask {
+        AppRunnerTask {
+            schedule_runner: self.schedule.create_runner_task(),
+        }
+    }
+
+    /// Spawn the session's tasks, which run until the session is dropped.
+    ///
+    /// The handle is there for a caller that wants to abort or join them;
+    /// dropping it detaches, which is what a caller that owns the [`App`] for
+    /// the life of the process wants.
+    pub fn run_tasks(&self) -> tokio::task::JoinHandle<()> {
+        let runner = self.create_runner_task();
+        tokio::spawn(runner.run())
     }
 
     /// Stop every proc and wait until each one is really gone — see
@@ -103,5 +119,19 @@ impl App {
                 Ok(())
             }
         }
+    }
+}
+
+/// The session's tasks, before they are spawned.
+///
+/// One task drives all of them, so a session is one spawn and one handle
+/// however many loops it grows.
+pub struct AppRunnerTask {
+    schedule_runner: AppScheduleRunnerTask,
+}
+
+impl AppRunnerTask {
+    pub async fn run(self) {
+        self.schedule_runner.run().await;
     }
 }

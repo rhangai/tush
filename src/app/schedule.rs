@@ -20,34 +20,32 @@ use crate::{
 /// A unit whose dependencies are not up yet cannot simply be started, and
 /// nothing here can know when they will be: the answer arrives later, on
 /// another task, as a unit resolving. So a request is recorded instead, and
-/// [`run`](AppSchedule::run) re-reads it on every change to start whatever
+/// [`AppScheduleRunnerTask`] re-reads it on every change to start whatever
 /// has become startable since.
 pub struct AppSchedule {
-    /// Weakly, so both the recording and the loop give up once the map is
-    /// gone rather than keeping a dead session's units reachable.
+    /// Weakly, so recording a request against a session that is gone is a
+    /// no-op rather than a way to keep its units reachable.
     unit_map: Weak<AppUnitMap>,
-    /// What is waiting to start, and whether it was asked for directly: a
-    /// direct request restarts a unit that is already running, one pulled in
-    /// as a dependency leaves it alone.
-    scheduled: Mutex<HashMap<UnitKey, bool>>,
     /// The units' own dispatcher, so a fresh request wakes the loop by the
     /// same route a unit resolving does.
     event_dispatcher: EventDispatcher,
-    /// Taken here and not in [`run`](AppSchedule::run), which is spawned
-    /// later: a listener only wakes for triggers after it was created, and a
-    /// target named on the command line is scheduled before the loop is up.
-    event_listener: EventListener,
+    /// What the loop shares with this: separate so the loop can hold it
+    /// without holding the schedule, and so be dropped independently.
+    inner: Arc<AppScheduleInner>,
 }
 
 impl AppSchedule {
     pub fn new(_config: &Config, unit_map: &Arc<AppUnitMap>) -> anyhow::Result<Self> {
         let event_dispatcher = unit_map.event_dispatcher().clone();
         let event_listener = event_dispatcher.create_listener();
+        let inner = Arc::new(AppScheduleInner {
+            event_listener,
+            scheduled: Mutex::new(HashMap::new()),
+        });
         Ok(Self {
             unit_map: Arc::downgrade(unit_map),
-            scheduled: Mutex::new(HashMap::new()),
             event_dispatcher,
-            event_listener,
+            inner,
         })
     }
 
@@ -80,7 +78,7 @@ impl AppSchedule {
     /// reached again as something else's dependency — and being named is what
     /// decides whether it gets restarted.
     fn schedule_inner(&self, chain: DependencyOrder<UnitKey>, direct_keys: &[UnitKey]) {
-        let mut lock = self.scheduled.lock();
+        let mut lock = self.inner.scheduled.lock();
         for item in chain.order() {
             lock.entry(*item).or_insert(false);
         }
@@ -91,6 +89,34 @@ impl AppSchedule {
         self.event_dispatcher.trigger();
     }
 
+    /// The loop half, for whoever spawns the session's tasks.
+    ///
+    /// Built rather than spawned here, so the caller decides when it starts
+    /// and what it is joined to.
+    pub fn create_runner_task(&self) -> AppScheduleRunnerTask {
+        AppScheduleRunnerTask {
+            unit_map: self.unit_map.clone(),
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+}
+
+/// The loop of an [`AppSchedule`], as something spawnable on its own.
+///
+/// Split off so the task holds neither the schedule nor the session: both
+/// ends are weak, and what is left is a task that cannot keep alive the thing
+/// it exists to serve.
+pub struct AppScheduleRunnerTask {
+    /// Checked on every wake, and what ends the loop: the session is gone, so
+    /// there is nothing left to start.
+    unit_map: Weak<AppUnitMap>,
+    /// Checked once, before the first wake, and held strongly from then on:
+    /// this is what stops a task built for a session that died before it was
+    /// spawned from ever starting. It is not the loop's exit — `unit_map` is.
+    inner: Weak<AppScheduleInner>,
+}
+
+impl AppScheduleRunnerTask {
     /// Start whatever has become startable, until the session ends.
     ///
     /// Spawned once and awaited by nobody. Each wake re-reads the pending set
@@ -98,8 +124,11 @@ impl AppSchedule {
     /// whose *direct* dependencies are all resolved; the deeper ones need no
     /// checking, since they are pending too and this is the loop that clears
     /// them.
-    pub async fn run(&self) {
-        let mut event_listener = self.event_listener.clone();
+    pub async fn run(self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let mut event_listener = inner.event_listener.clone();
         let mut scheduled: HashMap<UnitKey, bool> = HashMap::new();
         let mut resolved: HashSet<UnitKey> = HashSet::new();
         let mut remove: HashSet<UnitKey> = HashSet::new();
@@ -110,7 +139,7 @@ impl AppSchedule {
             };
             {
                 scheduled.clear();
-                scheduled.extend(self.scheduled.lock().iter());
+                scheduled.extend(inner.scheduled.lock().iter());
             }
             unit_map.write_resolved(&mut resolved);
             for (scheduled, force) in &scheduled {
@@ -127,12 +156,27 @@ impl AppSchedule {
             }
 
             if !remove.is_empty() {
-                let mut lock = self.scheduled.lock();
-                for remove in &remove {
-                    lock.remove(remove);
+                let mut lock = inner.scheduled.lock();
+                for remove_item in &remove {
+                    lock.remove(remove_item);
                 }
+                drop(lock);
                 remove.clear();
             }
         }
     }
+}
+
+/// The pending starts and the way to be woken about them — what the schedule
+/// and its loop both need, and the only thing they share.
+struct AppScheduleInner {
+    /// What is waiting to start, and whether it was asked for directly: a
+    /// direct request restarts a unit that is already running, one pulled in
+    /// as a dependency leaves it alone.
+    scheduled: Mutex<HashMap<UnitKey, bool>>,
+    /// Taken here and not in [`run`](AppScheduleRunnerTask::run), which is
+    /// spawned later: a listener only wakes for triggers after it was
+    /// created, and a target named on the command line is scheduled before
+    /// the loop is up.
+    event_listener: EventListener,
 }

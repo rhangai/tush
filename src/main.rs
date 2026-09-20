@@ -54,11 +54,10 @@ mod ui;
 mod unit;
 mod util;
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use clap::Parser;
-use tokio::time::sleep;
 
 use crate::{
     app::App,
@@ -86,8 +85,8 @@ async fn main() -> Result<()> {
 ///
 /// What comes up started is what the command line named, and nothing else;
 /// the screen is how the rest are run. Scheduling them before the UI is safe
-/// because [`App::run`] is already spawned and a request made before it is
-/// polled is one it still wakes for.
+/// because [`App::run_tasks`] has already spawned it, and a request made
+/// before it is polled is one it still wakes for.
 async fn run(args: RunArgs) -> Result<()> {
     if args.no_tui {
         bail!("`--no-tui` is not built yet");
@@ -96,10 +95,7 @@ async fn run(args: RunArgs) -> Result<()> {
 
     let config = Config::from_path(&args.session.config)?;
     let app = Arc::new(App::new(&config)?);
-    {
-        let app = app.clone();
-        tokio::spawn(async move { app.run().await });
-    }
+    app.run_tasks();
 
     for target in args.session.targets {
         match target {
