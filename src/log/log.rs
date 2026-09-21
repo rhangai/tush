@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::ops::Range;
 use std::sync::{
     Arc, Weak,
@@ -354,7 +355,7 @@ pub struct LogWriterId {
     /// keeps per writer. `u32::MAX` is [`UNSET`](LogWriterId::UNSET) and
     /// belongs to no writer, which is why an arena of that many writers
     /// cannot exist.
-    raw: u32,
+    raw: NonZeroU32,
 }
 
 impl LogWriterId {
@@ -364,7 +365,7 @@ impl LogWriterId {
     /// chunks is continued by *that writer's* next chunk, so notes sharing an
     /// id with a process could be spliced into the middle of one of its
     /// lines. An id of their own is what keeps the two apart.
-    pub const NOTES: Self = Self::new(0);
+    pub const NOTES: Self = Self::new(1);
 
     /// The stamp a chunk carries before any writer has claimed it.
     ///
@@ -376,12 +377,19 @@ impl LogWriterId {
     /// Mint the id numbered `raw`. The log is the only thing that should be
     /// choosing these.
     pub(super) const fn new(raw: u32) -> Self {
-        Self { raw }
+        Self {
+            raw: NonZeroU32::new(raw).unwrap(),
+        }
     }
 
     /// The number behind the id, for indexing.
-    pub const fn index(self) -> usize {
-        self.raw as usize
+    pub(crate) fn index(&self) -> usize {
+        self.raw.get() as usize
+    }
+
+    /// Check if is note
+    pub fn is_note(&self) -> bool {
+        self.raw == Self::NOTES.raw
     }
 }
 
@@ -587,15 +595,19 @@ impl LogInner {
             chunks_free: Mutex::new(Vec::new()),
             partials: Mutex::new(Partials::new()),
             version: AtomicU64::new(0),
-            // Zero belongs to the notes; processes start after it.
-            next_writer_id: AtomicU32::new(1),
+            // 1 belongs to the notes; processes start after it.
+            next_writer_id: AtomicU32::new(2),
             pushed_hint: AtomicU64::new(0),
         })
     }
 
     /// Claim the next writer id.
     fn next_writer_id(&self) -> LogWriterId {
-        LogWriterId::new(self.next_writer_id.fetch_add(1, Ordering::Relaxed))
+        let mut n = self.next_writer_id.fetch_add(1, Ordering::Relaxed);
+        while n == 0 {
+            n = self.next_writer_id.fetch_add(1, Ordering::Relaxed);
+        }
+        LogWriterId::new(n)
     }
 }
 
