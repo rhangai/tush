@@ -84,6 +84,7 @@ impl Process {
         let pid = *pid;
         let wait_result = child.wait().await;
         if pid.is_none_or(|pid| !group::alive(pid)) {
+            self.forget_group();
             self.writer_wait().await;
         }
         Ok(match wait_result {
@@ -108,6 +109,18 @@ impl Process {
         let reason = self.kill_inner(true).await?;
         self.writer_wait().await;
         Ok(reason)
+    }
+
+    /// Forget the group's number, now that the group is known to be gone.
+    ///
+    /// A pgid means something only while the group has members; once it empties
+    /// the kernel may hand the number to somebody else, and every later signal
+    /// or probe would be about a stranger. Recording what was observed beats
+    /// asking again later, when the answer can have turned into a lie.
+    fn forget_group(&mut self) {
+        if let ProcessInner::Running { pid, .. } = &mut self.inner {
+            *pid = None;
+        }
     }
 
     async fn writer_wait(&mut self) {
@@ -155,6 +168,7 @@ impl Process {
             if let Some(reason) = reason
                 && group::wait(pid, deadline).await
             {
+                self.forget_group();
                 return Ok(reason);
             }
         }
@@ -169,7 +183,9 @@ impl Process {
             Some(reason) => reason,
             None => killed_reason(child.wait().await),
         };
-        group::wait(pid, Instant::now() + Duration::from_millis(SHUTDOWN_TIMER)).await;
+        if group::wait(pid, Instant::now() + Duration::from_millis(SHUTDOWN_TIMER)).await {
+            self.forget_group();
+        }
         Ok(reason)
     }
 }
