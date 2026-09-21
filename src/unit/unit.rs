@@ -42,9 +42,9 @@ pub struct Unit {
 }
 
 impl Unit {
-    /// Create a stopped unit with an empty log.
-    pub fn new(behavior: UnitBehavior) -> Self {
-        let log = Log::new(4096);
+    /// Create a stopped unit with an empty log of `log_size` bytes.
+    pub fn new(behavior: UnitBehavior, log_size: usize) -> Self {
+        let log = Log::with_bytes(log_size);
         Self {
             log,
             handle_manager: UnitHandleManager::new(),
@@ -493,7 +493,9 @@ mod test {
         argv.push(SmallStr::new("bash"));
         argv.push(SmallStr::new("-c"));
         argv.push(SmallStr::new(script));
-        Unit::new(UnitBehavior::run(SmallStr::new("test"), argv))
+        // A size, not the size: nothing here reads the log back, so the
+        // smallest one that holds a line will do.
+        Unit::new(UnitBehavior::run(SmallStr::new("test"), argv), 4096)
     }
 
     /// The window the manager's id check closes.

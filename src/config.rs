@@ -65,6 +65,18 @@ use serde::{
 use crate::util::str::SmallStr;
 use crate::util::types::{SmallMultiVecStr, SmallVecStr};
 
+/// How much output a log keeps when the file does not say.
+///
+/// A mebibyte, which is what a log has always held here. At most eight
+/// thousand short lines, fewer as they get longer — enough to scroll back
+/// through what a proc just did, which is what this is for.
+const DEFAULT_LOG_SIZE: usize = 1024 * 1024;
+
+/// [`DEFAULT_LOG_SIZE`], as `serde` wants its defaults.
+fn default_log_size() -> usize {
+    DEFAULT_LOG_SIZE
+}
+
 /// A parsed config file: every proc a session is made of.
 ///
 /// A list though the file writes a mapping, because nothing downstream wants
@@ -75,13 +87,37 @@ use crate::util::types::{SmallMultiVecStr, SmallVecStr};
 /// Sorted is still *stable*, which is what dependency resolution needs as its
 /// tie breaker; what is lost is influencing the order by moving lines around,
 /// and a config that cares should say so with a `depends`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// How much output to keep per proc, in bytes.
+    ///
+    /// Bytes rather than lines because bytes is what the ring promises: a log
+    /// of long lines remembers fewer of them than a line count would suggest.
+    /// This is a tail and not a transcript, so the default is small on
+    /// purpose.
+    ///
+    /// One for every proc rather than one each, because the knob a person
+    /// reaches for is how far back the pane scrolls, not how far back one
+    /// proc scrolls.
+    #[serde(default = "default_log_size")]
+    pub log_size: usize,
     /// Every proc the file declared, sorted by key.
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_procs")]
     pub procs: Vec<ConfigProc>,
+}
+
+/// Written out rather than derived, so that an empty [`Config`] and one from
+/// an empty file agree: a derived `log_size` would be zero, which is a log
+/// with no room in it.
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            log_size: DEFAULT_LOG_SIZE,
+            procs: Vec::new(),
+        }
+    }
 }
 
 impl Config {

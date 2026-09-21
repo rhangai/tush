@@ -38,6 +38,8 @@ pub struct UnitMap {
     /// The one dispatcher every unit in the map was given a clone of, so a
     /// screen watches the session rather than one proc at a time.
     event_dispatcher: EventDispatcher,
+    /// How much output each unit's log keeps, in bytes.
+    log_size: usize,
 }
 
 /// How a unit is addressed once the config has been checked.
@@ -55,24 +57,29 @@ pub struct UnitKey {
 }
 
 impl UnitMap {
-    /// A map holding one unit per behavior.
-    pub fn new<K>(behaviors: HashMap<K, UnitBehavior>) -> Self
+    /// A map holding one unit per behavior, each keeping `log_size` bytes.
+    pub fn new<K>(behaviors: HashMap<K, UnitBehavior>, log_size: usize) -> Self
     where
         K: AsRef<str>,
     {
-        let mut map = Self::with_capacity(behaviors.len());
+        let mut map = Self::with_capacity(behaviors.len(), log_size);
         for (key, behavior) in behaviors {
             map.add(key.as_ref(), behavior);
         }
         map
     }
 
-    /// A map holding one unit per behavior.
-    pub fn with_capacity(capacity: usize) -> Self {
+    /// An empty map with room for `capacity` units.
+    ///
+    /// `log_size` is taken here and not per unit because every unit in one
+    /// session gets the same: it is the config's answer to how far back the
+    /// pane scrolls, and there is one config.
+    pub fn with_capacity(capacity: usize, log_size: usize) -> Self {
         Self {
             interner: DefaultStringInterner::new(),
             units: HashMap::with_capacity(capacity),
             event_dispatcher: EventDispatcher::new(),
+            log_size,
         }
     }
 
@@ -85,7 +92,7 @@ impl UnitMap {
 
     /// Add a new unit
     pub fn insert(&mut self, key: UnitKey, behavior: UnitBehavior) {
-        let mut unit = Unit::new(behavior);
+        let mut unit = Unit::new(behavior, self.log_size);
         unit.set_event_dispatcher(self.event_dispatcher.clone());
         self.units.insert(key.value, unit);
     }

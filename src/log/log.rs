@@ -9,7 +9,7 @@ use crate::log::line::LOG_LINE_SIZE;
 use crate::{
     log::{
         LogBuffer,
-        chunk::{LogChunk, LogChunkData, LogReaderChunk},
+        chunk::{LOG_CHUNK_SIZE, LogChunk, LogChunkData, LogReaderChunk},
     },
     util::{
         arena::{Arena, ArenaBlock},
@@ -421,6 +421,16 @@ impl Log {
         Self {
             inner: LogInner::new(capacity),
         }
+    }
+
+    /// A log holding `bytes` of output, rounded down to whole chunks.
+    ///
+    /// Bytes because that is the figure the ring keeps exactly — how many
+    /// lines it buys depends on how long they turn out. One chunk is the
+    /// floor, since [`new`](Log::new) panics on a log with no room and a
+    /// config asking for none meant the smallest one.
+    pub fn with_bytes(bytes: usize) -> Self {
+        Self::new((bytes / LOG_CHUNK_SIZE).max(1))
     }
 
     /// Get a handle that can append to this log.
