@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use std::{collections::HashMap, sync::Arc};
 
-use string_interner::{DefaultStringInterner, DefaultSymbol};
+use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
 use tokio::task::JoinSet;
 
 use crate::error::UnitMapError;
@@ -54,6 +54,28 @@ pub struct UnitMap {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UnitKey {
     value: DefaultSymbol,
+}
+
+/// Out to a client as the opaque number it is.
+///
+/// Written out rather than derived because the symbol has no representation
+/// of its own, and because what crosses is a *handle*: it means something
+/// only against the interner that minted it, so a client echoes it back at
+/// nothing — a URL names a unit by name. Fabricating one is harmless for the
+/// same reason every lookup here answers `None` for a key it does not hold.
+impl serde::Serialize for UnitKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(self.value.to_usize() as u64)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UnitKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <u64 as serde::Deserialize>::deserialize(deserializer)?;
+        let value = DefaultSymbol::try_from_usize(raw as usize)
+            .ok_or_else(|| serde::de::Error::custom("not a unit key"))?;
+        Ok(Self { value })
+    }
 }
 
 impl UnitMap {

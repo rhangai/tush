@@ -1,0 +1,184 @@
+use std::sync::Arc;
+
+use axum::{
+    Json, Router,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::Serialize;
+
+use crate::{
+    log::{LogLine, LogRegion},
+    runner::RunnerState,
+    server::state::ServerState,
+    unit::{UnitChoice, UnitEvent, UnitKey},
+    view::ViewUnit,
+};
+
+/// Every route a client speaks, over whatever the caller is listening on.
+///
+/// Units are addressed by name and not by [`UnitKey`]: a key is an interned
+/// symbol that means nothing outside the process that made it, and a path a
+/// person can type is most of why this is HTTP at all. The conversion happens
+/// in the unit map, which is the one place names become keys.
+pub fn router(state: Arc<ServerState>) -> Router {
+    Router::new()
+        .route("/units", get(units))
+        .route("/units/{name}/log", get(log))
+        .route("/units/{name}/choices", get(choices))
+        .route("/units/{name}/start", post(start))
+        .route("/units/{name}/stop", post(stop))
+        .route("/units/{name}/dispatch", post(dispatch))
+        .with_state(state)
+}
+
+/// What a log request answers with, when it answers at all.
+///
+/// Reports the region it actually cut rather than the one asked for, because
+/// a region counted back from the end can hold fewer lines than it names —
+/// which is what lets a pane draw the overlap instead of blanking.
+#[derive(Serialize)]
+struct LogBody<'a> {
+    region: LogRegion,
+    revision: u64,
+    lines: &'a [LogLine],
+}
+
+/// Every unit, as a row.
+///
+/// Built per request rather than kept: the names never change, but a state
+/// does, and a handful of inline strings is cheaper than a copy that has to
+/// be invalidated.
+async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
+    let unit_map = state.app().unit_map();
+    let mut units: Vec<ViewUnit> = unit_map
+        .keys()
+        .map(|unit_key| ViewUnit {
+            unit_key,
+            name: unit_map.name(unit_key).unwrap_or_default(),
+            name_short: unit_map.name_short(unit_key).unwrap_or(None),
+            mode: unit_map.mode(unit_key).unwrap_or(None),
+            mode_short: unit_map.mode_short(unit_key).unwrap_or(None),
+            // Unreachable: the keys came out of the map. `Stopped` is what
+            // a unit with no handle reports anyway, so it is the answer that
+            // says the same thing rather than a `Default` invented for it.
+            state: unit_map.state(unit_key).unwrap_or(RunnerState::Stopped),
+        })
+        .collect();
+    units.sort_by(|a, b| a.name.cmp(&b.name));
+    Json(units)
+}
+
+/// A rectangle of one unit's log.
+///
+/// `If-None-Match` carries the revision the client already drew, and a log
+/// that has not moved answers `304` with no body — the same test
+/// [`ViewApp`](crate::view::ViewApp) does against its own reader, which is
+/// most syncs, and the reason a revision is carried at all.
+///
+/// The region is a query and not a body so that a person can ask for one with
+/// a browser: `?line_start=0&line_end=50&column_start=0&column_end=200`.
+async fn log(
+    State(state): State<Arc<ServerState>>,
+    Path(name): Path<String>,
+    Query(region): Query<LogRegion>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(key) = key(&state, &name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let drawn = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim_matches('"').parse::<u64>().ok());
+
+    // Everything that touches the reader happens inside here, so there is no
+    // guard alive at an `.await` — see `ServerState::read_log`.
+    let answer = state.read_log(key, region, |lines, revision| {
+        if drawn == Some(revision) {
+            return None;
+        }
+        Some((
+            revision,
+            serde_json::to_string(&LogBody {
+                region,
+                revision,
+                lines,
+            }),
+        ))
+    });
+
+    match answer {
+        None => StatusCode::NOT_FOUND.into_response(),
+        Some(None) => StatusCode::NOT_MODIFIED.into_response(),
+        Some(Some((_, Err(_)))) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Some(Some((revision, Ok(body)))) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::ETAG, &format!("\"{revision}\"")),
+            ],
+            body,
+        )
+            .into_response(),
+    }
+}
+
+/// Everything that can be asked of a unit right now.
+async fn choices(
+    State(state): State<Arc<ServerState>>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<UnitChoice>>, StatusCode> {
+    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    let mut out = Vec::new();
+    state
+        .app()
+        .unit_map()
+        .choices(key, &mut out)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(out))
+}
+
+/// Ask for a unit to run, once what it depends on is up.
+///
+/// `202` and not `200`: the session records what is wanted and a task
+/// performs it, so by the time this answers nothing has started yet. Every
+/// command here says the same thing.
+async fn start(
+    State(state): State<Arc<ServerState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    state.app().schedule(key);
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Stop a unit, without waiting for it to be gone.
+async fn stop(
+    State(state): State<Arc<ServerState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    state.app().stop(key);
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Hand a unit an event and let its behavior decide.
+async fn dispatch(
+    State(state): State<Arc<ServerState>>,
+    Path(name): Path<String>,
+    Json(event): Json<UnitEvent>,
+) -> Result<StatusCode, StatusCode> {
+    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    state
+        .app()
+        .dispatch(key, event)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// The key a name was interned under, or nothing for a name no proc has.
+fn key(state: &ServerState, name: &str) -> Option<UnitKey> {
+    state.app().unit_map().key(name)
+}

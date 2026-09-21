@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
+axum = "0.8.9"
 clap = { version = "4.6.6", features = ["derive", "env"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 enum_dispatch = "0.3"
@@ -16,6 +17,7 @@ petgraph = { version = "0.8", default-features = false, features = ["std"] }
 ratatui = "0.30.2"
 replace_with = "0.1.8"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 smallvec = { version = "1.16", features = ["serde"] }
 smol_str = { version = "0.3.6", features = ["serde"] }
 string-interner = "0.20.0"

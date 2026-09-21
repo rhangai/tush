@@ -7,7 +7,7 @@ use crate::base::ExitReason;
 /// The variants are ordered: each one is "later" than the one above it, and
 /// the `set_*` methods below only ever move down that order. Everything from
 /// [`ExitSuccess`](RunnerState::ExitSuccess) down is terminal.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum RunnerState {
     /// Nothing was ever started (the state a unit reports with no handle).
     Stopped,

@@ -18,6 +18,7 @@
 //! crashed server left behind, and how a connection is ended when the session
 //! is.
 
+mod http;
 mod server;
 mod socket;
 mod state;

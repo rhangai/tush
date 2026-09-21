@@ -33,8 +33,9 @@ pub struct ServerState {
     /// comes from a config read once, so the map itself needs no lock and
     /// only the slot does.
     ///
-    /// `None` until somebody looks at that unit. A reader is the log's size
-    /// over again, and a session's units are mostly not the one on screen.
+    /// Each reader starts [detached](LogReader::is_detached) and is put on its
+    /// unit's log by the first read of it. The memory is taken here either
+    /// way, a reader being the log's size over again; only the attach waits.
     logs: HashMap<UnitKey, Mutex<ServerLog>>,
 }
 
@@ -65,9 +66,11 @@ impl ServerState {
     /// Cut `region` out of a unit's log and hand it to `read`, with the
     /// revision it was taken at.
     ///
-    /// `None` for a key no unit was declared under, and for a unit whose log
-    /// has gone — neither is something a caller can act on beyond answering
-    /// the client that there is nothing there.
+    /// `None` for a key no unit was declared under, which is not something a
+    /// caller can act on beyond answering the client that there is nothing
+    /// there. A unit whose log has gone quiet is not that case: it reads as
+    /// the lines already copied, which is what a view of a finished process
+    /// should show.
     ///
     /// **The lines are lent and not returned.** A closure is what keeps the
     /// guard out of an `async fn`: a handler holding one across an `.await`
@@ -80,7 +83,7 @@ impl ServerState {
         read: impl FnOnce(&[LogLine], u64) -> T,
     ) -> Option<T> {
         let mut slot = self.logs.get(&key)?.lock();
-        if !slot.reader.is_initialized() {
+        if slot.reader.is_detached() {
             self.app.unit_map().log_reader_into(key, &mut slot.reader);
         }
         let ServerLog { reader, lines } = &mut *slot;

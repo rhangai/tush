@@ -26,7 +26,9 @@ const SOCKET_MODE: u32 = 0o600;
 /// this owns the path as much as the listener: dropping it is what stops the
 /// next server from finding a socket nobody is listening on.
 pub struct ServerSocket {
-    listener: UnixListener,
+    /// Taken once, by whatever serves on it. `None` afterwards: the listener
+    /// is owned by value from then on, and this half stays only to unlink.
+    listener: Option<UnixListener>,
     path: PathBuf,
 }
 
@@ -64,11 +66,19 @@ impl ServerSocket {
         // already closed off, so failing here is not worth refusing to start.
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(SOCKET_MODE));
 
-        Ok(Self { listener, path })
+        Ok(Self {
+            listener: Some(listener),
+            path,
+        })
     }
 
-    pub fn listener(&self) -> &UnixListener {
-        &self.listener
+    /// Hand the listener over, once.
+    ///
+    /// `None` on a second call, which is a server asked to run twice — there
+    /// is nothing to serve on and nothing to report, since the first call
+    /// still holds it.
+    pub fn take_listener(&mut self) -> Option<UnixListener> {
+        self.listener.take()
     }
 
     pub fn path(&self) -> &Path {

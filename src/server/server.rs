@@ -1,12 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
 
-use tokio::{net::UnixStream, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     app::App,
     error::ServerError,
-    server::{socket::ServerSocket, state::ServerState},
+    server::{http, socket::ServerSocket, state::ServerState},
 };
 
 /// A session listening for clients, with no screen of its own.
@@ -16,8 +15,7 @@ use crate::{
 /// awaiting [`App::shutdown`] afterwards — the same arrangement `tush run`
 /// has, with a signal where the screen used to be.
 pub struct Server {
-    /// Handed to every connection, which is what a connection reads the
-    /// session through once it has frames to answer with.
+    /// What every request reads the session through.
     state: Arc<ServerState>,
     socket: ServerSocket,
 }
@@ -40,54 +38,22 @@ impl Server {
         self.socket.path()
     }
 
-    /// Accept until `cancel`, then close every connection still open.
+    /// Serve until `cancel`, then let the requests in flight finish.
     ///
-    /// The connections are a [`JoinSet`] and not loose spawns, so the set is
-    /// the list of what is still attached: closing the socket does not reach
-    /// a task already blocked on a client, and a task holding an
-    /// [`Arc<App>`](App) that nothing can end is a session that never
-    /// finishes shutting down.
+    /// The accept loop is `axum`'s, which is most of why it is here: graceful
+    /// shutdown, one connection per client with requests pipelined on it, and
+    /// a request that panics taken as that request's failure rather than the
+    /// server's.
     ///
-    /// A connection that fails is dropped and the loop goes on; only the
-    /// listener itself failing ends a server, because that is the one failure
-    /// no future client can get past.
-    pub async fn run(self, cancel: CancellationToken) -> Result<(), ServerError> {
-        let mut connections = JoinSet::new();
-        let result = loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break Ok(()),
-                // Disabled while the set is empty, `join_next` answering
-                // `None` at once — which is why this cannot spin.
-                Some(_finished) = connections.join_next() => {}
-                accepted = self.socket.listener().accept() => match accepted {
-                    Ok((stream, _address)) => {
-                        connections.spawn(connection(self.state.clone(), stream));
-                    }
-                    Err(error) => break Err(ServerError::Accept(error)),
-                },
-            }
+    /// The socket outlives the serving and is dropped with this, which is
+    /// what unlinks the path — see [`ServerSocket`].
+    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), ServerError> {
+        let Some(listener) = self.socket.take_listener() else {
+            return Ok(());
         };
-        connections.shutdown().await;
-        result
-    }
-}
-
-/// One client, for as long as it is there.
-///
-/// It reads and discards, which is the whole of the protocol so far: the
-/// frame loop goes here, and until it does this is what proves a client can
-/// reach the socket and be let go of when the session ends.
-///
-/// The [`ServerState`] is held rather than borrowed because this outlives the
-/// call that spawned it; what makes that safe is the [`JoinSet`] in
-/// [`run`](Server::run), which ends every one of these before the session is
-/// shut down.
-async fn connection(_state: Arc<ServerState>, mut stream: UnixStream) {
-    let mut buffer = [0u8; 1024];
-    loop {
-        match tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
+        axum::serve(listener, http::router(self.state.clone()))
+            .with_graceful_shutdown(async move { cancel.cancelled().await })
+            .await
+            .map_err(ServerError::Accept)
     }
 }

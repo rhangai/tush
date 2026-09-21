@@ -10,7 +10,7 @@ use crate::{
 ///
 /// A copy and not a view: it reports what the session looked like at the last
 /// [`sync`](ViewClient::sync), which is all a frame ever shows.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ViewUnit {
     /// How a [`ViewCommand`] addresses it. Not shown; see [`name`](ViewUnit::name).
     pub unit_key: UnitKey,
@@ -41,7 +41,7 @@ pub struct ViewUnit {
 /// wire: the socket client serializes a `ViewCommand` and the server plays it
 /// back into an [`App`](crate::app::App). The key goes in by copy, a command
 /// outliving the frame that made it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ViewCommand {
     /// Run it, restarting it if it was already running.
     Start { key: UnitKey },

@@ -5,7 +5,7 @@ use crate::util::str::SmallStr;
 /// One per menu entry: they all come out of
 /// [`choices`](crate::unit::UnitBehavior::choices), so there is no "do the
 /// default" — the user picked a named thing off a list.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum UnitEvent {
     /// Run it in the mode it is already on, restarting it if it is up.
     Start,
@@ -33,7 +33,7 @@ pub enum UnitAction {
 /// One entry in the list of things a unit can be asked right now.
 ///
 /// Not an "action": that name is what a dispatch *returns*.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UnitChoice {
     /// `Start`, `Restart` or `Stop` — a word of its own and not a built
     /// label, so the menu writes this and [`mode`](UnitChoice::mode) as two
