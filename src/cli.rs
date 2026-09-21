@@ -9,11 +9,10 @@
 //! tush attach                               the screen, over a socket
 //! ```
 //!
-//! Only `run` does anything yet. The other two parse — so the shape is
-//! settled and their flags are already spelled the way they will be — and
-//! then say they are not built.
+//! `attach` only parses, so far — the shape is settled and its flags are
+//! already spelled the way they will be — and then says it is not built.
 
-use std::{str::FromStr, time::Duration};
+use std::{path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -74,11 +73,18 @@ pub struct RunArgs {
     pub no_tui: bool,
 }
 
-/// A session with no screen. Not built yet.
+/// A session with no screen.
 #[derive(Args, Debug)]
 pub struct ServeArgs {
     #[command(flatten)]
     pub session: SessionArgs,
+    /// Where to listen, as a path to a Unix socket.
+    ///
+    /// `None` is a path derived from the config rather than a fixed one, so
+    /// that two sessions on a machine do not collide — see
+    /// [`default_socket_path`](crate::server::default_socket_path).
+    #[arg(long, value_name = "PATH")]
+    pub socket: Option<PathBuf>,
 }
 
 /// A screen with no session of its own. Not built yet.
