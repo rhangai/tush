@@ -115,12 +115,6 @@ impl Unit {
     }
 
     /// Ensure the handle is cretead
-    pub fn create(&self) -> Result<Arc<UnitHandle>, UnitError> {
-        let mut manager = self.handle_manager.lock();
-        manager.ensure_handle(|_| true, || self.spawn())
-    }
-
-    /// Ensure the handle is cretead
     pub fn ensure_created(&self) -> Result<Arc<UnitHandle>, UnitError> {
         let mut manager = self.handle_manager.lock();
         manager.ensure_handle(|_| true, || self.spawn())
