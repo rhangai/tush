@@ -72,11 +72,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     app::App,
-    cli::{Cli, Command, RunArgs, ServeArgs},
+    cli::{AttachArgs, Cli, Command, RunArgs, ServeArgs},
     config::Config,
     server::{Server, default_socket_path},
     ui::{Ui, UiTheme},
-    view::{ViewApp, ViewPrinter},
+    view::{ViewApp, ViewPrinter, ViewSocket},
 };
 
 #[tokio::main]
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Run(args) => run(args).await,
         Command::Serve(args) => serve(args).await,
-        Command::Attach(_) => bail!("`tush attach` is not built yet"),
+        Command::Attach(args) => attach(args).await,
     }
 }
 
@@ -138,6 +138,24 @@ async fn shutdown_printing(app: &App, printing: CancellationToken, printer: Join
     app.shutdown().await;
     printing.cancel();
     let _ = printer.await;
+}
+
+/// Show a session that is running somewhere else.
+///
+/// The screen is the whole of this process: there are no procs to stop, so
+/// quitting takes nothing down and the session carries on without it — the
+/// opposite of [`run`], and the reason the two are separate commands.
+///
+/// The poll rate is the refresh rate. They are free to differ — the task
+/// fetches on its own clock and the screen draws on its — and one number is
+/// what a person asked for until there is a reason for two.
+async fn attach(args: AttachArgs) -> Result<()> {
+    let refresh = args.screen.refresh()?;
+    let Some(socket) = args.socket else {
+        bail!("say which session to attach to, with --socket or TUSH_SOCKET");
+    };
+    let client = ViewSocket::connect(socket, refresh).await?;
+    Ok(Ui::run(client, refresh, UiTheme::default()).await?)
 }
 
 /// Build a session, print it, and let something else attach to it.

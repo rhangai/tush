@@ -155,3 +155,23 @@ pub enum ServerError {
     #[error("stopped accepting connections: {0}")]
     Accept(std::io::Error),
 }
+
+/// What stops a screen from following a session over a socket.
+///
+/// Only [`connect`](crate::view::ViewSocket::connect) hands one to a caller;
+/// after that they are the task's, and what a screen does about one is show
+/// the frame it already had — see [`ViewClient`](crate::view::ViewClient),
+/// which neither waits nor fails.
+#[derive(Debug, thiserror::Error)]
+pub enum ViewSocketError {
+    #[error("could not reach the session: {0}")]
+    Connect(std::io::Error),
+    #[error("the session answered badly: {0}")]
+    Http(hyper::Error),
+    #[error("could not build the request: {0}")]
+    Request(hyper::http::Error),
+    #[error("the session answered {0}")]
+    Status(u16),
+    #[error("could not read what the session said: {0}")]
+    Body(#[from] serde_json::Error),
+}

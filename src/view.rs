@@ -18,12 +18,16 @@
 mod app;
 mod client;
 mod print;
+mod socket;
 
 #[allow(unused_imports)]
 pub use app::ViewApp;
 
 #[allow(unused_imports)]
 pub use print::ViewPrinter;
+
+#[allow(unused_imports)]
+pub use socket::ViewSocket;
 
 #[allow(unused_imports)]
 pub use client::{ViewClient, ViewCommand, ViewLog, ViewUnit};
