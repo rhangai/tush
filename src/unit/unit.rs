@@ -423,3 +423,121 @@ impl UnitHandleManager {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod test {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::util::types::SmallVecStr;
+
+    /// A unit running `script` under `bash`.
+    ///
+    /// Every script here outlives the start that replaces it, which is the
+    /// only way to have an outgoing run to be wrong about.
+    fn unit(script: &str) -> Unit {
+        let mut argv = SmallVecStr::new();
+        argv.push(SmallStr::new("bash"));
+        argv.push(SmallStr::new("-c"));
+        argv.push(SmallStr::new(script));
+        Unit::new(UnitBehavior::run(SmallStr::new("test"), argv))
+    }
+
+    /// The window the manager's id check closes.
+    ///
+    /// [`Unit::start`] releases the manager lock between building a handle and
+    /// releasing it, so a second start can replace the first in between. The
+    /// replaced one must not run: nothing holds it any more, so a process it
+    /// spawned would have nobody left to stop it.
+    #[tokio::test]
+    async fn a_handle_replaced_before_it_started_does_not_run() {
+        let unit = unit("sleep 30");
+        let superseded = unit.handle_manager.lock().set_handle(unit.spawn().unwrap());
+        let current = unit.handle_manager.lock().set_handle(unit.spawn().unwrap());
+
+        superseded.start();
+        current.start();
+
+        // Only the current one may be waited on: `wait_for` opens the start
+        // gate, so asking the superseded handle anything would start it.
+        assert!(current.runner_handle.wait_for(|s| s.is_started()).await);
+        assert_eq!(superseded.state(), RunnerState::Waiting);
+
+        current.abort_and_wait().await;
+    }
+
+    /// Three runs, each asked for while the last was still going: none of them
+    /// overlaps, and none of them is left behind.
+    ///
+    /// The script records its own pid, so the assertions are about processes
+    /// and not about what the handles report — a state machine agreeing with
+    /// itself is not the thing at risk here.
+    #[tokio::test]
+    async fn overlapping_restarts_leave_no_process_behind() {
+        let path = std::env::temp_dir().join(format!("tush-restart-{}.pids", std::process::id()));
+        _ = std::fs::remove_file(&path);
+        let unit = unit(&format!("echo $$ >> {}; sleep 30", path.display()));
+
+        let mut handles = Vec::new();
+        for run in 1..=3 {
+            handles.push(unit.start().unwrap());
+            let pids = wait_for_pids(&path, run).await;
+            // The incoming run cannot exist until the outgoing one is gone.
+            for pid in &pids[..pids.len() - 1] {
+                assert!(!alive(*pid), "pid {pid} was still up when run {run} began");
+            }
+        }
+
+        unit.stop();
+        for handle in &handles {
+            handle.abort_and_wait().await;
+        }
+
+        let pids = read_pids(&path);
+        assert_eq!(pids.len(), 3, "each start should have reached the script");
+        for pid in pids {
+            assert!(!alive(pid), "pid {pid} survived the unit");
+        }
+        _ = std::fs::remove_file(&path);
+    }
+
+    /// The pids recorded so far, once there are `count` of them.
+    ///
+    /// Polled, because the run writes its pid on its own schedule; the
+    /// deadline is what turns a run that never starts into a failure rather
+    /// than a hang.
+    async fn wait_for_pids(path: &Path, count: usize) -> Vec<u32> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let pids = read_pids(path);
+            if pids.len() >= count {
+                return pids;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "only {} of {count} runs reached the script",
+                pids.len()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn read_pids(path: &Path) -> Vec<u32> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect()
+    }
+
+    /// `kill(pid, 0)` fails with `ESRCH` only when the process is gone, which
+    /// makes it the liveness test. `EPERM` is one we may not signal, and that
+    /// still counts as alive.
+    fn alive(pid: u32) -> bool {
+        if unsafe { libc::kill(pid as i32, 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+}
