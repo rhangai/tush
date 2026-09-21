@@ -65,25 +65,32 @@ impl Process {
         self.inner.start()
     }
 
-    /// Waits for the process to exit, draining the remaining stdout.
+    /// Waits for the leader to exit, draining what is left of its output.
+    ///
+    /// The drain waits on the reader task, which ends at EOF — and EOF needs
+    /// every holder of the pipe to let go, grandchildren included. So it is
+    /// awaited only when the group is already empty, where EOF is on its way;
+    /// a leader that left somebody behind reports its status now and leaves
+    /// the reader running, rather than showing a process that has exited as
+    /// `Running` for as long as the survivor lives.
     ///
     /// Errors if the process was never started. A failed `wait` is reported as
     /// [`ExitReason::Error(None)`](ExitReason::Error) rather than an `Err`,
     /// since the process is gone either way.
     pub async fn wait(&mut self) -> Result<ExitReason, ProcessError> {
-        if let ProcessInner::Running { child, .. } = &mut self.inner {
-            let wait_result = child.wait().await;
+        let ProcessInner::Running { child, pid, .. } = &mut self.inner else {
+            return Err(ProcessError::NotRunning);
+        };
+        let pid = *pid;
+        let wait_result = child.wait().await;
+        if pid.is_none_or(|pid| !group::alive(pid)) {
             self.writer_wait().await;
-            Ok(match wait_result {
-                Ok(status) if status.success() => ExitReason::Success,
-                Ok(status) => {
-                    ExitReason::Error(status.code().and_then(|v| NonZeroU8::new(v as u8)))
-                }
-                Err(_) => ExitReason::Error(None),
-            })
-        } else {
-            Err(ProcessError::NotRunning)
         }
+        Ok(match wait_result {
+            Ok(status) if status.success() => ExitReason::Success,
+            Ok(status) => ExitReason::Error(status.code().and_then(|v| NonZeroU8::new(v as u8))),
+            Err(_) => ExitReason::Error(None),
+        })
     }
 
     /// Kills the process.
@@ -266,7 +273,7 @@ mod group {
     /// `kill(-pgid, 0)` fails with `ESRCH` only when the group is gone, which
     /// makes it the liveness test. `EPERM` is a member we may not signal, and
     /// that still counts as alive.
-    fn alive(pid: u32) -> bool {
+    pub fn alive(pid: u32) -> bool {
         if unsafe { libc::kill(-(pid as i32), 0) } == 0 {
             return true;
         }
@@ -292,6 +299,10 @@ mod group {
 
     pub async fn wait(_pid: Option<u32>, _deadline: Instant) -> bool {
         true
+    }
+
+    pub fn alive(_pid: u32) -> bool {
+        false
     }
 }
 
