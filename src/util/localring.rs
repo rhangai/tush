@@ -11,6 +11,16 @@
 //! `&mut self`, so there is no locking and no synchronisation. Sharing one
 //! between tasks is the job of whatever wraps it.
 //!
+//! # Two capacities
+//!
+//! The slots are built once and never again, but how many of them the window
+//! may use is
+//! [`set_soft_capacity`](LocalRingBuffer::set_soft_capacity)'s to change: a
+//! ring can be made shorter and longer again without building, dropping or
+//! reallocating anything. That is for an owner that has to stand in for
+//! several sizes over its life and cannot pay an allocation each time it
+//! changes.
+//!
 //! # Recycled, not cleared
 //!
 //! [`push`](LocalRingBuffer::push) returns the previous occupant of the slot
@@ -43,6 +53,12 @@ pub struct LocalRingBuffer<T> {
     /// which is what tells a full ring from an empty one when both land on
     /// the same slot.
     end_offset: usize,
+    /// How many slots the window may use, never above `items.len()`.
+    ///
+    /// Everything outward facing answers for this and not for the slot count:
+    /// a ring of a thousand slots held at a hundred *is* a ring of a hundred,
+    /// and the other nine hundred only mean that growing back costs nothing.
+    soft_capacity: usize,
 }
 
 impl<T> LocalRingBuffer<T> {
@@ -68,6 +84,7 @@ impl<T> LocalRingBuffer<T> {
         let mut items = Vec::with_capacity(capacity);
         items.resize_with(capacity, &mut f);
         Self {
+            soft_capacity: items.len(),
             items: items.into_boxed_slice(),
             start_offset: 0,
             end_offset: 0,
@@ -80,14 +97,40 @@ impl<T> LocalRingBuffer<T> {
     /// The slot comes back holding whatever the element it displaced left
     /// there; see the [module docs](self) on resetting it.
     pub fn push(&mut self) -> &mut T {
-        if self.len() == self.items.len() {
-            // Full: the oldest element is the one being recycled.
+        if self.len() == self.soft_capacity {
+            // Full: the oldest element is the one being recycled. Full at the
+            // soft capacity, so the slot handed back is not the element just
+            // evicted but the one that sat there a whole lap ago — which is
+            // the same to a caller that overwrites it.
             self.start_offset += 1;
         }
         let index = self.index_of(self.end_offset);
         self.end_offset += 1;
         self.normalize();
         &mut self.items[index]
+    }
+
+    /// Hold the ring to `capacity` elements from now on.
+    ///
+    /// Lowering it drops the oldest down to the new length, which is what
+    /// pushing past it would have done anyway. Raising it loses nothing and
+    /// allocates nothing: the slots were always there, so the window simply
+    /// has further to grow.
+    ///
+    /// Asking for more than there are slots gives the slots — a caller
+    /// growing a ring back is asking for room and the answer is however much
+    /// there is, which it can check against
+    /// [`max_capacity`](Self::max_capacity) if it needs a bigger ring than
+    /// this one. Zero gives one, for the reason
+    /// [`new_with`](Self::new_with) refuses it: a ring with nowhere to put
+    /// anything could not honour [`push`](Self::push).
+    pub fn set_soft_capacity(&mut self, capacity: usize) {
+        let capacity = capacity.clamp(1, self.items.len());
+        self.soft_capacity = capacity;
+        if self.len() > capacity {
+            self.start_offset = self.end_offset - capacity;
+            self.normalize();
+        }
     }
 
     /// Get the lenght of the buffer
@@ -100,9 +143,21 @@ impl<T> LocalRingBuffer<T> {
         self.start_offset == self.end_offset
     }
 
-    /// How many elements the ring can hold, which is also how many were
-    /// built at construction.
-    pub fn capacity(&self) -> usize {
+    /// How many elements the ring can hold.
+    ///
+    /// The one of the two that describes how the ring behaves — there is no
+    /// plain `capacity` because which of them was meant is the whole question
+    /// at every call site.
+    pub fn soft_capacity(&self) -> usize {
+        self.soft_capacity
+    }
+
+    /// How many slots were built at construction.
+    ///
+    /// The ceiling [`set_soft_capacity`](Self::set_soft_capacity) clamps to,
+    /// and so what a caller asks before deciding whether this ring can stand
+    /// in for the size it needs or has to be replaced.
+    pub fn max_capacity(&self) -> usize {
         self.items.len()
     }
 
@@ -257,7 +312,7 @@ mod test {
     fn starts_empty_with_every_slot_built() {
         let ring: LocalRingBuffer<u32> = LocalRingBuffer::new(4);
         assert_eq!(ring.len(), 0);
-        assert_eq!(ring.capacity(), 4);
+        assert_eq!(ring.soft_capacity(), 4);
         assert!(ring.is_empty());
         assert_eq!(collect(&ring), Vec::<u32>::new());
     }
@@ -269,7 +324,7 @@ mod test {
             n += 1;
             String::with_capacity(64)
         });
-        assert_eq!(ring.capacity(), 3);
+        assert_eq!(ring.soft_capacity(), 3);
         // Every slot exists up front, so nothing allocates later.
         assert!(ring.items.iter().all(|s| s.capacity() >= 64));
     }
@@ -288,6 +343,87 @@ mod test {
             assert_eq!(ring.len(), i as usize);
         }
         assert_eq!(collect(&ring), [1, 2, 3]);
+    }
+
+    /// Held short, a ring is short — the slots past the soft capacity are
+    /// not a longer ring, they are room to grow back into.
+    #[test]
+    fn a_soft_capacity_is_the_capacity() {
+        let mut ring = LocalRingBuffer::new(8);
+        ring.set_soft_capacity(3);
+        for i in 1..=6 {
+            push(&mut ring, i);
+        }
+        assert_eq!(collect(&ring), [4, 5, 6]);
+        assert_eq!(ring.soft_capacity(), 3);
+        assert_eq!(ring.max_capacity(), 8, "the slots are all still there");
+    }
+
+    #[test]
+    fn raising_it_loses_nothing() {
+        let mut ring = LocalRingBuffer::new(8);
+        ring.set_soft_capacity(2);
+        for i in 1..=3 {
+            push(&mut ring, i);
+        }
+        assert_eq!(collect(&ring), [2, 3]);
+
+        ring.set_soft_capacity(4);
+        push(&mut ring, 4);
+        push(&mut ring, 5);
+        assert_eq!(collect(&ring), [2, 3, 4, 5]);
+    }
+
+    /// Lowering it does what pushing past it would have done, and at once:
+    /// the ring behaves as its new capacity from the call, not from the next
+    /// push.
+    #[test]
+    fn lowering_it_drops_the_oldest() {
+        let mut ring = LocalRingBuffer::new(8);
+        for i in 1..=5 {
+            push(&mut ring, i);
+        }
+        ring.set_soft_capacity(2);
+        assert_eq!(collect(&ring), [4, 5]);
+        push(&mut ring, 6);
+        assert_eq!(collect(&ring), [5, 6]);
+    }
+
+    /// The window moves over the slots and the slots do not move, so a ring
+    /// held shorter than its array wraps at the array and is still in order.
+    #[test]
+    fn a_shortened_ring_wraps_in_order() {
+        let mut ring = LocalRingBuffer::new(4);
+        ring.set_soft_capacity(3);
+        for i in 0..20 {
+            push(&mut ring, i);
+            let held = collect(&ring);
+            let from = (i + 1).saturating_sub(3);
+            assert_eq!(held, (from..=i).collect::<Vec<_>>(), "after {i} pushes");
+        }
+    }
+
+    /// Past the slots is the slots: the ring cannot lend out memory it never
+    /// built, and a caller growing one back wants what there is.
+    #[test]
+    fn a_soft_capacity_past_the_slots_is_the_slots() {
+        let mut ring = LocalRingBuffer::new(4);
+        ring.set_soft_capacity(9);
+        assert_eq!(ring.soft_capacity(), 4);
+        for i in 1..=6 {
+            push(&mut ring, i);
+        }
+        assert_eq!(collect(&ring), [3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn a_zero_soft_capacity_is_one() {
+        let mut ring = LocalRingBuffer::new(4);
+        ring.set_soft_capacity(0);
+        assert_eq!(ring.soft_capacity(), 1);
+        push(&mut ring, 1);
+        push(&mut ring, 2);
+        assert_eq!(collect(&ring), [2]);
     }
 
     #[test]
@@ -456,7 +592,7 @@ mod test {
         for i in 0..10_000 {
             push(&mut ring, i);
             assert!(
-                ring.end_offset < 2 * ring.capacity(),
+                ring.end_offset < 2 * ring.max_capacity(),
                 "offsets grew without bound: {} after {i} pushes",
                 ring.end_offset
             );

@@ -468,7 +468,7 @@ impl Log {
     pub fn reader(&self) -> LogReader {
         LogReader::new(
             Arc::downgrade(&self.inner),
-            self.inner.history.lock().chunks.capacity(),
+            self.inner.history.lock().chunks.soft_capacity(),
         )
     }
 
@@ -1113,7 +1113,7 @@ impl LogReader {
 
     /// How many chunks it can hold, which is also how many the log can.
     pub fn capacity(&self) -> usize {
-        self.chunks.capacity()
+        self.chunks.soft_capacity()
     }
 
     /// How many chunks the log had pushed as of the last sync.
