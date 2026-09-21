@@ -31,6 +31,13 @@ const DEFAULT_FPS: f64 = 10.0;
 /// redraw is slower than what it redraws for.
 const FPS_RANGE: std::ops::RangeInclusive<f64> = 0.01..=1000.0;
 
+/// Where both ends read the socket path from when no flag says.
+///
+/// One variable for serving and attaching, so a shell that exports it once
+/// has both halves pointing at the same session. The flag wins over it, which
+/// is clap's own precedence and the one a person expects.
+const SOCKET_ENV: &str = "TUSH_SOCKET";
+
 /// `tush`, as the command line spells it.
 #[derive(Parser, Debug)]
 #[command(
@@ -80,10 +87,9 @@ pub struct ServeArgs {
     pub session: SessionArgs,
     /// Where to listen, as a path to a Unix socket.
     ///
-    /// `None` is a path derived from the config rather than a fixed one, so
-    /// that two sessions on a machine do not collide — see
-    /// [`default_socket_path`](crate::server::default_socket_path).
-    #[arg(long, value_name = "PATH")]
+    /// Neither given is a path under the runtime directory named after the
+    /// config, so that two sessions on one machine do not collide.
+    #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 }
 
@@ -92,6 +98,13 @@ pub struct ServeArgs {
 pub struct AttachArgs {
     #[command(flatten)]
     pub screen: ScreenArgs,
+    /// Which session to show, as the path to its Unix socket.
+    ///
+    /// No default, unlike the serving side: there is no config here to derive
+    /// one from, and picking one of the sockets lying around is worse than
+    /// asking.
+    #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
+    pub socket: Option<PathBuf>,
 }
 
 /// What makes a session: the file it is declared in, and what to start.
