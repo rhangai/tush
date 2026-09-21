@@ -472,6 +472,23 @@ impl Log {
         )
     }
 
+    /// Open a view onto this log in a reader that already exists.
+    ///
+    /// [`reader`](Log::reader) without the allocation, for a screen that
+    /// follows one log at a time and moves between them: a reader is a mirror
+    /// of a whole log, so building one per switch allocates and zeroes the
+    /// log's size again.
+    ///
+    /// The reader forgets the log it was on entirely — see
+    /// [`reset`](LogReader::reset). It keeps its memory, so one whose ring is
+    /// shorter than this log's follows a shorter tail rather than growing.
+    pub fn reader_into(&self, reader: &mut LogReader) {
+        reader.reset(
+            Arc::downgrade(&self.inner),
+            self.inner.history.lock().chunks.soft_capacity(),
+        );
+    }
+
     /// A writer for notes about this log, rather than output into it.
     ///
     /// The same log, under [`LogWriterId::NOTES`], and narrowed to the two
@@ -898,6 +915,43 @@ impl LogReader {
             partials_len: 0,
             version: 0,
         }
+    }
+
+    /// A reader of `capacity` chunks that is not on a log yet.
+    ///
+    /// Every byte it will use is taken here, so this is the allocation a
+    /// caller makes once and then hands to
+    /// [`reader_into`](Log::reader_into) for each log in turn. Until it is,
+    /// it behaves as a reader whose log is gone: empty, and a
+    /// [`sync`](LogReader::sync) that does nothing.
+    ///
+    /// # Panics
+    ///
+    /// If `capacity` is zero, like the ring it is built on.
+    pub fn empty(capacity: usize) -> Self {
+        Self::new(Weak::new(), capacity)
+    }
+
+    /// Point this reader at another log, keeping its memory.
+    ///
+    /// Everything counted here is counted against one log's chunks and means
+    /// nothing against another's, so all of it goes back to where
+    /// [`new`](LogReader::new) starts. `version` especially: it is a token
+    /// and not a clock, so leaving one log's value against another's is a
+    /// first sync that decides nothing has changed and a pane still showing
+    /// the unit it was on.
+    ///
+    /// The ring is held to `capacity` rather than rebuilt at it, so a reader
+    /// moving to a smaller log gives no memory back, and one moving to a
+    /// larger log than it was built for follows its newest `max_capacity`
+    /// chunks.
+    fn reset(&mut self, inner: Weak<LogInner>, capacity: usize) {
+        self.inner = inner;
+        self.chunks.clear();
+        self.chunks.set_soft_capacity(capacity);
+        self.seen = 0;
+        self.partials_len = 0;
+        self.version = 0;
     }
 
     /// Copy across whatever the log has that this has not.
@@ -1820,6 +1874,82 @@ mod test {
         assert_eq!(taken, 4, "it should take the ring, not the backlog");
         assert_eq!(reader.len(), 4);
         assert_eq!(reader.seen(), 100, "the count is of what the log pushed");
+    }
+
+    #[test]
+    fn an_empty_reader_is_one_whose_log_is_not_there() {
+        let mut reader = LogReader::empty(4);
+        assert!(reader.is_empty());
+        assert_eq!(reader.capacity(), 4);
+        assert_eq!(reader.sync(), 0, "there is nothing to sync from");
+    }
+
+    #[test]
+    fn a_reused_reader_picks_up_the_log_it_is_given() {
+        let mut reader = LogReader::empty(16);
+        let log = log_with(8, 6);
+        log.reader_into(&mut reader);
+        reader.sync();
+
+        assert_eq!(
+            render(&reader),
+            (0..6).map(|n| format!("linha {n}\n")).collect::<String>()
+        );
+        assert_eq!(reader.seen(), 3);
+    }
+
+    /// A version is a token and not a clock: two logs reach the same value by
+    /// having had the same amount happen to them. A reader carrying one log's
+    /// value onto another would decide its first sync had nothing to do.
+    #[test]
+    fn a_reused_reader_does_not_trust_the_old_logs_version() {
+        let um = Log::new(8);
+        let mut escritor = LogBuffer::new(um.writer());
+        escritor.write(b"aaa\n");
+        let dois = Log::new(8);
+        let mut outro = LogBuffer::new(dois.writer());
+        outro.write(b"bbb\n");
+
+        let mut reader = um.reader();
+        reader.sync();
+        let mut probe = dois.reader();
+        probe.sync();
+        assert_eq!(
+            reader.version(),
+            probe.version(),
+            "the premise: the two logs are at the same version"
+        );
+
+        dois.reader_into(&mut reader);
+        assert_eq!(reader.sync(), 1, "it took the new log to be unchanged");
+        assert_eq!(render(&reader), "bbb\n");
+    }
+
+    /// It follows the log it is on and keeps the memory it built: a reader
+    /// moved to a smaller log holds less and gives nothing back, which is the
+    /// whole point of reusing one.
+    #[test]
+    fn a_reused_reader_takes_the_logs_size_and_keeps_its_own() {
+        let grande = Log::new(16);
+        let mut reader = grande.reader();
+        assert_eq!(reader.capacity(), 16);
+
+        let pequeno = Log::new(4);
+        pequeno.reader_into(&mut reader);
+        assert_eq!(reader.capacity(), 4);
+        assert_eq!(reader.chunks().max_capacity(), 16, "it gave its slots back");
+
+        let mut buffer = LogBuffer::new(pequeno.writer());
+        let text: String = (0..200).map(|n| format!("linha {n}\n")).collect();
+        buffer.write(text.as_bytes());
+        reader.sync();
+
+        // Against a reader that only ever saw this log: same contents means
+        // nothing of the old one survived and there is no gap in the new.
+        let mut fresh = pequeno.reader();
+        fresh.sync();
+        assert_eq!(reader.len(), 4);
+        assert_eq!(render(&reader), render(&fresh));
     }
 
     /// The copy carries the shape, not just the bytes: how many pieces, how

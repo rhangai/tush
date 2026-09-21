@@ -133,6 +133,15 @@ impl<T> LocalRingBuffer<T> {
         }
     }
 
+    /// Drop everything, keeping every slot.
+    ///
+    /// For an owner reusing a ring for something unrelated to what was in it:
+    /// the elements stay where they are, unread and waiting to be overwritten
+    /// by a push, which is what makes emptying free.
+    pub fn clear(&mut self) {
+        self.start_offset = self.end_offset;
+    }
+
     /// Get the lenght of the buffer
     pub fn len(&self) -> usize {
         self.end_offset - self.start_offset
@@ -387,6 +396,26 @@ mod test {
         assert_eq!(collect(&ring), [4, 5]);
         push(&mut ring, 6);
         assert_eq!(collect(&ring), [5, 6]);
+    }
+
+    #[test]
+    fn clearing_keeps_the_slots_and_the_order() {
+        let mut ring = LocalRingBuffer::new(4);
+        for i in 1..=6 {
+            push(&mut ring, i);
+        }
+        ring.clear();
+        assert!(ring.is_empty());
+        assert_eq!(ring.max_capacity(), 4, "the slots are all still there");
+
+        for i in 7..=9 {
+            push(&mut ring, i);
+        }
+        assert_eq!(
+            collect(&ring),
+            [7, 8, 9],
+            "it kept counting from where it was"
+        );
     }
 
     /// The window moves over the slots and the slots do not move, so a ring
