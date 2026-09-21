@@ -23,8 +23,8 @@
 //!
 //! # Recycled, not cleared
 //!
-//! [`push`](LocalRingBuffer::push) returns the previous occupant of the slot
-//! with its data intact — the ring cannot reset it, since `T` is any type.
+//! [`push`](LocalRingBuffer::push) hands the slot back with whatever was in
+//! it still there — the ring cannot reset it, since `T` is any type.
 //! Resetting is the caller's first move.
 //!
 //! ```ignore
@@ -33,14 +33,16 @@
 //! slot.fill_from(&bytes);
 //! ```
 
-/// A fixed-capacity ring of pre-built, recycled elements.
+/// A ring of pre-built, recycled elements, as long as its slots or shorter.
 ///
 /// # Offsets
 ///
 /// The two offsets count positions, not indices: `end_offset - start_offset`
 /// is the length, which is what tells a full ring from an empty one when
-/// both land on the same slot. They are kept normalised below twice the
-/// capacity, so they never grow without bound and never wrap.
+/// both land on the same slot. They are kept normalised below twice
+/// [`max_capacity`](LocalRingBuffer::max_capacity) — the slots, not the
+/// capacity, since that is what they are turned into indices against — so
+/// they never grow without bound and never wrap.
 pub struct LocalRingBuffer<T> {
     /// Every slot, built at construction and never created or dropped again.
     /// A slot outside the current window still holds whatever the element
@@ -98,11 +100,12 @@ impl<T> LocalRingBuffer<T> {
         }
     }
 
-    /// Push the element in the local buffer, if it is full, it moves the ring and return a reference to the next
-    /// item
+    /// Take the next slot, dropping the oldest element if the ring is full.
     ///
-    /// The slot comes back holding whatever the element it displaced left
-    /// there; see the [module docs](self) on resetting it.
+    /// What comes back is a slot and not an empty one: under a reduced
+    /// capacity it holds neither the element just dropped nor nothing, but
+    /// whatever sat there a whole lap of the slots ago. Resetting it is the
+    /// caller's first move — see the [module docs](self).
     pub fn push(&mut self) -> &mut T {
         if self.len() == self.capacity {
             // Full: the oldest element is the one being recycled. Full short
@@ -149,7 +152,8 @@ impl<T> LocalRingBuffer<T> {
         self.start_offset = self.end_offset;
     }
 
-    /// Get the lenght of the buffer
+    /// How many elements are in the window, which is never past
+    /// [`capacity`](Self::capacity).
     pub fn len(&self) -> usize {
         self.end_offset - self.start_offset
     }

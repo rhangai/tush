@@ -349,7 +349,8 @@ impl LogWriterNotes {
 ///
 /// Ids are handed out by the log, densely from zero, so they double as an
 /// index into whatever a renderer keeps per writer.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct LogWriterId {
     /// Dense from zero, so it doubles as an index into whatever a renderer
     /// keeps per writer. `u32::MAX` is [`UNSET`](LogWriterId::UNSET) and
@@ -851,38 +852,48 @@ impl Partials {
 /// sixty times a second. So a reader keeps its own copy and only goes to the
 /// log for what it has not seen.
 ///
-/// # Why the same capacity as the log
+/// # How much of the log it holds
 ///
-/// A reader holds exactly as many chunks as the log does, which makes the
-/// relationship between them simple enough to state in one line: **caught up,
-/// a reader holds exactly what the log holds**.
+/// As many chunks as the log and no more, whatever its own ring was built
+/// with: **caught up, a reader holds exactly what the log holds**.
 ///
-/// That falls out of the arithmetic. Behind by `capacity` or less, the sync
-/// copies what is missing and the reader mirrors the log again. Behind by
-/// more, the log has already discarded what the reader never saw — and it
-/// discarded it because the ring did what a ring does, not because the reader
-/// was slow. So the sync simply takes the whole ring and the reader mirrors
-/// it once more.
+/// That falls out of the arithmetic. Behind by the log's capacity or less,
+/// the sync copies what is missing and the reader mirrors the log again.
+/// Behind by more, the log has already discarded what the reader never saw —
+/// and it discarded it because the ring did what a ring does, not because the
+/// reader was slow. So the sync simply takes the whole ring and the reader
+/// mirrors it once more.
+///
+/// A ring longer than the log's is the one way a hole could appear: that
+/// second case would leave the chunks it kept from before the gap sitting
+/// next to the ones from after it. [`reset`](LogReader::reset) is what stops
+/// it, holding the ring to the log's capacity and leaving the slots past that
+/// unused — which is what lets one reader stand in for logs of several sizes
+/// without being rebuilt for each.
 ///
 /// There is therefore no hole to represent. A reader's contents are always a
-/// contiguous run, and it never lacks anything the log still has. That is
-/// what having the two the same size buys, and it is why nothing here counts
-/// what was lost: losing the oldest chunks is a log's normal operation, and a
-/// view showing the newest output is showing what it should.
+/// contiguous run, and it never lacks anything the log still has, which is
+/// why nothing here counts what was lost: losing the oldest chunks is a log's
+/// normal operation, and a view showing the newest output is showing what it
+/// should.
 ///
-/// # What it does not do yet
-///
-/// Nothing reads it back. Joining pieces into lines, walking a window,
-/// rendering — none of that is here; this is the copy and the bookkeeping to
-/// keep it honest.
+/// A ring *shorter* than the log's is sound and simply a shorter tail, since
+/// each sync still lands on what came before it — but see what
+/// [`sync`](LogReader::sync) then returns.
 pub struct LogReader {
-    /// The log to sync from. Weak, so a view left open does not keep a unit's
-    /// log alive; once it is gone the reader simply stops changing, which is
-    /// the right thing for a view of a process that has ended.
+    /// The log to sync from, or `None` for a reader that has not been put on
+    /// one — [`empty`](LogReader::empty) is where those come from, and
+    /// [`reset`](LogReader::reset) is what fills this in.
+    ///
+    /// Weak, so a view left open does not keep a unit's log alive; once it is
+    /// gone the reader simply stops changing, which is the right thing for a
+    /// view of a process that has ended. The two cases read the same from
+    /// here on: a sync that does nothing over the chunks already copied.
     inner: Option<Weak<LogInner>>,
     /// The copy, and every byte of it: the chunks hold their bytes inline, so
-    /// this one `Box<[LogReaderChunk]>` is the reader's whole storage. Same
-    /// capacity as the log's ring — see the type docs.
+    /// this one `Box<[LogReaderChunk]>` is the reader's whole storage. Held
+    /// to the log's capacity and built at whatever size the reader was asked
+    /// for — see the type docs.
     chunks: LocalRingBuffer<LogReaderChunk>,
     /// How many chunks the log had pushed when this last synced.
     ///
@@ -910,6 +921,12 @@ pub struct LogReader {
 }
 
 impl LogReader {
+    /// Every reader is built here, with or without a log to follow.
+    ///
+    /// Takes all of its memory now and never asks for more: the ring builds
+    /// every slot at once and the chunks carry their bytes inside them, so a
+    /// reader is two allocations — the ring and the partial slots — and
+    /// nothing it does afterwards adds one.
     fn new_inner(inner: Option<Weak<LogInner>>, capacity: usize) -> Self {
         Self {
             inner,
@@ -921,31 +938,34 @@ impl LogReader {
         }
     }
     /// Build a reader for `inner`, holding `capacity` chunks of its own.
-    ///
-    /// Takes all of its memory here and never asks for more: the ring builds
-    /// every slot at once and the chunks carry their bytes inside them, so
-    /// this is one allocation and the only one a reader ever makes.
     fn new(inner: Weak<LogInner>, capacity: usize) -> Self {
         Self::new_inner(Some(inner), capacity)
     }
 
     /// A reader of `capacity` chunks that is not on a log yet.
     ///
-    /// Every byte it will use is taken here, so this is the allocation a
-    /// caller makes once and then hands to
-    /// [`reader_into`](Log::reader_into) for each log in turn. Until it is,
-    /// it behaves as a reader whose log is gone: empty, and a
-    /// [`sync`](LogReader::sync) that does nothing.
+    /// The allocation a caller makes once and then hands to
+    /// [`reader_into`](Log::reader_into) for each log in turn. `capacity` is
+    /// the ceiling for all of them, since a reader is held to the log it is
+    /// on but never grown past its own slots — [`log_capacity`] is what a
+    /// caller following a session's units sizes it by.
+    ///
+    /// Until it is given a log it behaves as one whose log is gone: empty,
+    /// and a [`sync`](LogReader::sync) that does nothing.
     ///
     /// # Panics
     ///
     /// If `capacity` is zero, like the ring it is built on.
+    ///
+    /// [`log_capacity`]: crate::unit::UnitMap::log_capacity
     pub fn empty(capacity: usize) -> Self {
         Self::new_inner(None, capacity)
     }
 
-    /// The log is not initialized to any logger
-    pub fn is_initialized(&self) -> bool {
+    /// Whether it is on no log at all — `true` straight out of
+    /// [`empty`](LogReader::empty), and what a caller keeping a reader per
+    /// unit tests before reading one for the first time.
+    pub fn is_detached(&self) -> bool {
         self.inner.is_none()
     }
 
@@ -962,6 +982,11 @@ impl LogReader {
     /// moving to a smaller log gives no memory back, and one moving to a
     /// larger log than it was built for follows its newest `max_capacity`
     /// chunks.
+    ///
+    /// Put back on the log it is already on it keeps everything, because
+    /// everything it counted was counted against that same log and still
+    /// means what it said: a pane returning to a unit shows what it had
+    /// instead of copying the history again.
     fn reset(&mut self, inner: Weak<LogInner>, capacity: usize) {
         // Optimization when the inner is already the same
         if self.inner.as_ref().is_some_and(|i| i.ptr_eq(&inner)) {
@@ -981,6 +1006,10 @@ impl LogReader {
     /// Returns how many chunks were taken, which is zero whenever there was
     /// nothing new — and that case costs a single atomic load, with the lock
     /// never touched. A log nobody is writing to is free to poll.
+    ///
+    /// Taken out of the log, which is not always kept: a reader whose ring is
+    /// shorter than the log keeps the newest of them, so this can come back
+    /// larger than [`len`](LogReader::len).
     ///
     /// When there is something, the lock is held for the copy and nothing
     /// else: no decoding, no allocation, no joining. The longest it is ever
@@ -1235,7 +1264,7 @@ impl LogReader {
 ///
 /// Both pairs are half open, and both are counted from the edge the log grows
 /// from.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LogRegion {
     /// The first line, counted back from the newest: `0` is the last line,
     /// `1` the one before it.
@@ -1283,6 +1312,7 @@ impl LogRegion {
 /// The id rather than an `is_note` flag, though telling a note from output is
 /// what wanted it first: the same field answers which *process* a line came
 /// from, and that is the other half of what a pane does with colour.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct LogLine {
     /// The clipped text of the line.
     pub text: String,
