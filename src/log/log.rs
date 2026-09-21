@@ -1312,7 +1312,7 @@ impl LogRegion {
 /// The id rather than an `is_note` flag, though telling a note from output is
 /// what wanted it first: the same field answers which *process* a line came
 /// from, and that is the other half of what a pane does with colour.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogLine {
     /// The clipped text of the line.
     pub text: String,

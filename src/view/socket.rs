@@ -4,7 +4,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode, body::Bytes, client::conn::http1::SendRequest, header};
 use hyper_util::rt::TokioIo;
 use parking_lot::Mutex;
-use tokio::{net::UnixStream, sync::mpsc, task::JoinHandle};
+use tokio::{net::UnixStream, sync::Notify, sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -35,6 +35,7 @@ struct Wanted {
 }
 
 /// One unit's log, as a frame carries it.
+#[derive(Clone)]
 struct FrameLog {
     unit_key: UnitKey,
     region: LogRegion,
@@ -42,25 +43,22 @@ struct FrameLog {
     lines: Vec<LogLine>,
 }
 
-/// What a poll had to say about the log.
-///
-/// Three answers and not an `Option`, because "nothing changed" and "there is
-/// nothing" are different instructions to a pane: the first keeps what is on
-/// screen, and it is the common one — a `304`, which is what the revision is
-/// carried for.
-enum FrameLogUpdate {
-    Keep,
-    Clear,
-    Set(FrameLog),
-}
-
 /// One poll's worth of session, published whole.
 ///
-/// Whole is the point: a pane reads the units and the log in one frame, so a
-/// half written snapshot is the tear the trait's `sync` exists to prevent.
+/// Whole is the point, and it is load bearing twice over. A pane reads the
+/// units and the log in one frame, so a half written snapshot is the tear the
+/// trait's `sync` exists to prevent. And the slot a frame goes into replaces
+/// rather than queues — a frame nobody took is dropped — so a frame may never
+/// say "keep what you have": there is no knowing what the screen has, and an
+/// instruction that depends on the one before it having arrived freezes the
+/// pane the first time one does not.
+///
+/// Which is why a `304` costs a clone of the lines here rather than a word:
+/// the saving it buys is on the wire, and paying for it in the frame is what
+/// went wrong.
 struct Frame {
     units: Vec<ViewUnit>,
-    log: FrameLogUpdate,
+    log: Option<FrameLog>,
     choices_key: Option<UnitKey>,
     choices: Vec<UnitChoice>,
 }
@@ -81,6 +79,13 @@ struct Shared {
     /// The rectangle the pane wants, latest wins. `None` is a pane showing no
     /// unit, which is the client holding nothing for it.
     wanted: Mutex<Option<Wanted>>,
+    /// Woken when the pane moves to another unit.
+    ///
+    /// Without it a move waits for the next tick and then for the frame after
+    /// it, so the pane sits empty for up to two polls over what is one round
+    /// trip on a local socket. `notify_one` and not `notify_waiters`, because
+    /// a move between ticks has to keep its wakeup rather than lose it.
+    moved: Notify,
 }
 
 /// A [`ViewClient`] over a session in another process.
@@ -120,6 +125,7 @@ impl ViewSocket {
         let shared = Arc::new(Shared {
             frame: Mutex::new(None),
             wanted: Mutex::new(None),
+            moved: Notify::new(),
         });
         let (commands, incoming) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
@@ -182,11 +188,7 @@ impl ViewClient for ViewSocket {
             return;
         };
         self.units = frame.units;
-        match frame.log {
-            FrameLogUpdate::Keep => {}
-            FrameLogUpdate::Clear => self.log = None,
-            FrameLogUpdate::Set(log) => self.log = Some(log),
-        }
+        self.log = frame.log;
         self.choices_key = frame.choices_key;
         self.choices = frame.choices;
     }
@@ -227,7 +229,17 @@ impl ViewClient for ViewSocket {
     }
 
     /// Say what the pane wants; the task is what goes and gets it.
+    ///
+    /// **A move drops what is held.** The lines are the unit the pane just
+    /// left, and there is no frame for the new one yet — drawn under the new
+    /// name they are not late, they are wrong. Empty until the task answers
+    /// is what [`ViewApp`](crate::view::ViewApp) does for the same reason,
+    /// and the wakeup below is what keeps that gap to a round trip.
     fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion) {
+        let moved = self.log.as_ref().map(|log| log.unit_key) != key;
+        if moved {
+            self.log = None;
+        }
         let wanted = key.and_then(|unit_key| {
             Some(Wanted {
                 unit_key,
@@ -236,6 +248,9 @@ impl ViewClient for ViewSocket {
             })
         });
         *self.shared.wanted.lock() = wanted;
+        if moved {
+            self.shared.moved.notify_one();
+        }
     }
 
     fn log(&self) -> Option<ViewLog<'_>> {
@@ -294,11 +309,13 @@ impl Poller {
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return true,
-                _ = ticks.tick() => {
-                    if self.round(&mut sender, &mut held).await.is_err() {
-                        return false;
-                    }
-                }
+                // Same round either way: the tick is the steady rate, and the
+                // move is what stops a keypress waiting for it.
+                _ = self.shared.moved.notified() => {}
+                _ = ticks.tick() => {}
+            }
+            if self.round(&mut sender, &mut held).await.is_err() {
+                return false;
             }
         }
     }
@@ -330,7 +347,7 @@ impl Poller {
         let (log, choices_key, choices) = match wanted {
             None => {
                 *held = None;
-                (FrameLogUpdate::Clear, None, Vec::new())
+                (None, None, Vec::new())
             }
             Some(wanted) => {
                 let log = self.fetch_log(sender, &wanted, held).await?;
@@ -355,17 +372,18 @@ impl Poller {
         Ok(())
     }
 
-    /// The wanted rectangle, or the word that it has not moved.
+    /// The wanted rectangle, whether or not it had to cross the socket.
     ///
-    /// The revision goes out as `If-None-Match` and a `304` comes back as
-    /// [`Keep`](FrameLogUpdate::Keep), which is the test
-    /// [`ViewApp`](crate::view::ViewApp) does locally moved onto the wire.
+    /// The revision goes out as `If-None-Match`, which is the test
+    /// [`ViewApp`](crate::view::ViewApp) does against its own reader moved
+    /// onto the wire. A `304` answers with the lines already held rather than
+    /// with a word meaning "keep yours": see [`Frame`].
     async fn fetch_log(
         &self,
         sender: &mut SendRequest<Full<Bytes>>,
         wanted: &Wanted,
         held: &mut Option<FrameLog>,
-    ) -> Result<FrameLogUpdate, ViewSocketError> {
+    ) -> Result<Option<FrameLog>, ViewSocketError> {
         let same = held
             .as_ref()
             .is_some_and(|log| log.unit_key == wanted.unit_key && log.region == wanted.region);
@@ -380,11 +398,12 @@ impl Poller {
         );
         let response = request(sender, Method::GET, &path, None, revision).await?;
         if response.0 == StatusCode::NOT_MODIFIED {
-            return Ok(FrameLogUpdate::Keep);
+            // The lines are already here; only the wire was spared.
+            return Ok(held.clone());
         }
         if response.0 == StatusCode::NOT_FOUND {
             *held = None;
-            return Ok(FrameLogUpdate::Clear);
+            return Ok(None);
         }
 
         let body: LogBody = serde_json::from_slice(&response.1)?;
@@ -394,13 +413,8 @@ impl Poller {
             revision: body.revision,
             lines: body.lines,
         };
-        *held = Some(FrameLog {
-            unit_key: log.unit_key,
-            region: log.region,
-            revision: log.revision,
-            lines: Vec::new(),
-        });
-        Ok(FrameLogUpdate::Set(log))
+        *held = Some(log.clone());
+        Ok(Some(log))
     }
 }
 
