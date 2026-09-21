@@ -112,7 +112,13 @@ impl UnitBehavior {
     /// and an `Arc` is what keeps them out of the enum every behavior is — 32
     /// bytes carried by each no-op and each mode, rather than 208.
     pub fn run_many(name: SmallStr, commands: Arc<SmallMultiVecStr>) -> Self {
-        Self::wrap(name, UnitBehaviorInner::Run(BehaviorRun { commands }))
+        Self::wrap(
+            name,
+            UnitBehaviorInner::Run(BehaviorRun {
+                commands,
+                working_dir: None,
+            }),
+        )
     }
 
     /// Several named ways to run, one of which is current.
@@ -147,6 +153,21 @@ impl UnitBehavior {
     /// no short name, which is what it already was.
     pub fn with_short(mut self, short: Option<SmallStr>) -> Self {
         self.short = short;
+        self
+    }
+
+    /// Spawn its commands in `working_dir`, where it has any to spawn.
+    ///
+    /// Silently nothing for a behavior with no commands of its own — a
+    /// [`modes`](UnitBehavior::modes) holds no directory, because each mode
+    /// is a run with its own already resolved.
+    ///
+    /// Takes the `Option` for the reason [`with_short`](UnitBehavior::with_short)
+    /// does: the caller holds the config's field and passes it through.
+    pub fn with_working_dir(mut self, working_dir: Option<SmallStr>) -> Self {
+        if let UnitBehaviorInner::Run(run) = &mut self.inner {
+            run.working_dir = working_dir;
+        }
         self
     }
 
@@ -295,6 +316,11 @@ struct BehaviorRun {
     /// Each command as its argv, in the order they were written, shared with
     /// whatever else holds the same proc's run.
     commands: Arc<SmallMultiVecStr>,
+    /// Where to spawn them, or `None` to inherit `tush`'s own directory.
+    ///
+    /// Already resolved: a mode's setting and the proc's are folded into one
+    /// value where the config is read, so nothing here has a parent to ask.
+    working_dir: Option<SmallStr>,
 }
 
 impl UnitBehaviorKind for BehaviorRun {
@@ -329,13 +355,16 @@ impl UnitBehaviorKind for BehaviorRun {
         }
         if self.commands.len() == 1 {
             let row = self.commands.get_row(0).unwrap();
-            let process = Process::new(command(row)?, ctx.writer);
+            let process = Process::new(command(row, self.working_dir.as_ref())?, ctx.writer);
             return Ok(RunnerHandle::new(process));
         }
         let mut serial = RunnerSerial::new();
         for argv in self.commands.iter() {
             let writer = ctx.writer.as_ref().map(LogWriterRef::share);
-            serial.add(Process::new(command(argv)?, writer));
+            serial.add(Process::new(
+                command(argv, self.working_dir.as_ref())?,
+                writer,
+            ));
         }
         Ok(RunnerHandle::new(serial))
     }
@@ -356,12 +385,19 @@ fn verb(state: RunnerState) -> SmallStr {
 /// The first word is the program and the rest are its arguments, handed to
 /// the OS as they are: no shell, so nothing re-splits them and no quoting
 /// rule applies.
-fn command(argv: &[SmallStr]) -> Result<Command, UnitError> {
+///
+/// `working_dir` is left unset rather than set to `tush`'s own when the config
+/// named none: unset is what makes the child inherit, and inheriting is not
+/// the same as being pointed at wherever the parent happens to be standing.
+fn command(argv: &[SmallStr], working_dir: Option<&SmallStr>) -> Result<Command, UnitError> {
     let Some((program, args)) = argv.split_first() else {
         return Err(UnitError::Invalid);
     };
     let mut command = Command::new(program.as_str());
     command.args(args.iter().map(|i| i.as_str()));
+    if let Some(working_dir) = working_dir {
+        command.current_dir(working_dir.as_str());
+    }
     Ok(command)
 }
 

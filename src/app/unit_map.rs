@@ -153,14 +153,24 @@ impl AppUnitMap {
         // Every arm falls through to the one `with_short`: a `return` here
         // reads as the same thing and is not, since the proc's own short name
         // is applied below.
+        // Where each run happens is settled here and nowhere else: a mode's
+        // `working_dir` wins, the proc's stands in for a mode that named
+        // none, and neither means the child inherits. Folding it once is what
+        // keeps `unit` from holding a parent to ask.
         let behavior = if let Some(run) = &proc.run {
             UnitBehavior::run_many(name, Arc::new(run.commands.clone()))
+                .with_working_dir(proc.working_dir.clone())
         } else if let Some(modes) = &proc.modes {
             UnitBehavior::modes(
                 name,
                 modes.iter().map(|mode| {
                     UnitBehavior::run_many(mode.name.clone(), Arc::new(mode.run.commands.clone()))
                         .with_short(mode.name_short.clone())
+                        .with_working_dir(
+                            mode.working_dir
+                                .clone()
+                                .or_else(|| proc.working_dir.clone()),
+                        )
                 }),
             )
         } else {

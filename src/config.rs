@@ -176,6 +176,17 @@ pub struct ConfigProc {
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_vecstr")]
     pub depends: SmallVecStr,
+    /// Where its commands run, or `None` to run where `tush` was started.
+    ///
+    /// A relative path is relative to `tush`'s own working directory and not
+    /// to the config file, which is what `Command::current_dir` does with one
+    /// and the only reading that needs nothing carried from the loader.
+    ///
+    /// Not checked here or by [`App`](crate::app::App): a directory an
+    /// earlier proc creates is a working config, and refusing it at startup
+    /// would be this layer deciding what the session can be.
+    #[serde(default)]
+    pub working_dir: Option<SmallStr>,
     /// `run:` — the one way this proc runs.
     #[serde(default)]
     pub run: Option<ConfigUnitRun>,
@@ -194,6 +205,13 @@ pub struct ConfigUnitMode {
     /// A shorter name for it, on the same terms as a proc's.
     #[serde(default)]
     pub name_short: Option<SmallStr>,
+    /// Where this mode runs, overriding the proc's.
+    ///
+    /// `None` is "wherever the proc says", not "where `tush` was started" —
+    /// a mode that wanted the latter has to say `.` — which is what makes the
+    /// two levels read as one setting with an exception rather than as two.
+    #[serde(default)]
+    pub working_dir: Option<SmallStr>,
     /// What it runs.
     pub run: ConfigUnitRun,
 }
