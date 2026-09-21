@@ -13,11 +13,11 @@ use tokio_stream::StreamExt;
 use crate::{
     error::UiError,
     ui::{
-        client::{UiClient, UiCommand, UiUnit},
         render::{Move, UiMenuChoice, UiRender},
         theme::UiTheme,
     },
     unit::UnitKey,
+    view::{ViewClient, ViewCommand, ViewUnit},
 };
 
 /// How many lines one notch of the wheel moves the log: three, which is what
@@ -27,10 +27,10 @@ const WHEEL_LINES: isize = 3;
 /// The terminal UI: the redraw loop, the keys, and the two things they act
 /// on — the client and the screen.
 ///
-/// Generic over its [`UiClient`] and not `dyn`, so the in-process path stays
+/// Generic over its [`ViewClient`] and not `dyn`, so the in-process path stays
 /// direct calls. When `tush attach` has to choose at runtime, the choice is
 /// one match in `main` over which `Ui<_>` to run.
-pub struct Ui<C: UiClient> {
+pub struct Ui<C: ViewClient> {
     /// Where the units are read from and where the commands go.
     client: C,
     /// Everything about turning that into a screen: the cursor, the scroll,
@@ -40,11 +40,11 @@ pub struct Ui<C: UiClient> {
     running: bool,
 }
 
-impl<C: UiClient> Ui<C> {
+impl<C: ViewClient> Ui<C> {
     /// Take over the terminal, run until the user quits, and give it back.
     ///
     /// `refresh` is how long to wait between frames when nothing is pressed:
-    /// a run changes state without anybody asking, and a [`UiClient`] cannot
+    /// a run changes state without anybody asking, and a [`ViewClient`] cannot
     /// push, so the only way to find out is to look.
     ///
     /// `theme` is taken here rather than read here: this is the screen, and
@@ -170,10 +170,10 @@ impl<C: UiClient> Ui<C> {
             KeyCode::Enter => self.open_menu(),
             // The accelerator for the entry the menu opens on: start, or
             // restart in the mode it is already in.
-            KeyCode::Char('r' | 'R') => self.send(|key| UiCommand::Start { key }),
+            KeyCode::Char('r' | 'R') => self.send(|key| ViewCommand::Start { key }),
             // Both, because they are one key to a hand: whichever of them the
             // keyboard put under the finger that means "get rid of this".
-            KeyCode::Backspace | KeyCode::Delete => self.send(|key| UiCommand::Stop { key }),
+            KeyCode::Backspace | KeyCode::Delete => self.send(|key| ViewCommand::Stop { key }),
             _ => {}
         }
     }
@@ -190,7 +190,7 @@ impl<C: UiClient> Ui<C> {
             KeyCode::Enter => match self.render.menu_choice() {
                 UiMenuChoice::Send { unit, event } => {
                     self.render.close_menu();
-                    self.client.send(UiCommand::Dispatch { key: unit, event });
+                    self.client.send(ViewCommand::Dispatch { key: unit, event });
                 }
                 UiMenuChoice::Cancel => self.render.close_menu(),
             },
@@ -232,7 +232,7 @@ impl<C: UiClient> Ui<C> {
 
     /// Send the command `command` builds for the selected unit's key, if
     /// there is one selected.
-    fn send(&mut self, command: impl FnOnce(UnitKey) -> UiCommand) {
+    fn send(&mut self, command: impl FnOnce(UnitKey) -> ViewCommand) {
         let Some(unit) = self.selected() else {
             return;
         };
@@ -240,7 +240,7 @@ impl<C: UiClient> Ui<C> {
     }
 
     /// The unit under the cursor, if the list is not empty.
-    fn selected(&self) -> Option<&UiUnit> {
+    fn selected(&self) -> Option<&ViewUnit> {
         self.render.selected_unit(&self.client)
     }
 

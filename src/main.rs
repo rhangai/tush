@@ -20,8 +20,7 @@
 //! - [`runner`] — the async supervision layer: the [`Runner`](runner::Runner)
 //!   trait, its [`RunnerHandle`](runner::RunnerHandle) and the
 //!   [`RunnerState`](runner::RunnerState) machine.
-//! - [`mod@ui`] — the terminal screen, and the [`UiClient`](ui::UiClient) it
-//!   reads a session through.
+//! - [`mod@ui`] — the terminal screen.
 //! - [`mod@unit`] — the user facing concept: a [`Unit`](unit::Unit) is a
 //!   named, restartable entry whose [`UnitBehavior`](unit::UnitBehavior)
 //!   decides what it does.
@@ -29,6 +28,9 @@
 //!   [`SmallStr`](util::str::SmallStr) every name is held as, the recycling
 //!   ring the logs keep their chunks in, the dependency graph the config is
 //!   checked with.
+//! - [`mod@view`] — a session as something outside it sees and drives it: the
+//!   [`ViewClient`](view::ViewClient) the screen and, later, a socket read it
+//!   through.
 //!
 //! # Layering
 //!
@@ -53,6 +55,7 @@ mod runner;
 mod ui;
 mod unit;
 mod util;
+mod view;
 
 use std::sync::Arc;
 
@@ -63,7 +66,8 @@ use crate::{
     app::App,
     cli::{Cli, Command, RunArgs},
     config::Config,
-    ui::{Ui, UiApp, UiTheme},
+    ui::{Ui, UiTheme},
+    view::ViewApp,
 };
 
 #[tokio::main]
@@ -110,7 +114,7 @@ async fn run(args: RunArgs) -> Result<()> {
         }
     }
 
-    let result = Ui::run(UiApp::new(app.clone()), refresh, UiTheme::default()).await;
+    let result = Ui::run(ViewApp::new(app.clone()), refresh, UiTheme::default()).await;
     app.shutdown().await;
     Ok(result?)
 }

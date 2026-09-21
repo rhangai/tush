@@ -11,10 +11,10 @@ use crate::{
     log::{LogLine, LogRegion},
     runner::RunnerState,
     ui::{
-        client::{UiLog, UiUnit},
         render::{DIGITS_MAX, decimal, room, set_clipped},
         theme::UiTheme,
     },
+    view::{ViewLog, ViewUnit},
 };
 
 /// How many lines beyond the pane are asked for, on each side.
@@ -100,8 +100,8 @@ impl UiRenderLogState {
 /// The log pane: a unit's output, titled with the unit rather than with the
 /// word "log", so it says which output it is about before it has any.
 pub struct UiRenderLog<'a> {
-    unit: Option<&'a UiUnit>,
-    log: Option<UiLog<'a>>,
+    unit: Option<&'a ViewUnit>,
+    log: Option<ViewLog<'a>>,
     border: &'a Block<'a>,
     theme: &'a UiTheme,
 }
@@ -109,8 +109,8 @@ pub struct UiRenderLog<'a> {
 impl<'a> UiRenderLog<'a> {
     /// The pane for `unit`'s `log`, drawn inside `border`.
     pub fn new(
-        unit: Option<&'a UiUnit>,
-        log: Option<UiLog<'a>>,
+        unit: Option<&'a ViewUnit>,
+        log: Option<ViewLog<'a>>,
         border: &'a Block<'a>,
         theme: &'a UiTheme,
     ) -> Self {
@@ -280,7 +280,7 @@ fn draw_behind(buffer: &mut Buffer, theme: &UiTheme, area: Rect, scroll: usize) 
 ///
 /// Everything saturates because the region that came back need not be the one
 /// asked for — the pane draws the overlap rather than nothing.
-fn visible<'a>(log: &'a UiLog<'a>, scroll: usize, rows: usize) -> &'a [LogLine] {
+fn visible<'a>(log: &'a ViewLog<'a>, scroll: usize, rows: usize) -> &'a [LogLine] {
     let from_end = scroll.saturating_sub(log.region.line_start);
     let end = log.lines.len().saturating_sub(from_end);
     let start = end.saturating_sub(rows);

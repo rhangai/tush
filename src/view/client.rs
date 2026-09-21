@@ -9,10 +9,10 @@ use crate::{
 /// One unit, as the screen needs it.
 ///
 /// A copy and not a view: it reports what the session looked like at the last
-/// [`sync`](UiClient::sync), which is all a frame ever shows.
+/// [`sync`](ViewClient::sync), which is all a frame ever shows.
 #[derive(Clone, Debug)]
-pub struct UiUnit {
-    /// How a [`UiCommand`] addresses it. Not shown; see [`name`](UiUnit::name).
+pub struct ViewUnit {
+    /// How a [`ViewCommand`] addresses it. Not shown; see [`name`](ViewUnit::name).
     pub unit_key: UnitKey,
     /// What to call it on screen.
     ///
@@ -20,7 +20,7 @@ pub struct UiUnit {
     /// folding the two would mean either showing an identifier or addressing
     /// a unit by something a person may change.
     pub name: SmallStr,
-    /// A shorter name to show where [`name`](UiUnit::name) will not fit.
+    /// A shorter name to show where [`name`](ViewUnit::name) will not fit.
     ///
     /// `None` is the config having said nothing, not "use the long one": what
     /// to do about it is the pane's, since the pane is what knows its width.
@@ -38,11 +38,11 @@ pub struct UiUnit {
 /// Something the user asked for.
 ///
 /// One type rather than a method per verb because this is what goes on the
-/// wire: the socket client serializes a `UiCommand` and the server plays it
+/// wire: the socket client serializes a `ViewCommand` and the server plays it
 /// back into an [`App`](crate::app::App). The key goes in by copy, a command
 /// outliving the frame that made it.
 #[derive(Clone, Debug)]
-pub enum UiCommand {
+pub enum ViewCommand {
     /// Run it, restarting it if it was already running.
     Start { key: UnitKey },
     /// Stop it.
@@ -55,7 +55,7 @@ pub enum UiCommand {
 }
 
 /// What a client has for the log pane: some lines, and what they are.
-pub struct UiLog<'a> {
+pub struct ViewLog<'a> {
     /// The answer's region, not the question's. A client behind a scroll
     /// holds the older one, and reporting it lets the pane draw what came
     /// back at the offset it belongs at instead of blanking.
@@ -68,7 +68,7 @@ pub struct UiLog<'a> {
     pub lines: &'a [LogLine],
 }
 
-/// What the UI reads a session through, and sends its commands down.
+/// What a view reads a session through, and sends its commands down.
 ///
 /// Two implementations — a session in this process, and one over a socket for
 /// `tush attach` — and the screen never knows which it got.
@@ -76,24 +76,24 @@ pub struct UiLog<'a> {
 /// **Nothing here is async and nothing fails.** A screen has to keep drawing
 /// whatever the session is doing, so it can be made to wait neither on a
 /// round trip nor on "did that work?": reads come from a snapshot the client
-/// already holds, and [`send`](UiClient::send) is fire and forget. What that
+/// already holds, and [`send`](ViewClient::send) is fire and forget. What that
 /// costs is the acknowledgement — a refused command has to come back as
-/// something the next [`sync`](UiClient::sync) picks up, and that channel
+/// something the next [`sync`](ViewClient::sync) picks up, and that channel
 /// does not exist yet.
 ///
 /// **The set of units does not change**, coming from a config read once, so
-/// [`units`](UiClient::units) hands back a slice built at construction and
+/// [`units`](ViewClient::units) hands back a slice built at construction and
 /// `sync` writes into the rows already there.
-pub trait UiClient {
+pub trait ViewClient {
     /// Take in whatever has changed since the last frame.
     ///
     /// Called once per frame before anything is read, so that one frame is
     /// not drawn out of two different moments.
     fn sync(&mut self);
 
-    /// Every unit, as of the last [`sync`](UiClient::sync), in the same order
+    /// Every unit, as of the last [`sync`](ViewClient::sync), in the same order
     /// every time — a list that reshuffles itself cannot be pressed.
-    fn units(&self) -> &[UiUnit];
+    fn units(&self) -> &[ViewUnit];
 
     /// Everything that can be asked of the unit under `key` right now.
     ///
@@ -106,13 +106,13 @@ pub trait UiClient {
     ///
     /// `&self`, so asking is not a mutation of the view and something other
     /// than the render loop — a signal handler, say — could hold a client.
-    fn send(&self, command: UiCommand);
+    fn send(&self, command: ViewCommand);
 
     /// Say which log the pane is showing, and which rectangle of it.
     ///
     /// Declaring rather than asking: fetching a region may be a round trip,
     /// so this only starts whatever the client has to do and
-    /// [`log`](UiClient::log) is where the result turns up, one sync or
+    /// [`log`](ViewClient::log) is where the result turns up, one sync or
     /// several later. `None` releases whatever was held for the last unit.
     ///
     /// Ask for more than the pane draws — the extra is what the view scrolls
@@ -123,10 +123,10 @@ pub trait UiClient {
     /// call, since it holds the region, the revision and the connection.
     fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion);
 
-    /// The lines for the pane, as of the last [`sync`](UiClient::sync).
+    /// The lines for the pane, as of the last [`sync`](ViewClient::sync).
     ///
     /// `None` only when there is nothing at all: no unit selected, or a first
     /// region that has not arrived. After that a client hands back the region
     /// it has rather than emptying the pane while it catches up.
-    fn log(&self) -> Option<UiLog<'_>>;
+    fn log(&self) -> Option<ViewLog<'_>>;
 }

@@ -4,11 +4,11 @@ use crate::{
     app::App,
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
-    ui::client::{UiClient, UiCommand, UiLog, UiUnit},
     unit::{UnitChoice, UnitKey},
+    view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
 };
 
-/// The one log a [`UiApp`] is following, and the last rectangle read out of it.
+/// The one log a [`ViewApp`] is following, and the last rectangle read out of it.
 struct AppLog {
     /// Which unit it belongs to. A pane moving to another one throws this
     /// away rather than re-pointing it: the revision counted against one
@@ -29,22 +29,22 @@ struct AppLog {
     lines: Vec<LogLine>,
 }
 
-/// A [`UiClient`] over a session running in this process.
+/// A [`ViewClient`] over a session running in this process.
 ///
 /// Trivial, and worth staying that way: it is how you can tell the trait was
 /// drawn around what a screen needs rather than around what an [`App`]
-/// exposes. [`sync`](UiClient::sync) reads a map of atomics and
-/// [`send`](UiClient::send) is a direct call — the socket client fits through
+/// exposes. [`sync`](ViewClient::sync) reads a map of atomics and
+/// [`send`](ViewClient::send) is a direct call — the socket client fits through
 /// the same methods with real work to do in all of them.
-pub struct UiApp {
+pub struct ViewApp {
     app: Arc<App>,
     /// The rows, built once and then written over in place.
-    units: Vec<UiUnit>,
+    units: Vec<ViewUnit>,
     /// The log the pane is showing, if it is showing one.
     log: Option<AppLog>,
 }
 
-impl UiApp {
+impl ViewApp {
     /// Show `app`.
     ///
     /// The rows are laid out once, alphabetically by display name, and keep
@@ -57,9 +57,9 @@ impl UiApp {
     /// mode, which is read every sync.
     pub fn new(app: Arc<App>) -> Self {
         let unit_map = app.unit_map();
-        let mut list: Vec<UiUnit> = unit_map
+        let mut list: Vec<ViewUnit> = unit_map
             .keys()
-            .map(|unit_key| UiUnit {
+            .map(|unit_key| ViewUnit {
                 name: unit_map.name(unit_key).unwrap_or_default(),
                 name_short: unit_map.name_short(unit_key).unwrap_or(None),
                 unit_key,
@@ -96,7 +96,7 @@ impl UiApp {
     }
 }
 
-impl UiClient for UiApp {
+impl ViewClient for ViewApp {
     /// Re-read every state into the rows that are already there.
     ///
     /// The `Err` arm is unreachable — the keys came out of the map and the
@@ -117,14 +117,14 @@ impl UiClient for UiApp {
         self.sync_log();
     }
 
-    fn units(&self) -> &[UiUnit] {
+    fn units(&self) -> &[ViewUnit] {
         &self.units
     }
 
     /// Point the reader at `key`, and remember the rectangle wanted from it.
     ///
     /// A new reader only when the unit changed. Resolving the region is
-    /// [`sync`](UiClient::sync)'s job, so the lines and the states in one
+    /// [`sync`](ViewClient::sync)'s job, so the lines and the states in one
     /// frame are taken at the same moment.
     fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion) {
         let Some(key) = key else {
@@ -150,9 +150,9 @@ impl UiClient for UiApp {
         }
     }
 
-    fn log(&self) -> Option<UiLog<'_>> {
+    fn log(&self) -> Option<ViewLog<'_>> {
         let log = self.log.as_ref()?;
-        Some(UiLog {
+        Some(ViewLog {
             region: log.region,
             revision: log.revision,
             lines: &log.lines,
@@ -178,15 +178,15 @@ impl UiClient for UiApp {
     /// it waits on what the unit depends on, which is not a wait a screen can
     /// make. When the session gets a channel to report back through, this is
     /// where it is written to.
-    fn send(&self, command: UiCommand) {
+    fn send(&self, command: ViewCommand) {
         match command {
-            UiCommand::Start { key } => {
+            ViewCommand::Start { key } => {
                 self.app.schedule(key);
             }
-            UiCommand::Stop { key } => {
+            ViewCommand::Stop { key } => {
                 self.app.stop(key);
             }
-            UiCommand::Dispatch { key, event } => {
+            ViewCommand::Dispatch { key, event } => {
                 _ = self.app.dispatch(key, event);
             }
         };

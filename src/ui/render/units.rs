@@ -9,10 +9,10 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     runner::RunnerState,
     ui::{
-        client::UiUnit,
         render::{DIGITS_MAX, decimal, room, set_clipped},
         theme::{UiTheme, UiThemeMenuLayout},
     },
+    view::ViewUnit,
 };
 
 /// Blank columns at each edge of a row, so the text is not against the
@@ -94,7 +94,7 @@ impl UiRenderUnitsState {
 /// hid only half of that, since `List::render` allocates per line it draws
 /// whatever the cache did.
 pub struct UiRenderUnits<'a> {
-    units: &'a [UiUnit],
+    units: &'a [ViewUnit],
     border: &'a Block<'a>,
     theme: &'a UiTheme,
 }
@@ -102,7 +102,7 @@ pub struct UiRenderUnits<'a> {
 impl<'a> UiRenderUnits<'a> {
     /// The pane for `units`, drawn inside `border` — lent rather than built
     /// here, a `Block` not being free to make.
-    pub fn new(units: &'a [UiUnit], border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
+    pub fn new(units: &'a [ViewUnit], border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
         Self {
             units,
             border,
@@ -160,7 +160,7 @@ impl StatefulWidget for UiRenderUnits<'_> {
 fn draw_gutter(
     buffer: &mut Buffer,
     theme: &UiTheme,
-    unit: &UiUnit,
+    unit: &ViewUnit,
     area: Rect,
     selected: bool,
 ) -> u16 {
@@ -231,7 +231,7 @@ fn set_right(
 /// The short names are taken wherever the config wrote one. This is the
 /// narrowest row on the screen and the one they were asked for; the other
 /// layout and the log pane's title spell everything out instead.
-fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect, selected: bool) {
+fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &ViewUnit, area: Rect, selected: bool) {
     let left = draw_gutter(buffer, theme, unit, area, selected);
     let right = area.right().saturating_sub(PAD_X);
 
@@ -271,7 +271,7 @@ fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &UiUnit, area: Rect,
 fn draw_comfortable(
     buffer: &mut Buffer,
     theme: &UiTheme,
-    unit: &UiUnit,
+    unit: &ViewUnit,
     area: Rect,
     selected: bool,
 ) {
@@ -314,7 +314,7 @@ fn draw_comfortable(
 /// `None` for the colour is the mode, which is said quietly.
 fn detail<'a>(
     theme: &'a UiTheme,
-    unit: &'a UiUnit,
+    unit: &'a ViewUnit,
     digits: &'a mut [u8; DIGITS_MAX],
 ) -> (&'a str, &'a str, Option<Color>) {
     let label = theme.texts.status(unit.state);

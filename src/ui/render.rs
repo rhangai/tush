@@ -24,9 +24,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     log::LogRegion,
-    ui::{client::UiClient, theme::UiTheme},
+    ui::theme::UiTheme,
     unit::{UnitChoice, UnitKey},
     util::str::SmallStr,
+    view::ViewClient,
 };
 
 #[allow(unused_imports)]
@@ -38,7 +39,7 @@ pub use menu::{UiMenuChoice, UiRenderMenu, UiRenderMenuState};
 #[allow(unused_imports)]
 pub use units::{Move, UiRenderUnits, UiRenderUnitsState};
 
-use crate::ui::client::UiUnit;
+use crate::view::ViewUnit;
 
 /// How wide the units column is.
 ///
@@ -107,7 +108,7 @@ impl UiRender {
     ///
     /// All this does is place the panes. What each of them draws is its own,
     /// and what it takes from outside is the client — only to read.
-    pub fn draw<C: UiClient>(&mut self, frame: &mut Frame, client: &C) {
+    pub fn draw<C: ViewClient>(&mut self, frame: &mut Frame, client: &C) {
         let [footer, units_area, log_area] = self.areas(frame.area());
 
         frame.render_widget(UiRenderHints(&self.theme), footer);
@@ -152,7 +153,7 @@ impl UiRender {
     }
 
     /// The unit the cursor is on.
-    pub fn selected_unit<'a, C: UiClient>(&self, client: &'a C) -> Option<&'a UiUnit> {
+    pub fn selected_unit<'a, C: ViewClient>(&self, client: &'a C) -> Option<&'a ViewUnit> {
         client.units().get(self.units.cursor())
     }
 
