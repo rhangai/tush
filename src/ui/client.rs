@@ -1,7 +1,7 @@
 use crate::unit::UnitKey;
 use crate::util::str::SmallStr;
 use crate::{
-    log::LogRegion,
+    log::{LogLine, LogRegion},
     runner::RunnerState,
     unit::{UnitChoice, UnitEvent},
 };
@@ -65,7 +65,7 @@ pub struct UiLog<'a> {
     /// one unit — each log counts its own.
     pub revision: u64,
     /// The lines, oldest first.
-    pub lines: &'a [String],
+    pub lines: &'a [LogLine],
 }
 
 /// What the UI reads a session through, and sends its commands down.

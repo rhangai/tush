@@ -857,7 +857,7 @@ pub struct LogReader {
     /// slots built once, refilled in place. The whole point of a partial is
     /// that it changes on every read of a busy pipe, so it is the last place
     /// that should be allocating.
-    partials: Vec<PartialText>,
+    partials: Vec<LogReaderPartial>,
     /// How many of those slots mean anything.
     partials_len: usize,
     /// The log's version at the last sync.
@@ -879,7 +879,7 @@ impl LogReader {
             inner,
             chunks: LocalRingBuffer::new_with(capacity, LogReaderChunk::new),
             seen: 0,
-            partials: (0..PARTIALS_MAX).map(|_| PartialText::new()).collect(),
+            partials: (0..PARTIALS_MAX).map(|_| LogReaderPartial::new()).collect(),
             partials_len: 0,
             version: 0,
         }
@@ -913,7 +913,9 @@ impl LogReader {
             let partials = inner.partials.lock();
             self.partials_len = 0;
             for partial in partials.taken() {
-                self.partials[self.partials_len].set(partial.text.as_str());
+                let slot = &mut self.partials[self.partials_len];
+                slot.writer = partial.writer;
+                slot.text.set(partial.text.as_str());
                 self.partials_len += 1;
             }
         }
@@ -1021,7 +1023,7 @@ impl LogReader {
     /// `out` is filled from the start and truncated, so the same `Vec` handed
     /// back each call reuses its strings rather than allocating a pane's
     /// worth every time.
-    pub fn copy_region(&self, region: LogRegion, out: &mut Vec<String>) {
+    pub fn copy_region(&self, region: LogRegion, out: &mut Vec<LogLine>) {
         // The lines still being written sit at the end of the log, so a
         // region counted back from the end runs into them first: they take
         // distances `0..held`, and the history starts after them. Which is
@@ -1044,10 +1046,12 @@ impl LogReader {
         // memory and not a copy of it.
         for piece in self.iter_unsync().tail_range(history, usize::MAX) {
             if !open {
-                open_line(out, lines);
+                // The whole line is one writer's: a split one is continued by
+                // that writer's next chunk, never by whatever sits next.
+                open_line(out, lines, piece.writer());
                 open = true;
             }
-            clip_into(&mut out[lines], piece.as_str(), &mut column, region);
+            clip_into(&mut out[lines].text, piece.as_str(), &mut column, region);
             if piece.newline() {
                 lines += 1;
                 column = 0;
@@ -1066,9 +1070,14 @@ impl LogReader {
         let nearest = region.line_end.min(held);
         if region.line_start < nearest {
             for partial in &self.partials[held - nearest..held - region.line_start] {
-                open_line(out, lines);
+                open_line(out, lines, partial.writer);
                 let mut column = 0;
-                clip_into(&mut out[lines], partial.as_str(), &mut column, region);
+                clip_into(
+                    &mut out[lines].text,
+                    partial.text.as_str(),
+                    &mut column,
+                    region,
+                );
                 lines += 1;
             }
         }
@@ -1177,15 +1186,51 @@ impl LogRegion {
     }
 }
 
-/// Make sure `out` has an empty string at `line`, reusing the one there.
+/// One line of a copied region: the text, and who wrote it.
+///
+/// The id rather than an `is_note` flag, though telling a note from output is
+/// what wanted it first: the same field answers which *process* a line came
+/// from, and that is the other half of what a pane does with colour.
+pub struct LogLine {
+    /// The clipped text of the line.
+    pub text: String,
+    /// Who wrote it — [`LogWriterId::NOTES`] for the supervisor's own lines.
+    pub writer: LogWriterId,
+}
+
+/// A partial line as a reader keeps it.
+///
+/// Carries its writer for the same reason a chunk does: a region reports one
+/// per line, and a line still being typed is a line like any other to
+/// whatever draws it.
+struct LogReaderPartial {
+    writer: LogWriterId,
+    text: PartialText,
+}
+
+impl LogReaderPartial {
+    /// An empty slot, belonging to nobody until a sync fills it.
+    fn new() -> Self {
+        Self {
+            writer: LogWriterId::UNSET,
+            text: PartialText::new(),
+        }
+    }
+}
+
+/// Make sure `out` has an empty line at `line`, reusing the string there.
 ///
 /// Which is what keeps a caller that hands the same `Vec` back on every call
 /// from paying for a pane's worth of strings each time.
-fn open_line(out: &mut Vec<String>, line: usize) {
+fn open_line(out: &mut Vec<LogLine>, line: usize, writer: LogWriterId) {
     if line < out.len() {
-        out[line].clear();
+        out[line].text.clear();
+        out[line].writer = writer;
     } else {
-        out.push(String::new());
+        out.push(LogLine {
+            text: String::new(),
+            writer,
+        });
     }
 }
 
@@ -1421,6 +1466,8 @@ pub struct LogReaderRef<'a> {
     /// from [`seen`](LogReader::seen) — `seen - len + index` counts from the
     /// beginning of the log instead, and never repeats.
     index: usize,
+    /// Who wrote it, which is how a note is told from output.
+    writer: LogWriterId,
 }
 
 impl<'a> LogReaderRef<'a> {
@@ -1432,6 +1479,11 @@ impl<'a> LogReaderRef<'a> {
     /// Whether a line ends after it.
     pub fn newline(&self) -> bool {
         self.newline
+    }
+
+    /// Who wrote it.
+    pub fn writer(&self) -> LogWriterId {
+        self.writer
     }
 
     /// Which chunk it came from, counted from the oldest held.
@@ -1482,6 +1534,7 @@ impl<'a> Iterator for LogReaderIter<'a> {
                 data: text,
                 newline,
                 index,
+                writer: chunk.writer(),
             });
         }
     }
@@ -1840,10 +1893,13 @@ mod test {
     }
 
     /// The lines of a region, windowed to `columns`.
+    ///
+    /// Text alone: what a line is stamped with has its own tests, and every
+    /// assertion here is about where the window landed.
     fn columns(reader: &LogReader, lines: Range<usize>, columns: Range<usize>) -> Vec<String> {
         let mut out = Vec::new();
         reader.copy_region(LogRegion::new(lines, columns), &mut out);
-        out
+        out.into_iter().map(|line| line.text).collect()
     }
 
     /// The lines are counted back from the newest, and come out oldest first
@@ -1933,7 +1989,7 @@ mod test {
         let mut out = Vec::new();
         reader.copy_region(LogRegion::new(2..20, 0..512), &mut out);
         assert_eq!(out.len(), 18);
-        let bytes: usize = out.iter().map(String::len).sum();
+        let bytes: usize = out.iter().map(|line| line.text.len()).sum();
         assert!(bytes <= 18 * 512, "a pane's worth, not a log's: {bytes}");
     }
 
@@ -1960,8 +2016,9 @@ mod test {
         assert_eq!(out.len(), 6);
 
         reader.copy_region(LogRegion::new(0..2, 0..usize::MAX), &mut out);
+        let texts: Vec<&str> = out.iter().map(|line| line.text.as_str()).collect();
         assert_eq!(
-            out,
+            texts,
             ["linha 8", "linha 9"],
             "the old lines are gone, not appended"
         );

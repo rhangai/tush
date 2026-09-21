@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     app::App,
-    log::{LogReader, LogRegion},
+    log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
     ui::client::{UiClient, UiCommand, UiLog, UiUnit},
     unit::{UnitChoice, UnitKey},
@@ -26,7 +26,7 @@ struct AppLog {
     revision: u64,
     /// The lines of `region`, oldest first. Kept between syncs so the strings
     /// are refilled rather than reallocated.
-    lines: Vec<String>,
+    lines: Vec<LogLine>,
 }
 
 /// A [`UiClient`] over a session running in this process.
