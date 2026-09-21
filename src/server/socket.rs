@@ -112,6 +112,6 @@ pub fn default_socket_path() -> PathBuf {
         Some(runtime) => PathBuf::from(runtime).join("tush.sock"),
         // SAFETY: `getuid` reads the calling process's own id. It cannot
         // fail, takes no pointer and is not racing anything.
-        None => PathBuf::from(format!("/tmp/tush-{}.sock", unsafe { libc::getuid() })),
+        None => PathBuf::from("/var/run/tush.sock"),
     }
 }
