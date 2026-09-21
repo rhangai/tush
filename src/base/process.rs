@@ -8,6 +8,7 @@ use tokio::time::{Instant, timeout_at};
 use crate::base::ExitReason;
 use crate::error::ProcessError;
 use crate::log::{LogWriterNotes, LogWriterRef};
+use crate::util::str::{SmallStr, SmallStrBuilder};
 
 /// How long a graceful shutdown waits after `SIGTERM` before escalating to
 /// `SIGKILL`, in milliseconds. The same budget bounds the wait after the
@@ -223,20 +224,21 @@ impl Drop for Process {
 }
 
 /// The line that announces a run, as a person would have typed the command.
-fn starting_note(command: &Command) -> String {
+fn starting_note(command: &Command) -> SmallStr {
     let command = command.as_std();
-    let mut note = String::from("starting ");
-    push_word(&mut note, &command.get_program().to_string_lossy());
+    let mut builder = SmallStrBuilder::new();
+    builder.push_str("$ ");
+    push_word(&mut builder, &command.get_program().to_string_lossy());
     for arg in command.get_args() {
-        note.push(' ');
-        push_word(&mut note, &arg.to_string_lossy());
+        builder.push(' ');
+        push_word(&mut builder, &arg.to_string_lossy());
     }
-    note
+    builder.finish()
 }
 
 /// Quoted only where a bare word would read as two, since most of an argv is
 /// plain and quoting all of it makes the common line harder to scan.
-fn push_word(note: &mut String, word: &str) {
+fn push_word(note: &mut SmallStrBuilder, word: &str) {
     if word.is_empty() || word.contains(char::is_whitespace) {
         note.push('\'');
         note.push_str(word);
