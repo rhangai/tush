@@ -6,7 +6,7 @@
 use std::{borrow::Borrow, fmt, ops::Deref};
 
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
+use smol_str::{SmolStr, SmolStrBuilder};
 
 /// Text that is read far more often than it is made: proc keys, names, modes,
 /// the fixed marks a theme is drawn with.
@@ -106,5 +106,43 @@ impl fmt::Debug for SmallStr {
 impl fmt::Display for SmallStr {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.as_str(), formatter)
+    }
+}
+
+/// Assembles a [`SmallStr`] a piece at a time, for text that is made rather
+/// than read: the `$ npm run build` line a run is announced with.
+///
+/// The point is what it avoids — a [`String`] filled and then copied into a
+/// [`SmallStr`], which allocates for a line that was going to fit inline
+/// anyway; [`SmolStrBuilder`] holds the same 23 bytes and reaches for the heap
+/// only past them. A newtype for the reason [`SmallStr`] is one: nothing
+/// outside this module names what backs it.
+pub struct SmallStrBuilder(SmolStrBuilder);
+
+impl SmallStrBuilder {
+    pub fn new() -> Self {
+        Self(SmolStrBuilder::new())
+    }
+
+    pub fn push(&mut self, c: char) {
+        self.0.push(c);
+    }
+
+    pub fn push_str(&mut self, s: &str) {
+        self.0.push_str(s);
+    }
+
+    pub fn finish(self) -> SmallStr {
+        SmallStr(self.0.finish())
+    }
+}
+
+/// So that `write!` reaches the builder: the inner [`SmolStrBuilder`]'s own
+/// impl is behind the newtype, and this is what appends a formatted value
+/// without a [`String`] in between.
+impl fmt::Write for SmallStrBuilder {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
     }
 }
