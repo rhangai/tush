@@ -80,10 +80,10 @@ impl AppSchedule {
     fn schedule_inner(&self, chain: DependencyOrder<UnitKey>, direct_keys: &[UnitKey]) {
         let mut lock = self.inner.scheduled.lock();
         for item in chain.order() {
-            lock.entry(*item).or_insert(false);
+            lock.entry(*item).or_insert(AppScheduleKind::Schedule);
         }
         for key in direct_keys {
-            lock.insert(*key, true);
+            lock.insert(*key, AppScheduleKind::Force);
         }
         drop(lock);
         self.event_dispatcher.trigger();
@@ -129,7 +129,7 @@ impl AppScheduleRunnerTask {
             return;
         };
         let mut event_listener = inner.event_listener.clone();
-        let mut scheduled: HashMap<UnitKey, bool> = HashMap::new();
+        let mut scheduled: HashMap<UnitKey, AppScheduleKind> = HashMap::new();
         let mut resolved: HashSet<UnitKey> = HashSet::new();
         let mut remove: HashSet<UnitKey> = HashSet::new();
         while event_listener.changed().await {
@@ -142,16 +142,19 @@ impl AppScheduleRunnerTask {
                 scheduled.extend(inner.scheduled.lock().iter());
             }
             unit_map.write_resolved(&mut resolved);
-            for (scheduled, force) in &scheduled {
+            for (scheduled, kind) in &scheduled {
                 _ = unit_map.ensure_created(*scheduled);
                 let deps = unit_map.direct_dependencies(*scheduled);
                 let all_resolved = deps.into_iter().flatten().all(|dep| resolved.contains(dep));
                 if all_resolved {
-                    if *force {
-                        _ = unit_map.start_or_resume(*scheduled);
-                    } else {
-                        _ = unit_map.ensure_started(*scheduled);
-                    }
+                    match kind {
+                        AppScheduleKind::Schedule => {
+                            _ = unit_map.ensure_started(*scheduled);
+                        }
+                        AppScheduleKind::Force => {
+                            _ = unit_map.start_or_resume(*scheduled);
+                        }
+                    };
                     remove.insert(*scheduled);
                 }
             }
@@ -168,13 +171,19 @@ impl AppScheduleRunnerTask {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum AppScheduleKind {
+    Schedule,
+    Force,
+}
+
 /// The pending starts and the way to be woken about them — what the schedule
 /// and its loop both need, and the only thing they share.
 struct AppScheduleInner {
     /// What is waiting to start, and whether it was asked for directly: a
     /// direct request restarts a unit that is already running, one pulled in
     /// as a dependency leaves it alone.
-    scheduled: Mutex<HashMap<UnitKey, bool>>,
+    scheduled: Mutex<HashMap<UnitKey, AppScheduleKind>>,
     /// Taken here and not in [`run`](AppScheduleRunnerTask::run), which is
     /// spawned later: a listener only wakes for triggers after it was
     /// created, and a target named on the command line is scheduled before
