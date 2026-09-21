@@ -169,11 +169,14 @@ impl Process {
 
 impl Drop for Process {
     /// `SIGKILL` the process group so a dropped handle never leaks a child.
+    ///
+    /// Through [`group::kill`] rather than a `kill` of its own, because this
+    /// runs on every process that ended well too — the state stays `Running`
+    /// after a `wait` — and by then the group is usually already empty.
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let ProcessInner::Running { pid: Some(pid), .. } = &mut self.inner {
-            unsafe { libc::kill(-(*pid as i32), libc::SIGKILL) };
-        };
+        if let ProcessInner::Running { pid, .. } = &self.inner {
+            group::kill(*pid);
+        }
     }
 }
 
@@ -214,12 +217,12 @@ mod group {
     const POLL_MIN: Duration = Duration::from_millis(20);
     const POLL_MAX: Duration = Duration::from_millis(400);
 
-    /// `SIGTERM` the group, reporting whether there was one to signal.
+    /// `SIGTERM` the group, reporting whether there was a live one to signal.
     pub fn terminate(pid: Option<u32>) -> bool {
         signal(pid, libc::SIGTERM)
     }
 
-    /// `SIGKILL` the group, reporting whether there was one to signal.
+    /// `SIGKILL` the group, reporting whether there was a live one to signal.
     pub fn kill(pid: Option<u32>) -> bool {
         signal(pid, libc::SIGKILL)
     }
@@ -244,8 +247,18 @@ mod group {
         true
     }
 
+    /// Signal the group, reporting whether there was a live one to signal.
+    ///
+    /// The liveness test is not politeness: once the group empties, its number
+    /// is the kernel's to hand to somebody else, and a later `kill(-pid, ...)`
+    /// reaches whoever got it. Probing narrows that to the gap between the two
+    /// calls, which is as close as a group signal gets — a `pidfd` names one
+    /// process, not a group.
     fn signal(pid: Option<u32>, signal: i32) -> bool {
         let Some(pid) = pid else { return false };
+        if !alive(pid) {
+            return false;
+        }
         unsafe { libc::kill(-(pid as i32), signal) };
         true
     }
