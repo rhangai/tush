@@ -11,7 +11,7 @@ use crate::{
     error::ViewSocketError,
     log::{LogLine, LogRegion},
     unit::{UnitChoice, UnitEvent, UnitKey},
-    util::str::SmallStr,
+    util::str::{SmallStr, SmallStrBuilder},
     view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
 };
 
@@ -25,13 +25,13 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 
 /// What the log pane asked for, as the task reads it.
 ///
-/// The config key rides along so the task never has to turn a [`UnitKey`]
-/// back into one: a URL addresses a unit by the key it was declared under,
-/// and the row the pane pointed at holds both.
+/// The key rides along, already encoded, so the task never has to turn a
+/// [`UnitKey`] back into one: a URL addresses a unit by the key it was
+/// declared under, and the row the pane pointed at holds both.
 #[derive(Clone)]
 struct Wanted {
     unit_key: UnitKey,
-    key: SmallStr,
+    key_path: SmallStr,
     region: LogRegion,
 }
 
@@ -64,7 +64,7 @@ struct Frame {
     choices: Vec<UnitChoice>,
 }
 
-/// A command on its way out, with the config key its URL needs.
+/// A command on its way out, with the encoded key its URL needs.
 enum Outgoing {
     Start(SmallStr),
     Stop(SmallStr),
@@ -153,18 +153,19 @@ impl ViewSocket {
         })
     }
 
-    /// The config key a [`UnitKey`] stands for, for the URL that addresses it.
+    /// The config key a [`UnitKey`] stands for, ready to go into a path.
     ///
     /// The key and not [`name`](ViewUnit::name): the server resolves a path
     /// segment through the interner, and the interner only ever saw the key.
     ///
+    /// Encoded here and not at the five `format!`s that use it, so a route
+    /// added later cannot be the one that forgets.
+    ///
     /// A scan and not a map: the rows are a session's worth of units, in
     /// name order, and this happens on a keypress rather than on a frame.
-    fn key_str(&self, key: UnitKey) -> Option<SmallStr> {
-        self.units
-            .iter()
-            .find(|unit| unit.unit_key == key)
-            .map(|unit| unit.key.clone())
+    fn key_path(&self, key: UnitKey) -> Option<SmallStr> {
+        let unit = self.units.iter().find(|unit| unit.unit_key == key)?;
+        Some(encode_path_segment(&unit.key))
     }
 }
 
@@ -221,10 +222,10 @@ impl ViewClient for ViewSocket {
     /// command with, and the same gap.
     fn send(&self, command: ViewCommand) {
         let outgoing = match command {
-            ViewCommand::Start { key } => self.key_str(key).map(Outgoing::Start),
-            ViewCommand::Stop { key } => self.key_str(key).map(Outgoing::Stop),
+            ViewCommand::Start { key } => self.key_path(key).map(Outgoing::Start),
+            ViewCommand::Stop { key } => self.key_path(key).map(Outgoing::Stop),
             ViewCommand::Dispatch { key, event } => {
-                self.key_str(key).map(|key| Outgoing::Dispatch(key, event))
+                self.key_path(key).map(|key| Outgoing::Dispatch(key, event))
             }
         };
         if let Some(outgoing) = outgoing {
@@ -247,7 +248,7 @@ impl ViewClient for ViewSocket {
         let wanted = key.and_then(|unit_key| {
             Some(Wanted {
                 unit_key,
-                key: self.key_str(unit_key)?,
+                key_path: self.key_path(unit_key)?,
                 region,
             })
         });
@@ -358,7 +359,7 @@ impl Poller {
                 let choices = fetch(
                     sender,
                     Method::GET,
-                    &format!("/units/{}/choices", wanted.key),
+                    &format!("/units/{}/choices", wanted.key_path),
                     None,
                 )
                 .await
@@ -398,7 +399,11 @@ impl Poller {
         let region = wanted.region;
         let path = format!(
             "/units/{}/log?line_start={}&line_end={}&column_start={}&column_end={}",
-            wanted.key, region.line_start, region.line_end, region.column_start, region.column_end
+            wanted.key_path,
+            region.line_start,
+            region.line_end,
+            region.column_start,
+            region.column_end
         );
         let response = request(sender, Method::GET, &path, None, revision).await?;
         if response.0 == StatusCode::NOT_MODIFIED {
@@ -428,6 +433,43 @@ struct LogBody {
     region: LogRegion,
     revision: u64,
     lines: Vec<LogLine>,
+}
+
+/// `key` with everything a path segment cannot carry percent-encoded.
+///
+/// Unreserved only (RFC 3986 §2.3), which is the conservative set: a key is
+/// whatever the config file declared it under, and a space in one makes a
+/// request line that does not parse while a `/` makes one that routes
+/// somewhere else. Over-encoding costs nothing, the server decoding the
+/// segment before it looks the key up.
+///
+/// Returned untouched when there is nothing to encode — which is every key
+/// anybody writes — so the common path is the copy it already was.
+fn encode_path_segment(key: &SmallStr) -> SmallStr {
+    if key.bytes().all(is_unreserved) {
+        return key.clone();
+    }
+    // Byte at a time, so a multi-byte character becomes one `%XX` per byte
+    // and the server's decoder puts the same UTF-8 back together.
+    let mut encoded = SmallStrBuilder::new();
+    for byte in key.bytes() {
+        if is_unreserved(byte) {
+            encoded.push(byte as char);
+            continue;
+        }
+        encoded.push('%');
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    encoded.finish()
+}
+
+/// Upper case, which is the spelling RFC 3986 says to produce.
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+/// The characters a path segment carries as themselves.
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
 
 /// Open a connection and put its driver on a task of its own.

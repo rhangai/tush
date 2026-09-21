@@ -55,9 +55,15 @@ Everything above addresses a unit by key: a key is read out of a row, copied
 into a command and compared every frame, where a name would be a string to
 clone and hash. A `&str` name flowing upward is a defect.
 
-The exception is deliberate and is the wire: a key means nothing outside the
-process that minted it, so HTTP addresses units by a name a person can type.
-See *Open* below — that translation is not right yet.
+The exception is deliberate and is the wire: a `UnitKey` means nothing outside
+the process that minted it, so HTTP addresses a unit by the text it was
+declared under, which `ViewUnit::key` carries. The config key and not the
+display name, which is a label the config may change and two procs may share.
+
+The client encodes that segment in one place, `ViewSocket::key_path`, rather
+than at each `format!` that builds a URL — a config key is whatever somebody
+typed, and a space or a `/` in one otherwise makes a request that does not
+parse or one that routes somewhere else.
 
 ## One event, coalescing
 
@@ -169,13 +175,6 @@ ones that are.
   Either the doc follows the code, or readiness needs a second predicate —
   running-and-stayed-running, a port, a line on stdout — and `Unit::resolved`
   becomes the one for `run:` steps only.
-- **How a unit's key is escaped on the wire.** Which string crosses is
-  settled: the config key, carried as `ViewUnit::key`, because a `UnitKey` is
-  meaningless across processes and a display name is a label two procs may
-  share. How it is escaped is not: both ends build the path segment with
-  `format!`, so a key holding a space or a `/` still breaks the request.
-  Either percent-encode it, or restrict the key charset at `App::new` the way
-  `:` already is.
 - **What `AppUnitMap` adds.** It owns the interner, the graph and the groups,
   which is its reason to exist; the fifteen methods that forward to `UnitMap`
   and rewrap `UnitMapError` as `AppError` are not, since `AppError` has one
