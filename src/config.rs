@@ -58,7 +58,7 @@ use figment::{
     providers::{Format, Yaml},
 };
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize,
     de::{DeserializeSeed, Visitor},
 };
 
@@ -187,6 +187,15 @@ pub struct ConfigProc {
     /// would be this layer deciding what the session can be.
     #[serde(default)]
     pub working_dir: Option<SmallStr>,
+    /// Which of the two lists on screen it is drawn in.
+    ///
+    /// Presentation and nothing else: it moves a row, and never what the proc
+    /// does or when it runs. An enum and not a `minor: true`, for the reason
+    /// [`RunnerPolicy`](crate::runner::RunnerPolicy) is one — the set will not
+    /// stay at two, and a proc that should not appear at all is a variant
+    /// here rather than a second flag that can contradict this one.
+    #[serde(default)]
+    pub panel: ConfigPanel,
     /// `run:` — the one way this proc runs.
     #[serde(default)]
     pub run: Option<ConfigUnitRun>,
@@ -194,6 +203,24 @@ pub struct ConfigProc {
     /// of the example config.
     #[serde(default)]
     pub modes: Option<Vec<ConfigUnitMode>>,
+}
+
+/// Which list a proc is drawn in.
+///
+/// Named for the two places on screen and not for the procs that go in them,
+/// because that is all it decides: a setup step and a watcher you only look
+/// at when it breaks want the same row, and they have nothing else in common.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigPanel {
+    /// The list proper, which is where a proc goes unless it says otherwise.
+    ///
+    /// First in the `Ord`, which is what sorts the rows: a view orders by
+    /// panel and then by name, so the two lists fall out of one sort.
+    #[default]
+    Main,
+    /// The compact list under it, for what you do not sit and watch.
+    Minor,
 }
 
 /// One named way to run a proc, switched between without redeclaring it.

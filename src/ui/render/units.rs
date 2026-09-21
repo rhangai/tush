@@ -1,12 +1,13 @@
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Position, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, StatefulWidget, Widget},
 };
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
+    config::ConfigPanel,
     runner::RunnerState,
     ui::{
         render::{DIGITS_MAX, decimal, room, set_clipped},
@@ -42,6 +43,13 @@ fn row_height(layout: UiThemeMenuLayout) -> u16 {
     }
 }
 
+/// How much of the pane the minor list may take.
+///
+/// Half, because the list above it is the one you are here for: twenty setup
+/// steps must not push the procs off the screen. What does not fit scrolls,
+/// the minor list having its own window like the other one.
+const MINOR_SHARE: u16 = 2;
+
 /// Where a key press moves the cursor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Move {
@@ -49,27 +57,45 @@ pub enum Move {
     Previous,
 }
 
-/// Where the units pane is looking from — the part that survives a frame.
+/// Which of the two lists the keys go to.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UiRenderUnitsFocus {
+    #[default]
+    Main,
+    Minor,
+}
+
+/// One list's place: the row the cursor is on, and where its window starts.
+///
+/// Two of these rather than one cursor over the whole slice, because the
+/// lists scroll separately and one `offset` cannot serve two windows of
+/// different heights.
 #[derive(Default)]
-pub struct UiRenderUnitsState {
-    /// Which unit the cursor is on.
+struct UiRenderUnitsSection {
     cursor: usize,
-    /// The first unit drawn, which scrolling moves.
     offset: usize,
 }
 
-impl UiRenderUnitsState {
-    /// Which unit the cursor is on.
-    pub fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    /// Move the cursor, bounded by however many units there are.
-    pub fn select(&mut self, movement: Move, units: usize) {
-        let last = units.saturating_sub(1);
+impl UiRenderUnitsSection {
+    /// Move the cursor, wrapping at either end of this list alone.
+    ///
+    /// Wrapping, so holding `j` comes round rather than parking on the last
+    /// row. Within the list and not across it, which is what makes the two
+    /// lists two: [`focus_other`](UiRenderUnitsState::focus_other) is the only
+    /// way between them.
+    fn select(&mut self, movement: Move, units: usize) {
+        let Some(last) = units.checked_sub(1) else {
+            self.cursor = 0;
+            return;
+        };
+        // Clamped first: a list that shrank under a cursor leaves it past the
+        // end until the next draw, and wrapping from there lands anywhere.
+        let cursor = self.cursor.min(last);
         self.cursor = match movement {
-            Move::Next => self.cursor.saturating_add(1).min(last),
-            Move::Previous => self.cursor.saturating_sub(1),
+            Move::Next if cursor == last => 0,
+            Move::Next => cursor + 1,
+            Move::Previous if cursor == 0 => last,
+            Move::Previous => cursor - 1,
         };
     }
 
@@ -85,6 +111,63 @@ impl UiRenderUnitsState {
         // are units above that could have filled them.
         self.offset = self.offset.min(units.saturating_sub(per_page));
     }
+}
+
+/// Where the units pane is looking from — the part that survives a frame.
+#[derive(Default)]
+pub struct UiRenderUnitsState {
+    main: UiRenderUnitsSection,
+    minor: UiRenderUnitsSection,
+    /// Which list the keys go to.
+    ///
+    /// Held rather than worked out from the cursor, because each list
+    /// remembers its own row: away and back lands where you were, which one
+    /// index into the whole slice could not say.
+    focused: UiRenderUnitsFocus,
+}
+
+impl UiRenderUnitsState {
+    /// Which unit the cursor is on, as an index into the whole slice.
+    ///
+    /// `split` is where the minor list starts. Folding the two sections back
+    /// into one index here is what keeps the menu, the log pane and `send`
+    /// addressing one selected unit and knowing nothing about the split.
+    pub fn cursor(&self, split: usize) -> usize {
+        match self.focused {
+            UiRenderUnitsFocus::Main => self.main.cursor,
+            UiRenderUnitsFocus::Minor => split + self.minor.cursor,
+        }
+    }
+
+    /// Move the cursor within whichever list has the keys.
+    pub fn select(&mut self, movement: Move, split: usize, units: usize) {
+        match self.focused {
+            UiRenderUnitsFocus::Main => self.main.select(movement, split),
+            UiRenderUnitsFocus::Minor => self.minor.select(movement, units - split),
+        }
+    }
+
+    /// Put the keys on the other list.
+    ///
+    /// A no-op when the list it would move to is empty, so Tab in a session
+    /// that declared no `panel: minor` does nothing rather than selecting a
+    /// row that is not there.
+    pub fn focus_other(&mut self, split: usize, units: usize) {
+        self.focused = match self.focused {
+            UiRenderUnitsFocus::Main if units > split => UiRenderUnitsFocus::Minor,
+            UiRenderUnitsFocus::Minor if split > 0 => UiRenderUnitsFocus::Main,
+            focused => focused,
+        };
+    }
+}
+
+/// Where the minor list starts in the units slice.
+///
+/// A partition point and not a scan, because the slice is ordered by panel —
+/// which is what [`units`](crate::view::ViewClient::units) promises, and what
+/// lets two lists be drawn out of one.
+pub fn minor_start(units: &[ViewUnit]) -> usize {
+    units.partition_point(|unit| unit.panel == ConfigPanel::Main)
 }
 
 /// The units pane: one row per unit, laid out the way the theme says.
@@ -123,6 +206,41 @@ impl<'a> UiRenderUnits<'a> {
             false => UiThemeMenuLayout::Compact,
         }
     }
+
+    /// The main list, the row the rule goes on, and the minor list.
+    ///
+    /// `None` when there is no minor list, or no room for one — and then the
+    /// pane is exactly what it was before there were two, which is what every
+    /// config that declares no `panel:` gets.
+    ///
+    /// The minor list is sized to what it holds, so it takes no room it does
+    /// not need, and capped at [`MINOR_SHARE`] so it cannot take the pane.
+    fn areas(&self, inner: Rect, minor: usize, main_row: u16) -> Option<(Rect, u16, Rect)> {
+        if minor == 0 {
+            return None;
+        }
+        // The rule, and one row of the list above it: a pane that cannot
+        // afford both has nothing to divide.
+        let room = inner.height.checked_sub(main_row + 1)?;
+        let minor_height = (minor as u16).min(room).min(inner.height / MINOR_SHARE);
+        if minor_height == 0 {
+            return None;
+        }
+        let main_height = inner.height - minor_height - 1;
+        let rule_y = inner.y + main_height;
+        Some((
+            Rect {
+                height: main_height,
+                ..inner
+            },
+            rule_y,
+            Rect {
+                y: rule_y + 1,
+                height: minor_height,
+                ..inner
+            },
+        ))
+    }
 }
 
 impl StatefulWidget for UiRenderUnits<'_> {
@@ -132,25 +250,97 @@ impl StatefulWidget for UiRenderUnits<'_> {
         let inner = self.border.inner(area);
         self.border.render(area, buffer);
 
+        let split = minor_start(self.units);
+        let (main, minor) = self.units.split_at(split);
         let layout = self.layout(inner.height);
-        let height = row_height(layout);
-        let per_page = (inner.height / height).max(1) as usize;
-        state.scroll_into_view(per_page, self.units.len());
 
-        let last = self.units.len().min(state.offset + per_page);
-        for (row, index) in (state.offset..last).enumerate() {
-            let y = inner.y + row as u16 * height;
-            let area = Rect::new(inner.x, y, inner.width, height);
-            let unit = &self.units[index];
-            let selected = index == state.cursor;
-            match layout {
-                UiThemeMenuLayout::Compact => {
-                    draw_compact(buffer, self.theme, unit, area, selected)
-                }
-                UiThemeMenuLayout::Comfortable => {
-                    draw_comfortable(buffer, self.theme, unit, area, selected)
-                }
+        let Some((main_area, rule_y, minor_area)) =
+            self.areas(inner, minor.len(), row_height(layout))
+        else {
+            // Nothing below, so nothing can have the keys but the list that is
+            // there — a pane that loses its minor list must not keep pointing
+            // at it.
+            state.focused = UiRenderUnitsFocus::Main;
+            draw_list(
+                buffer,
+                self.theme,
+                main,
+                inner,
+                layout,
+                &mut state.main,
+                true,
+            );
+            return;
+        };
+
+        let focused = state.focused;
+        draw_list(
+            buffer,
+            self.theme,
+            main,
+            main_area,
+            layout,
+            &mut state.main,
+            focused == UiRenderUnitsFocus::Main,
+        );
+        draw_rule(buffer, self.theme, inner, rule_y);
+        // Compact whatever the theme says: this is the list you are not
+        // reading, and a row of it spent on a second line is a row the list
+        // above does not get.
+        draw_list(
+            buffer,
+            self.theme,
+            minor,
+            minor_area,
+            UiThemeMenuLayout::Compact,
+            &mut state.minor,
+            focused == UiRenderUnitsFocus::Minor,
+        );
+    }
+}
+
+/// One list into its own area, at its own scroll.
+fn draw_list(
+    buffer: &mut Buffer,
+    theme: &UiTheme,
+    units: &[ViewUnit],
+    area: Rect,
+    layout: UiThemeMenuLayout,
+    state: &mut UiRenderUnitsSection,
+    focused: bool,
+) {
+    let height = row_height(layout);
+    let per_page = (area.height / height).max(1) as usize;
+    state.scroll_into_view(per_page, units.len());
+
+    let last = units.len().min(state.offset + per_page);
+    for (row, index) in (state.offset..last).enumerate() {
+        let y = area.y + row as u16 * height;
+        let row_area = Rect::new(area.x, y, area.width, height);
+        let unit = &units[index];
+        let selected = index == state.cursor;
+        match layout {
+            UiThemeMenuLayout::Compact => {
+                draw_compact(buffer, theme, unit, row_area, selected, focused)
             }
+            UiThemeMenuLayout::Comfortable => {
+                draw_comfortable(buffer, theme, unit, row_area, selected, focused)
+            }
+        }
+    }
+}
+
+/// The line between the two lists.
+///
+/// Inset from the pane's own border rather than tee'd into it: a tee wants a
+/// glyph no `border::Set` carries, and a rule that stops short reads as one
+/// list divided rather than as a second box.
+fn draw_rule(buffer: &mut Buffer, theme: &UiTheme, inner: Rect, y: u16) {
+    let rule = theme.symbols.border.horizontal_top;
+    let style = Style::new().add_modifier(Modifier::DIM);
+    for x in (inner.x + PAD_X)..inner.right().saturating_sub(PAD_X) {
+        if let Some(cell) = buffer.cell_mut(Position::new(x, y)) {
+            cell.set_symbol(rule).set_style(style);
         }
     }
 }
@@ -163,11 +353,17 @@ fn draw_gutter(
     unit: &ViewUnit,
     area: Rect,
     selected: bool,
+    focused: bool,
 ) -> u16 {
     let cursor = &theme.symbols.cursor;
     let x = area.x + PAD_X;
     if selected {
-        let style = Style::new().fg(theme.colors.cursor);
+        // Dim in the list that does not have the keys: the row Tab comes back
+        // to is worth seeing, and worth not mistaking for the live one.
+        let style = match focused {
+            true => Style::new().fg(theme.colors.cursor),
+            false => Style::new().add_modifier(Modifier::DIM),
+        };
         buffer.set_stringn(x, area.y, cursor, cursor.width(), style);
     }
 
@@ -231,8 +427,15 @@ fn set_right(
 /// The short names are taken wherever the config wrote one. This is the
 /// narrowest row on the screen and the one they were asked for; the other
 /// layout and the log pane's title spell everything out instead.
-fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &ViewUnit, area: Rect, selected: bool) {
-    let left = draw_gutter(buffer, theme, unit, area, selected);
+fn draw_compact(
+    buffer: &mut Buffer,
+    theme: &UiTheme,
+    unit: &ViewUnit,
+    area: Rect,
+    selected: bool,
+    focused: bool,
+) {
+    let left = draw_gutter(buffer, theme, unit, area, selected, focused);
     let right = area.right().saturating_sub(PAD_X);
 
     let mut digits = [0u8; DIGITS_MAX];
@@ -244,7 +447,7 @@ fn draw_compact(buffer: &mut Buffer, theme: &UiTheme, unit: &ViewUnit, area: Rec
     let name_right = set_right(buffer, area.y, left, right, label, number, style);
 
     let name = unit.name_short.as_ref().unwrap_or(&unit.name);
-    let style = name_style(selected);
+    let style = name_style(selected && focused);
     set_clipped(
         buffer,
         theme,
@@ -274,8 +477,9 @@ fn draw_comfortable(
     unit: &ViewUnit,
     area: Rect,
     selected: bool,
+    focused: bool,
 ) {
-    let left = draw_gutter(buffer, theme, unit, area, selected);
+    let left = draw_gutter(buffer, theme, unit, area, selected, focused);
     let right = area.right().saturating_sub(PAD_X);
     set_clipped(
         buffer,
@@ -284,7 +488,7 @@ fn draw_comfortable(
         area.y,
         &unit.name,
         room(left, right),
-        name_style(selected),
+        name_style(selected && focused),
     );
 
     // The gutter stays empty on the second line, so the two read as one row.

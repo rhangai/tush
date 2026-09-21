@@ -1,3 +1,4 @@
+use crate::config::ConfigPanel;
 use crate::unit::UnitKey;
 use crate::util::str::SmallStr;
 use crate::{
@@ -38,6 +39,13 @@ pub struct ViewUnit {
     pub mode_short: Option<SmallStr>,
     /// Where its run was at the last sync.
     pub state: RunnerState,
+    /// Which of the two lists it is drawn in.
+    ///
+    /// Carried rather than derived, because what decides it is the config and
+    /// the screen never reads one — and it is what [`units`](ViewClient::units)
+    /// orders by first, so the two lists are one sorted slice and the cursor
+    /// stays a single index into it.
+    pub panel: ConfigPanel,
 }
 
 /// Something the user asked for.
@@ -98,6 +106,10 @@ pub trait ViewClient {
 
     /// Every unit, as of the last [`sync`](ViewClient::sync), in the same order
     /// every time — a list that reshuffles itself cannot be pressed.
+    ///
+    /// Ordered by [`panel`](ViewUnit::panel) and then by name, so the rows of
+    /// each list are one run of this slice and a view can draw two lists
+    /// without holding two.
     fn units(&self) -> &[ViewUnit];
 
     /// Everything that can be asked of the unit under `key` right now.

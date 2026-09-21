@@ -37,7 +37,7 @@ pub use log::{UiRenderLog, UiRenderLogState};
 pub use menu::{UiMenuChoice, UiRenderMenu, UiRenderMenuState};
 
 #[allow(unused_imports)]
-pub use units::{Move, UiRenderUnits, UiRenderUnitsState};
+pub use units::{Move, UiRenderUnits, UiRenderUnitsState, minor_start};
 
 use crate::view::ViewUnit;
 
@@ -152,14 +152,26 @@ impl UiRender {
         self.areas.1
     }
 
-    /// The unit the cursor is on.
+    /// The unit the cursor is on, in whichever of the two lists has the keys.
     pub fn selected_unit<'a, C: ViewClient>(&self, client: &'a C) -> Option<&'a ViewUnit> {
-        client.units().get(self.units.cursor())
+        let units = client.units();
+        client.units().get(self.units.cursor(minor_start(units)))
     }
 
-    /// Move the cursor, and put the log pane back at the end.
-    pub fn select(&mut self, movement: Move, units: usize) {
-        self.units.select(movement, units);
+    /// Move the cursor within the focused list, and put the log pane back at
+    /// the end.
+    ///
+    /// The slice and not its length, because where one list ends and the
+    /// other begins is read off the rows themselves.
+    pub fn select(&mut self, movement: Move, units: &[ViewUnit]) {
+        self.units.select(movement, minor_start(units), units.len());
+        self.log.follow();
+    }
+
+    /// Put the keys on the other list, which is a different unit selected —
+    /// so the log pane goes back to the end, as it does for any other move.
+    pub fn focus_other(&mut self, units: &[ViewUnit]) {
+        self.units.focus_other(minor_start(units), units.len());
         self.log.follow();
     }
 
@@ -260,10 +272,11 @@ impl Widget for UiRenderHints<'_> {
 ///
 /// The two halves come from different lists because they are different kinds
 /// of thing — `⏎` is a character a terminal may not have, `actions` is a word.
-fn hints(theme: &UiTheme) -> [(&SmallStr, &SmallStr); 7] {
+fn hints(theme: &UiTheme) -> [(&SmallStr, &SmallStr); 8] {
     let (symbols, texts) = (&theme.symbols, &theme.texts);
     [
         (&symbols.statusbar_move, &texts.statusbar_move),
+        (&symbols.statusbar_panel, &texts.statusbar_panel),
         (&symbols.statusbar_actions, &texts.statusbar_actions),
         (&symbols.statusbar_start, &texts.statusbar_start),
         (&symbols.statusbar_stop, &texts.statusbar_stop),

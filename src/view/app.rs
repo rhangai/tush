@@ -52,8 +52,8 @@ pub struct ViewApp {
 impl ViewApp {
     /// Show `app`.
     ///
-    /// The rows are laid out once, alphabetically by display name, and keep
-    /// that order for the run. The map they come from has no order of its
+    /// The rows are laid out once, by panel and then alphabetically by display
+    /// name, and keep that order for the run. The map they come from has no order of its
     /// own, and a list that resequenced itself on every poll would move the
     /// row out from under the cursor. It stands in for the order the config
     /// was written in, which the config does not carry this far yet.
@@ -75,9 +75,10 @@ impl ViewApp {
                 mode: None,
                 mode_short: None,
                 state: RunnerState::Stopped,
+                panel: unit_map.panel(unit_key),
             })
             .collect();
-        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));
         Self {
             reader: LogReader::empty(unit_map.log_capacity()),
             app,

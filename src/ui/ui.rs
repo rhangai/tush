@@ -167,6 +167,9 @@ impl<C: ViewClient> Ui<C> {
             // are reading. It is free now that it no longer moves the list —
             // which was the wrong thing for it to move.
             KeyCode::End | KeyCode::Char('G') => self.render.follow_log(),
+            // The two lists are two loops, so this is the only way between
+            // them — see `UiRenderUnitsState::focus_other`.
+            KeyCode::Tab => self.render.focus_other(self.client.units()),
             KeyCode::Enter => self.open_menu(),
             // The accelerator for the entry the menu opens on: start, or
             // restart in the mode it is already in.
@@ -227,7 +230,7 @@ impl<C: ViewClient> Ui<C> {
 
     /// Move the cursor, bounded by however many units there are.
     fn select(&mut self, movement: Move) {
-        self.render.select(movement, self.client.units().len());
+        self.render.select(movement, self.client.units());
     }
 
     /// Send the command `command` builds for the selected unit's key, if

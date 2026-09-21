@@ -31,6 +31,7 @@ procs:
     name_short: <string>        # optional
     group:      [<string>, ...] # optional
     depends:    [<string>, ...] # optional
+    panel:      main | minor    # optional
     run:        <commands>      # optional
     modes:      [<mode>, ...]   # optional
 ```
@@ -41,6 +42,7 @@ procs:
 | `name_short` | string | A shorter label, for where the full one will not fit |
 | `group` | list of strings | Groups this proc belongs to |
 | `depends` | list of strings | Procs that must be up before this one starts |
+| `panel` | `main` or `minor` | Which of the two lists on screen it is drawn in |
 | `run` | [commands](#run) | The one way this proc runs |
 | `modes` | [list of modes](#modes) | Several named ways to run it |
 
@@ -145,6 +147,28 @@ web:
   depends: [api, database]
   run: [npm, run, dev]
 ```
+
+---
+
+## `panel`
+
+Which of the two lists on the left of the screen the proc is drawn in.
+
+```yaml
+db-setup:
+  panel: minor
+  run: [./scripts/db.sh]
+```
+
+`main` is the default and the list proper. `minor` is the compact list under
+it, for the procs you do not sit and watch — setup steps, migrations, a
+watcher you only look at when it breaks.
+
+It changes nothing about what the proc does or when it runs. The two lists are
+navigated separately: `j` and `k` stay in the list they are in and wrap at its
+ends, and <kbd>Tab</kbd> moves between them, each remembering the row you left
+it on. A proc in the minor list is selected like any other, so its log and its
+action menu are there when you do need them.
 
 ---
 

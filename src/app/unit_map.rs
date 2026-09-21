@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 
 use crate::{
     app::TARGET_SEPARATOR,
-    config::{Config, ConfigProc},
+    config::{Config, ConfigPanel, ConfigProc},
     error::{AppConfigError, AppError, UnitMapError},
     log::LogReader,
     runner::RunnerState,
@@ -33,6 +33,9 @@ pub struct AppUnitMap {
     /// depend on something are in it.
     dependencies: HashMap<UnitKey, UnitKeyVec>,
     groups: HashMap<SmallStr, UnitKeyVec>,
+    /// Which list each proc is drawn in, holding only the procs that are not
+    /// in the default one — the exception list, the way `dependencies` is.
+    panels: HashMap<UnitKey, ConfigPanel>,
 }
 
 type UnitKeyVec = SmallVec<[UnitKey; 16]>;
@@ -48,6 +51,7 @@ impl AppUnitMap {
 
         let dependency_graph = Self::build_dep_graph(&mut errors, &mut unit_map, config);
         let mut groups: HashMap<SmallStr, UnitKeyVec> = HashMap::new();
+        let mut panels: HashMap<UnitKey, ConfigPanel> = HashMap::new();
         for proc in &config.procs {
             let Some(key) = unit_map.key(proc.key.as_ref()) else {
                 errors.push(AppConfigError::LogicErrorKey(proc.key.clone()));
@@ -56,6 +60,9 @@ impl AppUnitMap {
             let behavior = Self::build_behavior(proc);
             for group in &proc.groups {
                 groups.entry(group.clone()).or_default().push(key);
+            }
+            if proc.panel != ConfigPanel::default() {
+                panels.insert(key, proc.panel);
             }
             unit_map.insert(key, behavior);
         }
@@ -74,6 +81,7 @@ impl AppUnitMap {
             dependency_graph,
             dependencies,
             groups,
+            panels,
         })
     }
 
@@ -276,6 +284,15 @@ impl AppUnitMap {
     /// and a key no unit was declared under, which want the same answer.
     pub fn direct_dependencies(&self, key: UnitKey) -> Option<&UnitKeyVec> {
         self.dependencies.get(&key)
+    }
+
+    /// Which list `key` is drawn in.
+    ///
+    /// [`Main`](ConfigPanel::Main) for a key no proc was declared under, which
+    /// wants the same answer as a proc that said nothing: there is one list
+    /// until a config asks for two.
+    pub fn panel(&self, key: UnitKey) -> ConfigPanel {
+        self.panels.get(&key).copied().unwrap_or_default()
     }
 
     /// Every unit declared under a group name, or `None` if none was.

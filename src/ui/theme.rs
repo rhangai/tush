@@ -96,6 +96,7 @@ pub struct UiThemeSymbols {
     /// What names each key in the status bar. Here and not in the texts
     /// because these are the glyphs a plain terminal cannot draw.
     pub statusbar_move: SmallStr,
+    pub statusbar_panel: SmallStr,
     pub statusbar_actions: SmallStr,
     pub statusbar_start: SmallStr,
     pub statusbar_stop: SmallStr,
@@ -153,6 +154,7 @@ impl UiThemeSymbols {
             killed: SmallStr::literal("x"),
 
             statusbar_move: SmallStr::literal("up/dn"),
+            statusbar_panel: SmallStr::literal("tab"),
             statusbar_actions: SmallStr::literal("enter"),
             statusbar_start: SmallStr::literal("r"),
             statusbar_stop: SmallStr::literal("bksp"),
@@ -185,6 +187,7 @@ impl Default for UiThemeSymbols {
             killed: SmallStr::literal("✗"),
 
             statusbar_move: SmallStr::literal("↑↓"),
+            statusbar_panel: SmallStr::literal("⇥"),
             statusbar_actions: SmallStr::literal("⏎"),
             statusbar_start: SmallStr::literal("r"),
             statusbar_stop: SmallStr::literal("⌫"),
@@ -225,6 +228,7 @@ pub struct UiThemeTexts {
 
     /// What each key in the status bar does.
     pub statusbar_move: SmallStr,
+    pub statusbar_panel: SmallStr,
     pub statusbar_actions: SmallStr,
     pub statusbar_start: SmallStr,
     pub statusbar_stop: SmallStr,
@@ -268,6 +272,7 @@ impl Default for UiThemeTexts {
             cancel: SmallStr::literal("cancel"),
 
             statusbar_move: SmallStr::literal("move"),
+            statusbar_panel: SmallStr::literal("panel"),
             statusbar_actions: SmallStr::literal("actions"),
             statusbar_start: SmallStr::literal("(re)start"),
             statusbar_stop: SmallStr::literal("stop"),
