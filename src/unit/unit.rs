@@ -9,7 +9,7 @@ use crate::unit::behavior::UnitBehaviorContext;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
-    log::{Log, LogReader, LogWriterNotes},
+    log::{Log, LogReader},
     runner::{RunnerHandle, RunnerState},
     unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior},
 };
@@ -29,8 +29,6 @@ use crate::{
 pub struct Unit {
     /// The output of every run, kept across all of them.
     log: Log,
-    /// For writing into the log on the unit's own behalf, not a process's.
-    log_notes: LogWriterNotes,
     /// What it runs, behind a lock because a dispatch may change it.
     behavior: Mutex<UnitBehavior>,
     /// Whom to wake when a run resolves. `None` for a unit built on its own
@@ -47,10 +45,8 @@ impl Unit {
     /// Create a stopped unit with an empty log.
     pub fn new(behavior: UnitBehavior) -> Self {
         let log = Log::new(4096);
-        let log_notes = log.notes();
         Self {
             log,
-            log_notes,
             handle_manager: UnitHandleManager::new(),
             behavior: Mutex::new(behavior),
             event_dispatcher: None,
@@ -127,7 +123,7 @@ impl Unit {
             let mut manager = self.handle_manager.lock();
             manager.set_handle(handle)
         };
-        handle.start();
+        self.note_start(handle.start());
         Ok(handle)
     }
 
@@ -137,7 +133,7 @@ impl Unit {
             let mut manager = self.handle_manager.lock();
             manager.ensure_handle(|h| !h.is_started(), || self.spawn())?
         };
-        handle.start();
+        self.note_start(handle.start());
         Ok(handle)
     }
 
@@ -151,7 +147,7 @@ impl Unit {
             let mut manager = self.handle_manager.lock();
             manager.ensure_handle(|_| true, || self.spawn())?
         };
-        handle.start();
+        self.note_start(handle.start());
         Ok(handle)
     }
 
@@ -166,6 +162,30 @@ impl Unit {
     /// set: a later restart does not put the dependents back on hold.
     pub fn resolved(&self) -> bool {
         self.handle_manager.lock().resolved
+    }
+
+    /// Say a run is beginning, above the `starting <command>` the process
+    /// itself writes.
+    ///
+    /// Worth both lines because they answer different questions: a unit run
+    /// can be several commands in a row, and only the unit knows whether this
+    /// is a first start or one that displaced a run already going.
+    fn note_start(&self, start: UnitStart) {
+        match start {
+            UnitStart::Already => {}
+            UnitStart::Started => self.note("starting"),
+            UnitStart::Restarted => self.note("restarting"),
+        }
+    }
+
+    /// One line into the log on the unit's own behalf, not a process's.
+    ///
+    /// Built per line rather than kept in a field: a notes writer is a `Weak`
+    /// and an id, which costs less to make than the chunk the line goes into,
+    /// and a field would have to be behind a lock to be written through
+    /// `&self`.
+    fn note(&self, text: &str) {
+        self.log.notes().write_line(text);
     }
 
     /// A run of the current mode, wired to this unit's log and, if it has
@@ -185,12 +205,23 @@ impl Unit {
     /// what would have. Returns without waiting for either; the current handle
     /// stays in place so its terminal state remains observable.
     pub fn stop(&self) {
-        let manager = self.handle_manager.lock();
-        if let Some(handle) = manager.unit_handle.as_ref() {
-            handle.abort();
-        }
-        if let Some(outgoing) = manager.outgoing.as_ref() {
-            outgoing.abort();
+        let stopping = {
+            let manager = self.handle_manager.lock();
+            let mut stopping = false;
+            if let Some(handle) = manager.unit_handle.as_ref() {
+                handle.abort();
+                stopping = true;
+            }
+            if let Some(outgoing) = manager.outgoing.as_ref() {
+                outgoing.abort();
+                stopping = true;
+            }
+            stopping
+        };
+        // Outside the lock: writing a line takes the log's, and the manager's
+        // is read by the screen on every frame.
+        if stopping {
+            self.note("stopping");
         }
     }
 
@@ -232,6 +263,22 @@ impl Drop for Unit {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// What a [`start`](UnitHandle::start) turned out to be.
+///
+/// Three outcomes that leave the handle looking the same afterwards, told
+/// apart only while it happens — which is why it is reported rather than
+/// asked for later.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UnitStart {
+    /// Nothing: the run was already released, or had been replaced before it
+    /// ever ran.
+    Already,
+    /// Released, with no run before it to see out.
+    Started,
+    /// Released once the run it displaced has been seen out.
+    Restarted,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -281,19 +328,23 @@ impl UnitHandle {
     ///
     /// A handle that has since been replaced does not start at all: nothing
     /// holds it any more, so a run it began would be one nobody could stop.
-    pub fn start(self: &Arc<Self>) {
+    ///
+    /// What it answers is for the line the unit writes about it: the three
+    /// cases read the same from outside — the handle is started — and only
+    /// here is it still known which of them happened.
+    pub fn start(self: &Arc<Self>) -> UnitStart {
         if self
             .started
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            return;
+            return UnitStart::Already;
         }
         let Some(manager) = self.manager_weak.upgrade() else {
-            return;
+            return UnitStart::Already;
         };
         let Some((outgoing, needs_resolve)) = manager.lock().begin(self.handle_id) else {
-            return;
+            return UnitStart::Already;
         };
         // Only wait if the outgoing run has not finished on its own.
         if let Some(outgoing) = outgoing
@@ -307,12 +358,13 @@ impl UnitHandle {
                     handle.resolve_task().await;
                 }
             });
-            return;
+            return UnitStart::Restarted;
         }
         self.runner_handle.start();
         if needs_resolve {
             tokio::spawn(self.clone().resolve_task());
         }
+        UnitStart::Started
     }
 
     pub fn abort(&self) {

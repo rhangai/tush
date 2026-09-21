@@ -7,7 +7,7 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::base::ExitReason;
 use crate::error::ProcessError;
-use crate::log::LogWriterRef;
+use crate::log::{LogWriterNotes, LogWriterRef};
 
 /// How long a graceful shutdown waits after `SIGTERM` before escalating to
 /// `SIGKILL`, in milliseconds. The same budget bounds the wait after the
@@ -87,18 +87,22 @@ impl Process {
             self.forget_group();
             self.writer_wait().await;
         }
-        Ok(match wait_result {
+        let reason = match wait_result {
             Ok(status) if status.success() => ExitReason::Success,
             Ok(status) => ExitReason::Error(status.code().and_then(|v| NonZeroU8::new(v as u8))),
             Err(_) => ExitReason::Error(None),
-        })
+        };
+        self.note_exit(reason);
+        Ok(reason)
     }
 
     /// Kills the process.
     ///
     /// `SIGKILL`s the whole group and waits for it to be empty.
     pub async fn kill(&mut self) -> Result<ExitReason, ProcessError> {
-        self.kill_inner(false).await
+        let reason = self.kill_inner(false).await?;
+        self.note_exit(reason);
+        Ok(reason)
     }
 
     /// Ends the process, giving it a chance to end itself first.
@@ -108,7 +112,22 @@ impl Process {
     pub async fn shutdown(&mut self) -> Result<ExitReason, ProcessError> {
         let reason = self.kill_inner(true).await?;
         self.writer_wait().await;
+        self.note_exit(reason);
         Ok(reason)
+    }
+
+    /// Write how the run ended into the log, among the output it produced.
+    ///
+    /// Under [`LogWriterId::NOTES`](crate::log::LogWriterId::NOTES), which is
+    /// reserved so a note can never be spliced into the middle of a line a
+    /// process was part way through.
+    fn note_exit(&mut self, reason: ExitReason) {
+        if let ProcessInner::Running {
+            notes: Some(notes), ..
+        } = &mut self.inner
+        {
+            notes.write_line(&exit_note(reason));
+        }
     }
 
     /// Forget the group's number, now that the group is known to be gone.
@@ -200,6 +219,45 @@ impl Drop for Process {
         if let ProcessInner::Running { pid, .. } = &self.inner {
             group::kill(*pid);
         }
+    }
+}
+
+/// The line that announces a run, as a person would have typed the command.
+fn starting_note(command: &Command) -> String {
+    let command = command.as_std();
+    let mut note = String::from("starting ");
+    push_word(&mut note, &command.get_program().to_string_lossy());
+    for arg in command.get_args() {
+        note.push(' ');
+        push_word(&mut note, &arg.to_string_lossy());
+    }
+    note
+}
+
+/// Quoted only where a bare word would read as two, since most of an argv is
+/// plain and quoting all of it makes the common line harder to scan.
+fn push_word(note: &mut String, word: &str) {
+    if word.is_empty() || word.contains(char::is_whitespace) {
+        note.push('\'');
+        note.push_str(word);
+        note.push('\'');
+    } else {
+        note.push_str(word);
+    }
+}
+
+/// The line that closes a run.
+///
+/// Its own phrasing rather than the screen's labels in
+/// [`UiTheme`](crate::ui::UiTheme): a note sits in a log among a process's own
+/// output, where a sentence reads and a status word does not.
+fn exit_note(reason: ExitReason) -> String {
+    match reason {
+        ExitReason::Success => "exited successfully".to_owned(),
+        ExitReason::Error(Some(code)) => format!("exited with error code {code}"),
+        ExitReason::Error(None) => "exited with an error".to_owned(),
+        ExitReason::Killed(Some(code)) => format!("killed, with error code {code}"),
+        ExitReason::Killed(None) => "killed".to_owned(),
     }
 }
 
@@ -340,6 +398,10 @@ enum ProcessInner {
         child: Child,
         pid: Option<u32>,
         writer_task: Option<JoinHandle<std::io::Result<()>>>,
+        /// For the supervisor's own lines about this run. Taken before the
+        /// output writer is moved into the pump, which is the last moment
+        /// there is one to take it from.
+        notes: Option<LogWriterNotes>,
     },
 }
 
@@ -360,25 +422,31 @@ impl ProcessInner {
             } => {
                 command.process_group(0);
                 command.stdin(Stdio::null());
-                let (child, writer_task) = if let Some(writer) = writer {
+                let (child, writer_task, notes) = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
                     command.stderr(Stdio::piped());
                     let mut child = command.spawn().map_err(ProcessError::SpawnError)?;
                     let stdout = child.stdout.take().ok_or(ProcessError::InvalidStdout)?;
                     let stderr = child.stderr.take().ok_or(ProcessError::InvalidStderr)?;
+                    // After the spawn, so a command that could not start says
+                    // nothing, and before the pump exists, so the line cannot
+                    // land after output it announces.
+                    let mut notes = writer.notes();
+                    notes.write_line(&starting_note(&command));
                     let writer_task = writer.consume_spawn_stderr(stdout, stderr);
-                    (child, Some(writer_task))
+                    (child, Some(writer_task), Some(notes))
                 } else {
                     command.stdout(Stdio::null());
                     command.stderr(Stdio::null());
                     let child = command.spawn().map_err(ProcessError::SpawnError)?;
-                    (child, None)
+                    (child, None, None)
                 };
                 let pid = child.id();
                 *self = ProcessInner::Running {
                     child,
                     pid,
                     writer_task,
+                    notes,
                 };
                 Ok(())
             }
