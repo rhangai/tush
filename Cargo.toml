@@ -11,6 +11,7 @@ enum_dispatch = "0.3"
 figment = { version = "0.10.19", features = ["yaml"] }
 libc = "0.2"
 parking_lot = "0.12.5"
+parse-size = "1.1.0"
 petgraph = { version = "0.8", default-features = false, features = ["std"] }
 ratatui = "0.30.2"
 replace_with = "0.1.8"

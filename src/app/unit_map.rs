@@ -44,7 +44,7 @@ impl AppUnitMap {
     /// [`AppConfigError::Errors`].
     pub fn new(config: &Config) -> Result<Self, AppConfigError> {
         let mut errors: Vec<AppConfigError> = Vec::new();
-        let mut unit_map = UnitMap::with_capacity(16, config.log_size);
+        let mut unit_map = UnitMap::with_capacity(16, config.log_size());
 
         let dependency_graph = Self::build_dep_graph(&mut errors, &mut unit_map, config);
         let mut groups: HashMap<SmallStr, UnitKeyVec> = HashMap::new();

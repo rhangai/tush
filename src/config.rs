@@ -72,11 +72,6 @@ use crate::util::types::{SmallMultiVecStr, SmallVecStr};
 /// through what a proc just did, which is what this is for.
 const DEFAULT_LOG_SIZE: usize = 1024 * 1024;
 
-/// [`DEFAULT_LOG_SIZE`], as `serde` wants its defaults.
-fn default_log_size() -> usize {
-    DEFAULT_LOG_SIZE
-}
-
 /// A parsed config file: every proc a session is made of.
 ///
 /// A list though the file writes a mapping, because nothing downstream wants
@@ -100,24 +95,12 @@ pub struct Config {
     /// One for every proc rather than one each, because the knob a person
     /// reaches for is how far back the pane scrolls, not how far back one
     /// proc scrolls.
-    #[serde(default = "default_log_size")]
-    pub log_size: usize,
+    #[serde(default)]
+    log_size: Option<ConfigSize>,
     /// Every proc the file declared, sorted by key.
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_procs")]
     pub procs: Vec<ConfigProc>,
-}
-
-/// Written out rather than derived, so that an empty [`Config`] and one from
-/// an empty file agree: a derived `log_size` would be zero, which is a log
-/// with no room in it.
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            log_size: DEFAULT_LOG_SIZE,
-            procs: Vec::new(),
-        }
-    }
 }
 
 impl Config {
@@ -143,6 +126,11 @@ impl Config {
     /// each merged on top of the last.
     fn extract(provider: impl Provider) -> Result<Self> {
         Ok(Figment::from(provider).extract()?)
+    }
+
+    /// Get the log size for the units
+    pub fn log_size(&self) -> usize {
+        self.log_size.map_or(DEFAULT_LOG_SIZE, |s| s.0)
     }
 }
 
@@ -477,5 +465,31 @@ impl<'rde> Deserialize<'rde> for ConfigUnitRun {
         }
 
         deserializer.deserialize_seq(RunVisitor)
+    }
+}
+
+/// A size
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+struct ConfigSize(pub usize);
+
+impl<'de> Deserialize<'de> for ConfigSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Size {
+            Str(SmallStr),
+            U64(u64),
+        }
+        let res = match Size::deserialize(deserializer)? {
+            Size::U64(num) => Ok(num),
+            Size::Str(s) => parse_size::Config::new()
+                .with_binary()
+                .parse_size(s.as_bytes())
+                .map_err(serde::de::Error::custom),
+        }?;
+        Ok(Self(res as usize))
     }
 }
