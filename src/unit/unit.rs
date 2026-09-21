@@ -184,13 +184,19 @@ impl Unit {
         self.behavior.lock().spawn(ctx)
     }
 
-    /// Stop the current run.
+    /// Stop the current run, and the one it is still replacing.
     ///
-    /// Aborts the current run, if any, and returns without waiting for it.
-    /// The handle stays in place so its terminal state remains observable.
+    /// Both, because a stop during a restart otherwise leaves the outgoing
+    /// process running with nothing left to end it — the incoming handle was
+    /// what would have. Returns without waiting for either; the current handle
+    /// stays in place so its terminal state remains observable.
     pub fn stop(&self) {
-        if let Some(handle) = self.handle_manager.lock().unit_handle.as_ref() {
+        let manager = self.handle_manager.lock();
+        if let Some(handle) = manager.unit_handle.as_ref() {
             handle.abort();
+        }
+        if let Some(outgoing) = manager.outgoing.as_ref() {
+            outgoing.abort();
         }
     }
 
@@ -237,12 +243,18 @@ impl Drop for Unit {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct UnitHandleId(NonZeroU32);
 
+/// One run of a unit, as the thing that started it holds it.
+///
+/// The run it replaced is not here: it lives in the manager's slot, which is
+/// the only place both runs are visible at once — see
+/// [`begin`](UnitHandleManager::begin).
 pub struct UnitHandle {
     manager_weak: Weak<Mutex<UnitHandleManager>>,
     handle_id: UnitHandleId,
     runner_handle: RunnerHandle,
+    /// The start election. Whoever flips it is the one caller that goes on to
+    /// take the outgoing run, so it is taken exactly once.
     started: AtomicBool,
-    parent_runner_handle: Option<Arc<UnitHandle>>,
 }
 
 impl UnitHandle {
@@ -256,22 +268,6 @@ impl UnitHandle {
             handle_id,
             runner_handle,
             started: AtomicBool::new(false),
-            parent_runner_handle: None,
-        })
-    }
-
-    fn child(
-        self: Arc<Self>,
-        manager_weak: Weak<Mutex<UnitHandleManager>>,
-        handle_id: UnitHandleId,
-        runner_handle: RunnerHandle,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            manager_weak,
-            handle_id,
-            runner_handle,
-            started: AtomicBool::new(false),
-            parent_runner_handle: Some(self),
         })
     }
 
@@ -283,8 +279,15 @@ impl UnitHandle {
         self.started.load(Ordering::Relaxed)
     }
 
+    /// Release this run, seeing out the one it replaced first.
+    ///
+    /// Both answers come out of one pass over the manager — see
+    /// [`begin`](UnitHandleManager::begin) — so the run to wait on and whether
+    /// anybody still needs this unit to resolve are read at the same moment.
+    ///
+    /// A handle that has since been replaced does not start at all: nothing
+    /// holds it any more, so a run it began would be one nobody could stop.
     pub fn start(self: &Arc<Self>) {
-        // Start and set the bool as started
         if self
             .started
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -292,22 +295,26 @@ impl UnitHandle {
         {
             return;
         }
-        let needs_resolve = self.needs_resolve();
-        if let Some(parent) = self.parent_runner_handle.as_ref() {
-            // Only wait if parent is pending
-            if parent.state().is_pending() {
-                let parent = parent.clone();
-                let handle = self.clone();
-                _ = tokio::spawn(async move {
-                    parent.abort_and_wait().await;
-                    handle.runner_handle.start();
-                    if needs_resolve {
-                        handle.resolve_task().await;
-                    }
-                });
-                return;
-            };
+        let Some(manager) = self.manager_weak.upgrade() else {
+            return;
         };
+        let Some((outgoing, needs_resolve)) = manager.lock().begin(self.handle_id) else {
+            return;
+        };
+        // Only wait if the outgoing run has not finished on its own.
+        if let Some(outgoing) = outgoing
+            && outgoing.state().is_pending()
+        {
+            let handle = self.clone();
+            _ = tokio::spawn(async move {
+                outgoing.abort_and_wait().await;
+                handle.runner_handle.start();
+                if needs_resolve {
+                    handle.resolve_task().await;
+                }
+            });
+            return;
+        }
         self.runner_handle.start();
         if needs_resolve {
             tokio::spawn(self.clone().resolve_task());
@@ -321,13 +328,6 @@ impl UnitHandle {
     pub async fn abort_and_wait(&self) {
         self.runner_handle.abort();
         self.runner_handle.wait().await;
-    }
-
-    fn needs_resolve(&self) -> bool {
-        let Some(manager) = self.manager_weak.upgrade() else {
-            return false;
-        };
-        return !manager.lock().resolved;
     }
 
     async fn resolve_task(self: Arc<Self>) {
@@ -345,6 +345,7 @@ struct UnitHandleManager {
     handle_id: UnitHandleId,
     resolved: bool,
     unit_handle: Option<Arc<UnitHandle>>,
+    outgoing: Option<Arc<UnitHandle>>,
     event_dispatcher: Option<EventDispatcher>,
     manager_weak: Weak<Mutex<Self>>,
 }
@@ -356,27 +357,53 @@ impl UnitHandleManager {
                 handle_id: UnitHandleId(NonZeroU32::new(1).expect("should never happen")),
                 resolved: false,
                 unit_handle: None,
+                outgoing: None,
                 event_dispatcher: None,
                 manager_weak: manager_weak.clone(),
             })
         })
     }
 
+    /// Make a handle for `runner_handle` the current one, and put the run it
+    /// replaces where the next start will find it.
+    ///
+    /// A departing handle that was never started has nothing to see out, and
+    /// dropping it aborts the task it parked. One that was started and is
+    /// displaced *again* before anybody waited on it is aborted here: the
+    /// handle that would have seen it out was itself replaced, so nothing is
+    /// left that could.
     fn set_handle(&mut self, runner_handle: RunnerHandle) -> Arc<UnitHandle> {
         self.handle_id.0 = if let Some(id) = self.handle_id.0.checked_add(1) {
             id
         } else {
             NonZeroU32::new(1).expect("should never happen")
         };
-        let unit_handle = if let Some(handle) = self.unit_handle.take()
-            && handle.is_started()
+
+        // Get the current handle
+        if let Some(departing) = self.unit_handle.take()
+            && departing.is_started()
         {
-            handle.child(self.manager_weak.clone(), self.handle_id, runner_handle)
-        } else {
-            UnitHandle::new(self.manager_weak.clone(), self.handle_id, runner_handle)
-        };
+            // Replace with the latest
+            if let Some(stale) = self.outgoing.replace(departing) {
+                stale.abort();
+            }
+        }
+        let unit_handle = UnitHandle::new(self.manager_weak.clone(), self.handle_id, runner_handle);
         self.unit_handle = Some(unit_handle.clone());
         unit_handle
+    }
+
+    /// What a handle needs to start: the run it must see out, and whether
+    /// anything is still waiting for this unit to resolve.
+    ///
+    /// `None` when `handle_id` is not the current run any more — a handle
+    /// replaced between being built and being started has been dropped by
+    /// everything that could stop it, so it must not begin.
+    fn begin(&mut self, handle_id: UnitHandleId) -> Option<(Option<Arc<UnitHandle>>, bool)> {
+        if self.handle_id != handle_id {
+            return None;
+        }
+        Some((self.outgoing.take(), !self.resolved))
     }
 
     fn ensure_handle(
