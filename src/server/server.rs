@@ -3,7 +3,11 @@ use std::{path::PathBuf, sync::Arc};
 use tokio::{net::UnixStream, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
-use crate::{app::App, error::ServerError, server::socket::ServerSocket};
+use crate::{
+    app::App,
+    error::ServerError,
+    server::{socket::ServerSocket, state::ServerState},
+};
 
 /// A session listening for clients, with no screen of its own.
 ///
@@ -14,7 +18,7 @@ use crate::{app::App, error::ServerError, server::socket::ServerSocket};
 pub struct Server {
     /// Handed to every connection, which is what a connection reads the
     /// session through once it has frames to answer with.
-    app: Arc<App>,
+    state: Arc<ServerState>,
     socket: ServerSocket,
 }
 
@@ -26,7 +30,7 @@ impl Server {
     /// something a session discovers after it has spawned its procs.
     pub fn bind(app: Arc<App>, path: PathBuf) -> Result<Self, ServerError> {
         Ok(Self {
-            app,
+            state: Arc::new(ServerState::new(app)),
             socket: ServerSocket::bind(path)?,
         })
     }
@@ -57,7 +61,7 @@ impl Server {
                 Some(_finished) = connections.join_next() => {}
                 accepted = self.socket.listener().accept() => match accepted {
                     Ok((stream, _address)) => {
-                        connections.spawn(connection(self.app.clone(), stream));
+                        connections.spawn(connection(self.state.clone(), stream));
                     }
                     Err(error) => break Err(ServerError::Accept(error)),
                 },
@@ -74,11 +78,11 @@ impl Server {
 /// frame loop goes here, and until it does this is what proves a client can
 /// reach the socket and be let go of when the session ends.
 ///
-/// The [`App`] is held rather than borrowed because this outlives the call
-/// that spawned it; what makes that safe is the [`JoinSet`] in
+/// The [`ServerState`] is held rather than borrowed because this outlives the
+/// call that spawned it; what makes that safe is the [`JoinSet`] in
 /// [`run`](Server::run), which ends every one of these before the session is
 /// shut down.
-async fn connection(_app: Arc<App>, mut stream: UnixStream) {
+async fn connection(_state: Arc<ServerState>, mut stream: UnixStream) {
     let mut buffer = [0u8; 1024];
     loop {
         match tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await {
