@@ -879,7 +879,7 @@ pub struct LogReader {
     /// The log to sync from. Weak, so a view left open does not keep a unit's
     /// log alive; once it is gone the reader simply stops changing, which is
     /// the right thing for a view of a process that has ended.
-    inner: Weak<LogInner>,
+    inner: Option<Weak<LogInner>>,
     /// The copy, and every byte of it: the chunks hold their bytes inline, so
     /// this one `Box<[LogReaderChunk]>` is the reader's whole storage. Same
     /// capacity as the log's ring — see the type docs.
@@ -910,12 +910,7 @@ pub struct LogReader {
 }
 
 impl LogReader {
-    /// Build a reader for `inner`, holding `capacity` chunks of its own.
-    ///
-    /// Takes all of its memory here and never asks for more: the ring builds
-    /// every slot at once and the chunks carry their bytes inside them, so
-    /// this is one allocation and the only one a reader ever makes.
-    fn new(inner: Weak<LogInner>, capacity: usize) -> Self {
+    fn new_inner(inner: Option<Weak<LogInner>>, capacity: usize) -> Self {
         Self {
             inner,
             chunks: LocalRingBuffer::new_with(capacity, LogReaderChunk::new),
@@ -924,6 +919,14 @@ impl LogReader {
             partials_len: 0,
             version: 0,
         }
+    }
+    /// Build a reader for `inner`, holding `capacity` chunks of its own.
+    ///
+    /// Takes all of its memory here and never asks for more: the ring builds
+    /// every slot at once and the chunks carry their bytes inside them, so
+    /// this is one allocation and the only one a reader ever makes.
+    fn new(inner: Weak<LogInner>, capacity: usize) -> Self {
+        Self::new_inner(Some(inner), capacity)
     }
 
     /// A reader of `capacity` chunks that is not on a log yet.
@@ -938,7 +941,12 @@ impl LogReader {
     ///
     /// If `capacity` is zero, like the ring it is built on.
     pub fn empty(capacity: usize) -> Self {
-        Self::new(Weak::new(), capacity)
+        Self::new_inner(None, capacity)
+    }
+
+    /// The log is not initialized to any logger
+    pub fn is_initialized(&self) -> bool {
+        self.inner.is_none()
     }
 
     /// Point this reader at another log, keeping its memory.
@@ -955,7 +963,12 @@ impl LogReader {
     /// larger log than it was built for follows its newest `max_capacity`
     /// chunks.
     fn reset(&mut self, inner: Weak<LogInner>, capacity: usize) {
-        self.inner = inner;
+        // Optimization when the inner is already the same
+        if self.inner.as_ref().is_some_and(|i| i.ptr_eq(&inner)) {
+            self.chunks.set_capacity(capacity);
+            return;
+        }
+        self.inner = Some(inner);
         self.chunks.clear();
         self.chunks.set_capacity(capacity);
         self.seen = 0;
@@ -974,7 +987,7 @@ impl LogReader {
     /// held is a reader catching up from further behind than the ring is
     /// long, which copies the whole ring.
     pub fn sync(&mut self) -> usize {
-        let Some(inner) = self.inner.upgrade() else {
+        let Some(inner) = self.inner.as_ref().and_then(|w| w.upgrade()) else {
             return 0;
         };
         // Acquire pairs with the release on the writer's side: if the version
