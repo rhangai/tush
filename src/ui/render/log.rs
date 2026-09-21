@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    log::LogRegion,
+    log::{LogLine, LogRegion},
     runner::RunnerState,
     ui::{
         client::{UiLog, UiUnit},
@@ -217,13 +217,18 @@ impl StatefulWidget for UiRenderLog<'_> {
             buffer.set_stringn(text.x, text.y, empty, room(text.x, text.right()), style);
             return;
         }
+        // A note is the supervisor talking, not the process; dimmed for the
+        // same reason the empty pane above is, so the output reads first.
+        let plain = Style::new();
+        let dim = plain.add_modifier(Modifier::DIM);
         for (row, line) in lines.iter().enumerate() {
+            let style = if line.writer.is_note() { dim } else { plain };
             buffer.set_stringn(
                 text.x,
                 text.y + row as u16,
-                line,
+                &line.text,
                 text.width as usize,
-                Style::new(),
+                style,
             );
         }
     }
@@ -275,7 +280,7 @@ fn draw_behind(buffer: &mut Buffer, theme: &UiTheme, area: Rect, scroll: usize) 
 ///
 /// Everything saturates because the region that came back need not be the one
 /// asked for — the pane draws the overlap rather than nothing.
-fn visible<'a>(log: &'a UiLog<'a>, scroll: usize, rows: usize) -> &'a [String] {
+fn visible<'a>(log: &'a UiLog<'a>, scroll: usize, rows: usize) -> &'a [LogLine] {
     let from_end = scroll.saturating_sub(log.region.line_start);
     let end = log.lines.len().saturating_sub(from_end);
     let start = end.saturating_sub(rows);
