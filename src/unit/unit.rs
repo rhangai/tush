@@ -240,6 +240,11 @@ impl Unit {
     pub fn log_reader(&self) -> LogReader {
         self.log.reader()
     }
+
+    /// Put `reader` on this unit's log, in place of building one.
+    pub fn log_reader_into(&self, reader: &mut LogReader) {
+        self.log.reader_into(reader);
+    }
 }
 
 /// Shut the current run down before the unit's log goes with it.

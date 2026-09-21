@@ -232,6 +232,14 @@ impl AppUnitMap {
         self.unit_map.log_reader(key)
     }
 
+    pub fn log_reader_into(&self, key: UnitKey, reader: &mut LogReader) -> bool {
+        self.unit_map.log_reader_into(key, reader)
+    }
+
+    pub fn log_capacity(&self) -> usize {
+        self.unit_map.log_capacity()
+    }
+
     /// Every unit's key, in the `HashMap`'s order, which is to say in none —
     /// a caller showing these to a person has to impose one.
     pub fn keys(&self) -> impl Iterator<Item = UnitKey> {

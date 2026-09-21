@@ -10,7 +10,7 @@ use crate::unit::UnitHandle;
 use crate::util::event::{EventDispatcher, EventListener};
 use crate::util::str::SmallStr;
 use crate::{
-    log::LogReader,
+    log::{Log, LogReader},
     runner::RunnerState,
     unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior, unit::Unit},
 };
@@ -216,6 +216,24 @@ impl UnitMap {
     /// A new reader over the log of `key`.
     pub fn log_reader(&self, key: UnitKey) -> Option<LogReader> {
         self.with(key, Unit::log_reader).ok()
+    }
+
+    /// Put `reader` on the log of `key`, in place of building one.
+    ///
+    /// `false` is a key nothing was declared under, and leaves the reader on
+    /// whatever it was following — a caller that cannot address a unit has
+    /// nothing to show anyway.
+    pub fn log_reader_into(&self, key: UnitKey, reader: &mut LogReader) -> bool {
+        self.with(key, |unit| unit.log_reader_into(reader)).is_ok()
+    }
+
+    /// How many chunks every log in this map holds.
+    ///
+    /// One figure for the map because `log_size` is — see
+    /// [`with_capacity`](UnitMap::with_capacity). It is what a caller sizes a
+    /// reader by when it means to reuse one across units.
+    pub fn log_capacity(&self) -> usize {
+        Log::capacity_for_bytes(self.log_size)
     }
 
     /// Whether a unit was declared under `key`.

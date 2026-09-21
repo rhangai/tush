@@ -10,12 +10,10 @@ use crate::{
 
 /// The one log a [`ViewApp`] is following, and the last rectangle read out of it.
 struct AppLog {
-    /// Which unit it belongs to. A pane moving to another one throws this
-    /// away rather than re-pointing it: the revision counted against one
-    /// log's chunks means nothing against another's.
+    /// Which unit it belongs to. A pane moving to another one starts this
+    /// again rather than carrying it across: everything counted here is
+    /// counted against one log's chunks and means nothing against another's.
     unit_key: UnitKey,
-    /// A reader over that unit's log, which is to say a mirror of it.
-    reader: LogReader,
     /// The region last asked for.
     wanted: LogRegion,
     /// The region `lines` actually is — always `wanted` here, since resolving
@@ -40,6 +38,12 @@ pub struct ViewApp {
     app: Arc<App>,
     /// The rows, built once and then written over in place.
     units: Vec<ViewUnit>,
+    /// The one reader, moved from log to log as the selection changes.
+    ///
+    /// Built once because a reader is a mirror of a whole log: one per switch
+    /// is an allocation and a zeroing of `log_size` bytes every time the
+    /// cursor moves, and holding the arrow key means one per frame.
+    reader: LogReader,
     /// The log the pane is showing, if it is showing one.
     log: Option<AppLog>,
 }
@@ -70,7 +74,8 @@ impl ViewApp {
             .collect();
         list.sort_by(|a, b| a.name.cmp(&b.name));
         Self {
-            app: app.clone(),
+            reader: LogReader::empty(unit_map.log_capacity()),
+            app,
             units: list,
             log: None,
         }
@@ -84,13 +89,13 @@ impl ViewApp {
         let Some(log) = &mut self.log else {
             return;
         };
-        log.reader.sync();
-        let revision = log.reader.version();
+        self.reader.sync();
+        let revision = self.reader.version();
         if revision == log.revision && log.region == log.wanted {
             return;
         }
 
-        log.reader.copy_region(log.wanted, &mut log.lines);
+        self.reader.copy_region(log.wanted, &mut log.lines);
         log.region = log.wanted;
         log.revision = revision;
     }
@@ -123,9 +128,10 @@ impl ViewClient for ViewApp {
 
     /// Point the reader at `key`, and remember the rectangle wanted from it.
     ///
-    /// A new reader only when the unit changed. Resolving the region is
-    /// [`sync`](ViewClient::sync)'s job, so the lines and the states in one
-    /// frame are taken at the same moment.
+    /// The reader moves only when the unit changed, and moving it is a reset
+    /// rather than a build — its memory is the pane's for the run. Resolving
+    /// the region is [`sync`](ViewClient::sync)'s job, so the lines and the
+    /// states in one frame are taken at the same moment.
     fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion) {
         let Some(key) = key else {
             self.log = None;
@@ -134,13 +140,12 @@ impl ViewClient for ViewApp {
         match &mut self.log {
             Some(log) if log.unit_key == key => log.wanted = region,
             _ => {
-                let Some(reader) = self.app.unit_map().log_reader(key) else {
+                if !self.app.unit_map().log_reader_into(key, &mut self.reader) {
                     self.log = None;
                     return;
-                };
+                }
                 self.log = Some(AppLog {
                     unit_key: key,
-                    reader,
                     region,
                     wanted: region,
                     revision: 0,

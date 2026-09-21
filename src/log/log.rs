@@ -435,7 +435,16 @@ impl Log {
     /// floor, since [`new`](Log::new) panics on a log with no room and a
     /// config asking for none meant the smallest one.
     pub fn with_bytes(bytes: usize) -> Self {
-        Self::new((bytes / LOG_CHUNK_SIZE).max(1))
+        Self::new(Self::capacity_for_bytes(bytes))
+    }
+
+    /// How many chunks [`with_bytes`](Log::with_bytes) buys for `bytes`.
+    ///
+    /// For sizing a [`LogReader`] before there is a log to ask: a reader is
+    /// held to the capacity of whatever log it is put on, so one built to
+    /// stand in for several has to start at least this long.
+    pub fn capacity_for_bytes(bytes: usize) -> usize {
+        (bytes / LOG_CHUNK_SIZE).max(1)
     }
 
     /// Get a handle that can append to this log.
