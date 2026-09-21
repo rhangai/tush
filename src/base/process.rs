@@ -248,6 +248,21 @@ fn push_word(note: &mut SmallStrBuilder, word: &str) {
     }
 }
 
+/// The line that says a run never began.
+///
+/// A note of its own because the state a failed spawn leaves —
+/// `ExitError(None)` — says that something went wrong and not what, and
+/// because the two ordinary reasons are indistinguishable from the error
+/// alone: a program that is not there and a `working_dir` that is not there
+/// both come back as `NotFound`. Naming the directory when the config set one
+/// is what tells them apart.
+fn failed_note(command: &Command, error: &std::io::Error) -> String {
+    match command.as_std().get_current_dir() {
+        Some(directory) => format!("could not start in {}: {error}", directory.display()),
+        None => format!("could not start: {error}"),
+    }
+}
+
 /// The line that closes a run.
 ///
 /// Its own phrasing rather than the screen's labels in
@@ -427,12 +442,23 @@ impl ProcessInner {
                 let (child, writer_task, notes) = if let Some(writer) = writer {
                     command.stdout(Stdio::piped());
                     command.stderr(Stdio::piped());
-                    let mut child = command.spawn().map_err(ProcessError::SpawnError)?;
+                    let mut child = match command.spawn() {
+                        Ok(child) => child,
+                        Err(error) => {
+                            // Both lines, because the failure on its own says
+                            // why and not what, and a unit with modes could
+                            // have been about to run any of several commands.
+                            let mut notes = writer.notes();
+                            notes.write_line(&starting_note(&command));
+                            notes.write_line(&failed_note(&command, &error));
+                            return Err(ProcessError::SpawnError(error));
+                        }
+                    };
                     let stdout = child.stdout.take().ok_or(ProcessError::InvalidStdout)?;
                     let stderr = child.stderr.take().ok_or(ProcessError::InvalidStderr)?;
-                    // After the spawn, so a command that could not start says
-                    // nothing, and before the pump exists, so the line cannot
-                    // land after output it announces.
+                    // Before the pump exists, so the line cannot land after
+                    // output it announces. A spawn that failed has already
+                    // written its own pair, above.
                     let mut notes = writer.notes();
                     notes.write_line(&starting_note(&command));
                     let writer_task = writer.consume_spawn_stderr(stdout, stderr);
