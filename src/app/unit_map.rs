@@ -187,6 +187,12 @@ impl AppUnitMap {
         self.unit_map.key(name)
     }
 
+    /// The text `key` was interned from, for whatever has to name a unit
+    /// outside this process — where a [`UnitKey`] means nothing.
+    pub fn key_str(&self, key: UnitKey) -> Option<&str> {
+        self.unit_map.key_str(key)
+    }
+
     pub fn start(&self, key: UnitKey) -> Result<(), AppError> {
         self.unit_map.start(key)?;
         Ok(())

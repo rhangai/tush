@@ -25,12 +25,13 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 
 /// What the log pane asked for, as the task reads it.
 ///
-/// The name rides along so the task never has to turn a key back into one: a
-/// URL addresses a unit by name, and the row the pane pointed at holds both.
+/// The config key rides along so the task never has to turn a [`UnitKey`]
+/// back into one: a URL addresses a unit by the key it was declared under,
+/// and the row the pane pointed at holds both.
 #[derive(Clone)]
 struct Wanted {
     unit_key: UnitKey,
-    name: SmallStr,
+    key: SmallStr,
     region: LogRegion,
 }
 
@@ -63,7 +64,7 @@ struct Frame {
     choices: Vec<UnitChoice>,
 }
 
-/// A command on its way out, with the name its URL needs.
+/// A command on its way out, with the config key its URL needs.
 enum Outgoing {
     Start(SmallStr),
     Stop(SmallStr),
@@ -152,15 +153,18 @@ impl ViewSocket {
         })
     }
 
-    /// The name a key belongs to, for the URL that addresses it.
+    /// The config key a [`UnitKey`] stands for, for the URL that addresses it.
+    ///
+    /// The key and not [`name`](ViewUnit::name): the server resolves a path
+    /// segment through the interner, and the interner only ever saw the key.
     ///
     /// A scan and not a map: the rows are a session's worth of units, in
     /// name order, and this happens on a keypress rather than on a frame.
-    fn name(&self, key: UnitKey) -> Option<SmallStr> {
+    fn key_str(&self, key: UnitKey) -> Option<SmallStr> {
         self.units
             .iter()
             .find(|unit| unit.unit_key == key)
-            .map(|unit| unit.name.clone())
+            .map(|unit| unit.key.clone())
     }
 }
 
@@ -217,10 +221,10 @@ impl ViewClient for ViewSocket {
     /// command with, and the same gap.
     fn send(&self, command: ViewCommand) {
         let outgoing = match command {
-            ViewCommand::Start { key } => self.name(key).map(Outgoing::Start),
-            ViewCommand::Stop { key } => self.name(key).map(Outgoing::Stop),
+            ViewCommand::Start { key } => self.key_str(key).map(Outgoing::Start),
+            ViewCommand::Stop { key } => self.key_str(key).map(Outgoing::Stop),
             ViewCommand::Dispatch { key, event } => {
-                self.name(key).map(|name| Outgoing::Dispatch(name, event))
+                self.key_str(key).map(|key| Outgoing::Dispatch(key, event))
             }
         };
         if let Some(outgoing) = outgoing {
@@ -243,7 +247,7 @@ impl ViewClient for ViewSocket {
         let wanted = key.and_then(|unit_key| {
             Some(Wanted {
                 unit_key,
-                name: self.name(unit_key)?,
+                key: self.key_str(unit_key)?,
                 region,
             })
         });
@@ -331,10 +335,10 @@ impl Poller {
     ) -> Result<(), ViewSocketError> {
         while let Ok(outgoing) = self.incoming.try_recv() {
             let (path, body) = match outgoing {
-                Outgoing::Start(name) => (format!("/units/{name}/start"), None),
-                Outgoing::Stop(name) => (format!("/units/{name}/stop"), None),
-                Outgoing::Dispatch(name, event) => (
-                    format!("/units/{name}/dispatch"),
+                Outgoing::Start(key) => (format!("/units/{key}/start"), None),
+                Outgoing::Stop(key) => (format!("/units/{key}/stop"), None),
+                Outgoing::Dispatch(key, event) => (
+                    format!("/units/{key}/dispatch"),
                     Some(serde_json::to_vec(&event).unwrap_or_default()),
                 ),
             };
@@ -354,7 +358,7 @@ impl Poller {
                 let choices = fetch(
                     sender,
                     Method::GET,
-                    &format!("/units/{}/choices", wanted.name),
+                    &format!("/units/{}/choices", wanted.key),
                     None,
                 )
                 .await
@@ -394,7 +398,7 @@ impl Poller {
         let region = wanted.region;
         let path = format!(
             "/units/{}/log?line_start={}&line_end={}&column_start={}&column_end={}",
-            wanted.name, region.line_start, region.line_end, region.column_start, region.column_end
+            wanted.key, region.line_start, region.line_end, region.column_start, region.column_end
         );
         let response = request(sender, Method::GET, &path, None, revision).await?;
         if response.0 == StatusCode::NOT_MODIFIED {

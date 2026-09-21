@@ -14,23 +14,28 @@ use crate::{
     runner::RunnerState,
     server::state::ServerState,
     unit::{UnitChoice, UnitEvent, UnitKey},
+    util::str::SmallStr,
     view::ViewUnit,
 };
 
 /// Every route a client speaks, over whatever the caller is listening on.
 ///
-/// Units are addressed by name and not by [`UnitKey`]: a key is an interned
-/// symbol that means nothing outside the process that made it, and a path a
-/// person can type is most of why this is HTTP at all. The conversion happens
-/// in the unit map, which is the one place names become keys.
+/// Units are addressed by the key the config declared them under, and not by
+/// [`UnitKey`]: a key is an interned symbol that means nothing outside the
+/// process that made it, and a path a person can type is most of why this is
+/// HTTP at all. The conversion happens in the unit map, which is the one place
+/// text becomes a key.
+///
+/// The key and not the display name, which is a label the config may change
+/// and two procs may share — the interner only ever saw the key.
 pub fn router(state: Arc<ServerState>) -> Router {
     Router::new()
         .route("/units", get(units))
-        .route("/units/{name}/log", get(log))
-        .route("/units/{name}/choices", get(choices))
-        .route("/units/{name}/start", post(start))
-        .route("/units/{name}/stop", post(stop))
-        .route("/units/{name}/dispatch", post(dispatch))
+        .route("/units/{key}/log", get(log))
+        .route("/units/{key}/choices", get(choices))
+        .route("/units/{key}/start", post(start))
+        .route("/units/{key}/stop", post(stop))
+        .route("/units/{key}/dispatch", post(dispatch))
         .with_state(state)
 }
 
@@ -57,6 +62,12 @@ async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
         .keys()
         .map(|unit_key| ViewUnit {
             unit_key,
+            // Unreachable for the same reason as the state below: the keys
+            // came out of the map, which is what interned them.
+            key: unit_map
+                .key_str(unit_key)
+                .map(SmallStr::new)
+                .unwrap_or_default(),
             name: unit_map.name(unit_key).unwrap_or_default(),
             name_short: unit_map.name_short(unit_key).unwrap_or(None),
             mode: unit_map.mode(unit_key).unwrap_or(None),
@@ -82,11 +93,11 @@ async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
 /// a browser: `?line_start=0&line_end=50&column_start=0&column_end=200`.
 async fn log(
     State(state): State<Arc<ServerState>>,
-    Path(name): Path<String>,
+    Path(unit): Path<String>,
     Query(region): Query<LogRegion>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(key) = key(&state, &name) else {
+    let Some(key) = key(&state, &unit) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let drawn = headers
@@ -128,9 +139,9 @@ async fn log(
 /// Everything that can be asked of a unit right now.
 async fn choices(
     State(state): State<Arc<ServerState>>,
-    Path(name): Path<String>,
+    Path(unit): Path<String>,
 ) -> Result<Json<Vec<UnitChoice>>, StatusCode> {
-    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    let key = key(&state, &unit).ok_or(StatusCode::NOT_FOUND)?;
     let mut out = Vec::new();
     state
         .app()
@@ -147,9 +158,9 @@ async fn choices(
 /// command here says the same thing.
 async fn start(
     State(state): State<Arc<ServerState>>,
-    Path(name): Path<String>,
+    Path(unit): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    let key = key(&state, &unit).ok_or(StatusCode::NOT_FOUND)?;
     state.app().schedule(key);
     Ok(StatusCode::ACCEPTED)
 }
@@ -157,9 +168,9 @@ async fn start(
 /// Stop a unit, without waiting for it to be gone.
 async fn stop(
     State(state): State<Arc<ServerState>>,
-    Path(name): Path<String>,
+    Path(unit): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    let key = key(&state, &unit).ok_or(StatusCode::NOT_FOUND)?;
     state.app().stop(key);
     Ok(StatusCode::ACCEPTED)
 }
@@ -167,10 +178,10 @@ async fn stop(
 /// Hand a unit an event and let its behavior decide.
 async fn dispatch(
     State(state): State<Arc<ServerState>>,
-    Path(name): Path<String>,
+    Path(unit): Path<String>,
     Json(event): Json<UnitEvent>,
 ) -> Result<StatusCode, StatusCode> {
-    let key = key(&state, &name).ok_or(StatusCode::NOT_FOUND)?;
+    let key = key(&state, &unit).ok_or(StatusCode::NOT_FOUND)?;
     state
         .app()
         .dispatch(key, event)
@@ -178,7 +189,8 @@ async fn dispatch(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// The key a name was interned under, or nothing for a name no proc has.
-fn key(state: &ServerState, name: &str) -> Option<UnitKey> {
-    state.app().unit_map().key(name)
+/// The [`UnitKey`] a config key was interned under, or nothing for a key no
+/// proc was declared with.
+fn key(state: &ServerState, key: &str) -> Option<UnitKey> {
+    state.app().unit_map().key(key)
 }

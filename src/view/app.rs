@@ -5,6 +5,7 @@ use crate::{
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
     unit::{UnitChoice, UnitKey},
+    util::str::SmallStr,
     view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
 };
 
@@ -64,6 +65,10 @@ impl ViewApp {
         let mut list: Vec<ViewUnit> = unit_map
             .keys()
             .map(|unit_key| ViewUnit {
+                key: unit_map
+                    .key_str(unit_key)
+                    .map(SmallStr::new)
+                    .unwrap_or_default(),
                 name: unit_map.name(unit_key).unwrap_or_default(),
                 name_short: unit_map.name_short(unit_key).unwrap_or(None),
                 unit_key,

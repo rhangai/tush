@@ -169,12 +169,13 @@ ones that are.
   Either the doc follows the code, or readiness needs a second predicate —
   running-and-stayed-running, a port, a line on stdout — and `Unit::resolved`
   becomes the one for `run:` steps only.
-- **How the wire addresses a unit.** HTTP addresses by name because a
-  `UnitKey` is meaningless across processes. Which name, and how it is
-  escaped, is not decided: `ViewSocket` sends the display name and the server
-  resolves the config key, and neither end percent-encodes. The key is the
-  identifier and the name is a label, so the key is what should cross —
-  encoded, or restricted to a charset a path segment can hold.
+- **How a unit's key is escaped on the wire.** Which string crosses is
+  settled: the config key, carried as `ViewUnit::key`, because a `UnitKey` is
+  meaningless across processes and a display name is a label two procs may
+  share. How it is escaped is not: both ends build the path segment with
+  `format!`, so a key holding a space or a `/` still breaks the request.
+  Either percent-encode it, or restrict the key charset at `App::new` the way
+  `:` already is.
 - **What `AppUnitMap` adds.** It owns the interner, the graph and the groups,
   which is its reason to exist; the fifteen methods that forward to `UnitMap`
   and rewrap `UnitMapError` as `AppError` are not, since `AppError` has one

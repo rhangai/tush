@@ -14,6 +14,11 @@ use crate::{
 pub struct ViewUnit {
     /// How a [`ViewCommand`] addresses it. Not shown; see [`name`](ViewUnit::name).
     pub unit_key: UnitKey,
+    /// The key the config declared it under, and what a path addresses it by:
+    /// [`unit_key`](ViewUnit::unit_key) is an interned symbol that means
+    /// nothing outside the process that minted it, and
+    /// [`name`](ViewUnit::name) is a label a person may change.
+    pub key: SmallStr,
     /// What to call it on screen.
     ///
     /// Apart from the key because the config lets a proc name itself, and
