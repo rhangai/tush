@@ -3,6 +3,7 @@ use std::hash::Hash;
 use std::{collections::HashMap, sync::Arc};
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
+use tokio::task::JoinSet;
 
 use crate::error::UnitMapError;
 use crate::unit::UnitHandle;
@@ -250,14 +251,15 @@ impl UnitMap {
     /// Every unit is asked to stop before any of them is waited on, so the
     /// grace periods overlap instead of queueing up one shutdown at a time.
     pub async fn shutdown(&self) {
-        let handles: Vec<Arc<UnitHandle>> = self
-            .units
-            .values()
-            .filter_map(|unit| unit.clone_handle())
-            .collect();
-        for handle in handles {
-            handle.abort_and_wait().await;
+        let mut join_set: JoinSet<()> = JoinSet::new();
+        for unit in self.units.values() {
+            if let Some(handle) = unit.clone_handle() {
+                join_set.spawn(async move {
+                    handle.abort_and_wait().await;
+                });
+            };
         }
+        while join_set.join_next().await.is_some() {}
     }
 
     /// Run `f` on the unit under `key`, or fail naming what was asked for.
