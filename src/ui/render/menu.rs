@@ -255,7 +255,7 @@ fn draw_choice(
     draw_row(
         buffer,
         theme,
-        item.verb,
+        &item.verb,
         item.mode.as_deref(),
         area,
         style,

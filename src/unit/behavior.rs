@@ -342,12 +342,12 @@ impl UnitBehaviorKind for BehaviorRun {
 }
 
 /// The three words a menu entry can begin with.
-const START: &str = "start";
-const RESTART: &str = "restart";
-const STOP: &str = "stop";
+const START: SmallStr = SmallStr::literal("start");
+const RESTART: SmallStr = SmallStr::literal("restart");
+const STOP: SmallStr = SmallStr::literal("stop");
 
 /// `Restart` when there is a run to replace, so the entry warns you.
-fn verb(state: RunnerState) -> &'static str {
+fn verb(state: RunnerState) -> SmallStr {
     if state.is_stopped() { START } else { RESTART }
 }
 

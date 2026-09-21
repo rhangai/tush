@@ -35,10 +35,10 @@ pub enum UnitAction {
 /// Not an "action": that name is what a dispatch *returns*.
 #[derive(Clone, Debug)]
 pub struct UnitChoice {
-    /// `Start`, `Restart` or `Stop` — a literal and not a built label, so
-    /// the menu writes this and [`mode`](UnitChoice::mode) as two runs of
-    /// text instead of allocating `"Restart Build"` per item.
-    pub verb: &'static str,
+    /// `Start`, `Restart` or `Stop` — a word of its own and not a built
+    /// label, so the menu writes this and [`mode`](UnitChoice::mode) as two
+    /// runs of text instead of allocating `"Restart Build"` per item.
+    pub verb: SmallStr,
     /// What the verb applies to, or `None` for a proc that runs one way.
     pub mode: Option<SmallStr>,
     /// What to send if it is chosen.
