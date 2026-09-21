@@ -378,8 +378,13 @@ impl LogWriterId {
     /// choosing these.
     pub(super) const fn new(raw: u32) -> Self {
         Self {
-            raw: NonZeroU32::new(raw).unwrap(),
+            raw: NonZeroU32::new(raw).expect("value must be > 0"),
         }
+    }
+    /// Mint the id numbered `raw`. The log is the only thing that should be
+    /// choosing these.
+    pub fn new_checked(raw: u32) -> Option<Self> {
+        NonZeroU32::new(raw).map(|raw| Self { raw })
     }
 
     /// The number behind the id, for indexing.
