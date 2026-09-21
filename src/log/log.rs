@@ -468,7 +468,7 @@ impl Log {
     pub fn reader(&self) -> LogReader {
         LogReader::new(
             Arc::downgrade(&self.inner),
-            self.inner.history.lock().chunks.soft_capacity(),
+            self.inner.history.lock().chunks.capacity(),
         )
     }
 
@@ -485,7 +485,7 @@ impl Log {
     pub fn reader_into(&self, reader: &mut LogReader) {
         reader.reset(
             Arc::downgrade(&self.inner),
-            self.inner.history.lock().chunks.soft_capacity(),
+            self.inner.history.lock().chunks.capacity(),
         );
     }
 
@@ -948,7 +948,7 @@ impl LogReader {
     fn reset(&mut self, inner: Weak<LogInner>, capacity: usize) {
         self.inner = inner;
         self.chunks.clear();
-        self.chunks.set_soft_capacity(capacity);
+        self.chunks.set_capacity(capacity);
         self.seen = 0;
         self.partials_len = 0;
         self.version = 0;
@@ -1165,9 +1165,10 @@ impl LogReader {
         self.chunks.is_empty()
     }
 
-    /// How many chunks it can hold, which is also how many the log can.
+    /// How many chunks it can hold: what the log holds, or the ring it was
+    /// built with when that is the smaller of the two.
     pub fn capacity(&self) -> usize {
-        self.chunks.soft_capacity()
+        self.chunks.capacity()
     }
 
     /// How many chunks the log had pushed as of the last sync.
