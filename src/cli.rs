@@ -87,8 +87,9 @@ pub struct ServeArgs {
     pub session: SessionArgs,
     /// Where to listen, as a path to a Unix socket.
     ///
-    /// Neither given is a path under the runtime directory named after the
-    /// config, so that two sessions on one machine do not collide.
+    /// Not given is one fixed path under the runtime directory, which two
+    /// sessions on one machine would both want — the second is refused, and
+    /// this is how it gets one of its own.
     #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 }
@@ -100,9 +101,9 @@ pub struct AttachArgs {
     pub screen: ScreenArgs,
     /// Which session to show, as the path to its Unix socket.
     ///
-    /// No default, unlike the serving side: there is no config here to derive
-    /// one from, and picking one of the sockets lying around is worse than
-    /// asking.
+    /// The same default as the serving side, which is what one fixed name
+    /// buys: a session started with nothing said is attached to with nothing
+    /// said. Only a session that had to be moved off that path needs this.
     #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 }

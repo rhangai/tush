@@ -146,8 +146,6 @@ where
 /// and a session with no screen carries on without it.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
-    #[error("could not prepare {0}: {1}")]
-    Directory(std::path::PathBuf, std::io::Error),
     #[error("a server is already listening on {0}")]
     AlreadyRunning(std::path::PathBuf),
     #[error("could not listen on {0}: {1}")]

@@ -62,7 +62,7 @@ mod view;
 
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Parser;
 use tokio::{
     signal::unix::{SignalKind, signal},
@@ -151,9 +151,7 @@ async fn shutdown_printing(app: &App, printing: CancellationToken, printer: Join
 /// what a person asked for until there is a reason for two.
 async fn attach(args: AttachArgs) -> Result<()> {
     let refresh = args.screen.refresh()?;
-    let Some(socket) = args.socket else {
-        bail!("say which session to attach to, with --socket or TUSH_SOCKET");
-    };
+    let socket = args.socket.unwrap_or_else(default_socket_path);
     let client = ViewSocket::connect(socket, refresh).await?;
     Ok(Ui::run(client, refresh, UiTheme::default()).await?)
 }
@@ -174,7 +172,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
 
     let path = match args.socket {
         Some(path) => path,
-        None => default_socket_path(&args.session.config),
+        None => default_socket_path(),
     };
     let server = Server::bind(app.clone(), path)?;
     println!("listening on {}", server.path().display());

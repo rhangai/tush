@@ -10,14 +10,12 @@ use crate::error::ServerError;
 
 /// Only the user may connect.
 ///
-/// Set on the directory rather than relying on the socket's own mode: a
-/// socket is created under the process umask and there is no way to bind one
-/// atomically with a mode, so the window between the two is closed by making
-/// the directory untraversable instead.
-const DIRECTORY_MODE: u32 = 0o700;
-
-/// The same again on the socket, for a directory that was already there with
-/// something laxer on it.
+/// Set after the bind and not with it — a socket is created under the process
+/// umask and there is no way to bind one atomically with a mode — so this
+/// narrows a window rather than closing it. What closes it is the directory
+/// the socket sits in, and that belongs to whoever chose the path:
+/// `XDG_RUNTIME_DIR` is the user's own and already unreadable to everyone
+/// else.
 const SOCKET_MODE: u32 = 0o600;
 
 /// The socket, and the path it has to be unlinked from afterwards.
@@ -41,15 +39,11 @@ impl ServerSocket {
     /// and the file is debris, and one that succeeds means a real server and
     /// this one refuses to start. Without the question, a single crash makes
     /// the path unusable until somebody deletes it by hand.
+    ///
+    /// The directory has to be there already. Whoever names a path owns the
+    /// directory it is in — the default one is the system's, and a path given
+    /// on the command line is the caller's.
     pub fn bind(path: PathBuf) -> Result<Self, ServerError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .and_then(|()| {
-                    fs::set_permissions(parent, fs::Permissions::from_mode(DIRECTORY_MODE))
-                })
-                .map_err(|error| ServerError::Directory(parent.to_path_buf(), error))?;
-        }
-
         let listener = match UnixListener::bind(&path) {
             Ok(listener) => listener,
             Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
@@ -100,22 +94,24 @@ impl Drop for ServerSocket {
 
 /// Where a server listens when the command line did not say.
 ///
-/// `$XDG_RUNTIME_DIR/tush/<config stem>.sock`: per user, wiped by the system
-/// when the login session ends, and named after the config so two sessions on
-/// one machine do not land on the same path. Without that variable — a
-/// container, an ssh login with no user instance — `/tmp/tush-<uid>/`, which
-/// is the same arrangement built by hand rather than a path every user on the
-/// box can reach.
-pub fn default_socket_path(config: &str) -> PathBuf {
-    let stem = Path::new(config)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("tush");
-    let directory = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(runtime) => PathBuf::from(runtime).join("tush"),
+/// `$XDG_RUNTIME_DIR/tush.sock`: a directory the system already made, already
+/// the user's alone, and wiped when the login session ends. Nothing here
+/// creates it — see [`bind`](ServerSocket::bind).
+///
+/// One name and not one per config, so that the path is something a person
+/// can say from memory rather than work out. What it costs is that a second
+/// session on the same machine lands on it too, and finds a server already
+/// listening — which is an error naming the path, and the answer to it is
+/// `--socket` or `TUSH_SOCKET`.
+///
+/// Without that variable — a container, an ssh login with no user instance —
+/// `/tmp/tush-<uid>.sock`: the uid is in the name because `/tmp` is shared,
+/// and there is no directory of one's own to put it in without making one.
+pub fn default_socket_path() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(runtime) => PathBuf::from(runtime).join("tush.sock"),
         // SAFETY: `getuid` reads the calling process's own id. It cannot
         // fail, takes no pointer and is not racing anything.
-        None => PathBuf::from(format!("/tmp/tush-{}", unsafe { libc::getuid() })),
-    };
-    directory.join(format!("{stem}.sock"))
+        None => PathBuf::from(format!("/tmp/tush-{}.sock", unsafe { libc::getuid() })),
+    }
 }
