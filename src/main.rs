@@ -64,16 +64,19 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use clap::Parser;
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     app::App,
     cli::{Cli, Command, RunArgs, ServeArgs},
     config::Config,
-    server::{Server, ServerPrinter, default_socket_path},
+    server::{Server, default_socket_path},
     ui::{Ui, UiTheme},
-    view::ViewApp,
+    view::{ViewApp, ViewPrinter},
 };
 
 #[tokio::main]
@@ -87,31 +90,54 @@ async fn main() -> Result<()> {
 
 /// Build a session and show it.
 ///
-/// This is the mode that owns what it runs, so quitting the screen has to
-/// take the processes with it. The UI returning is only the screen being
-/// given back; [`shutdown`](crate::unit::UnitMap::shutdown) is what makes the
-/// children actually gone, and it is deliberately awaited rather than left to
-/// `Drop`, which cannot.
+/// This is the mode that owns what it runs, so what gives the session back
+/// has to take the processes with it — quitting the screen, or the signal
+/// that stands in for it when there is no screen.
+/// [`shutdown`](crate::unit::UnitMap::shutdown) is what makes the children
+/// actually gone, and it is deliberately awaited rather than left to `Drop`,
+/// which cannot.
 ///
 /// What comes up started is what the command line named, and nothing else;
 /// the screen is how the rest are run. Scheduling them before the UI is safe
 /// because [`App::run_tasks`] has already spawned it, and a request made
 /// before it is polled is one it still wakes for.
+///
+/// `--fps` is read only when there is a screen to use it, and before
+/// anything is built, so a number the screen cannot take is a failure while
+/// there are still no procs to stop again.
 async fn run(args: RunArgs) -> Result<()> {
-    if args.no_tui {
-        bail!("`--no-tui` is not built yet");
-    }
-    let refresh = args.screen.refresh()?;
-
     let config = Config::from_path(&args.session.config)?;
     let app = Arc::new(App::new(&config)?);
     app.run_tasks();
 
     schedule_targets(&app, args.session.targets);
 
+    if args.no_tui {
+        let printing = CancellationToken::new();
+        let printer = tokio::spawn(ViewPrinter::new(&app).run(printing.clone()));
+        cancel_on_interrupt()?.cancelled().await;
+        shutdown_printing(&app, printing, printer).await;
+        return Ok(());
+    }
+
+    let refresh = args.screen.refresh()?;
     let result = Ui::run(ViewApp::new(app.clone()), refresh, UiTheme::default()).await;
     app.shutdown().await;
     Ok(result?)
+}
+
+/// Stop the session, then stop printing it.
+///
+/// That order is the whole of it: [`shutdown`](App::shutdown) is what writes
+/// the last note into each log — the line saying the process exited — so a
+/// printer stopped before it prints everything except the lines a person is
+/// waiting for. Awaited rather than dropped, because the drain that puts
+/// those lines out is the one [`ViewPrinter::run`] does after it is
+/// cancelled.
+async fn shutdown_printing(app: &App, printing: CancellationToken, printer: JoinHandle<()>) {
+    app.shutdown().await;
+    printing.cancel();
+    let _ = printer.await;
 }
 
 /// Build a session, print it, and let something else attach to it.
@@ -121,11 +147,8 @@ async fn run(args: RunArgs) -> Result<()> {
 /// takes it down. Nothing a client does ends the session — that is the whole
 /// difference from [`run`], where quitting the screen is quitting.
 ///
-/// The order at the end is the part that matters. The socket closes first so
-/// nothing new attaches to a session that is going away; then the procs are
-/// stopped and waited for, which is what writes the last note into each log;
-/// and only then is the printer told to stop, so those notes are printed
-/// rather than being the thing that was still in flight.
+/// The socket closes first, so nothing new attaches to a session that is
+/// going away; [`shutdown_printing`] is the rest of the order.
 async fn serve(args: ServeArgs) -> Result<()> {
     let config = Config::from_path(&args.session.config)?;
     let app = Arc::new(App::new(&config)?);
@@ -139,15 +162,13 @@ async fn serve(args: ServeArgs) -> Result<()> {
     println!("listening on {}", server.path().display());
 
     let printing = CancellationToken::new();
-    let printer = tokio::spawn(ServerPrinter::new(&app).run(printing.clone()));
+    let printer = tokio::spawn(ViewPrinter::new(&app).run(printing.clone()));
 
     schedule_targets(&app, args.session.targets);
 
     let result = server.run(cancel_on_interrupt()?).await;
 
-    app.shutdown().await;
-    printing.cancel();
-    let _ = printer.await;
+    shutdown_printing(&app, printing, printer).await;
     Ok(result?)
 }
 

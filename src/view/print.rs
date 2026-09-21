@@ -16,7 +16,7 @@ use crate::{app::App, log::LogReader, util::str::SmallStr};
 const PRINT_INTERVAL: Duration = Duration::from_millis(100);
 
 /// One unit's log, and where its last line got to.
-struct ServerPrinterUnit {
+struct ViewPrinterUnit {
     /// What goes in front of each line. Taken once, a proc not being renamed.
     name: SmallStr,
     /// This printer's own view of the log — one reader per view, like any
@@ -37,11 +37,11 @@ struct ServerPrinterUnit {
 /// would print its beginning twice. What that costs is latency on a process
 /// that writes without a newline, which is a prompt, and there is no prompt
 /// to answer here.
-pub struct ServerPrinter {
-    units: Vec<ServerPrinterUnit>,
+pub struct ViewPrinter {
+    units: Vec<ViewPrinterUnit>,
 }
 
-impl ServerPrinter {
+impl ViewPrinter {
     /// Follow every unit of `app`.
     ///
     /// The set is taken once because it cannot change: it comes from a config
@@ -53,7 +53,7 @@ impl ServerPrinter {
         let units = unit_map
             .keys()
             .filter_map(|key| {
-                Some(ServerPrinterUnit {
+                Some(ViewPrinterUnit {
                     name: unit_map.name(key).unwrap_or_default(),
                     reader: unit_map.log_reader(key)?,
                     at_line_start: true,
@@ -99,7 +99,7 @@ impl ServerPrinter {
     }
 }
 
-impl ServerPrinterUnit {
+impl ViewPrinterUnit {
     /// The pieces this unit gained since the last drain.
     ///
     /// [`sync`](LogReader::sync) reports how many chunks are new and they are
