@@ -10,13 +10,13 @@
 //! what lets a unit be restarted under a different behavior — the `modes` in
 //! the config: build vs. watch.
 //!
-//! [`UnitMap`] is the layer above: every unit of a session under the key its
-//! caller addresses it by, shared rather than owned, so anything holding the
-//! map can start, stop and ask after any of them.
+//! The collection above is [`AppUnitMap`](crate::app::AppUnitMap), which is
+//! in [`app`](crate::app) rather than here: it holds every unit of a session
+//! together with the interner that keys them and the graph that orders their
+//! starts, and all three are answers to a config.
 
 mod behavior;
 mod dispatch;
-mod map;
 mod unit;
 
 #[allow(unused_imports)]
@@ -24,9 +24,6 @@ pub use behavior::UnitBehavior;
 
 #[allow(unused_imports)]
 pub use dispatch::{UnitAction, UnitChoice, UnitEvent};
-
-#[allow(unused_imports)]
-pub use map::{UnitKey, UnitMap};
 
 #[allow(unused_imports)]
 pub use unit::{Unit, UnitHandle, UnitStart};

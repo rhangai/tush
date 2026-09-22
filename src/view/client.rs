@@ -1,5 +1,5 @@
+use crate::app::AppUnitKey;
 use crate::config::ConfigPanel;
-use crate::unit::UnitKey;
 use crate::util::str::SmallStr;
 use crate::{
     log::{LogLine, LogRegion},
@@ -14,7 +14,7 @@ use crate::{
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ViewUnit {
     /// How a [`ViewCommand`] addresses it. Not shown; see [`name`](ViewUnit::name).
-    pub unit_key: UnitKey,
+    pub unit_key: AppUnitKey,
     /// The key the config declared it under, and what a path addresses it by:
     /// [`unit_key`](ViewUnit::unit_key) is an interned symbol that means
     /// nothing outside the process that minted it, and
@@ -63,14 +63,14 @@ pub struct ViewUnit {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ViewCommand {
     /// Run it, restarting it if it was already running.
-    Start { key: UnitKey },
+    Start { key: AppUnitKey },
     /// Stop it.
-    Stop { key: UnitKey },
+    Stop { key: AppUnitKey },
     /// Hand it an event and let its behavior decide.
     ///
     /// What every menu entry sends, the entries having come out of the
     /// behavior in the first place.
-    Dispatch { key: UnitKey, event: UnitEvent },
+    Dispatch { key: AppUnitKey, event: UnitEvent },
 }
 
 /// What a client has for the log pane: some lines, and what they are.
@@ -123,7 +123,7 @@ pub trait ViewClient {
     /// Called when a menu opens, not per frame. Local and instant like every
     /// read here, so a client with a connection answers from its last sync,
     /// filling nothing if that is nothing.
-    fn choices(&self, key: UnitKey, out: &mut Vec<UnitChoice>);
+    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>);
 
     /// Ask for something to happen, without waiting to find out whether it did.
     ///
@@ -144,7 +144,7 @@ pub trait ViewClient {
     ///
     /// Called every frame; whether anything has to happen is the client's
     /// call, since it holds the region, the revision and the connection.
-    fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion);
+    fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion);
 
     /// The lines for the pane, as of the last [`sync`](ViewClient::sync).
     ///

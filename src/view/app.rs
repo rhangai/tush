@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    app::App,
+    app::{App, AppUnitKey},
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
-    unit::{UnitChoice, UnitKey},
+    unit::UnitChoice,
     util::str::SmallStr,
     view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
 };
@@ -14,7 +14,7 @@ struct AppLog {
     /// Which unit it belongs to. A pane moving to another one starts this
     /// again rather than carrying it across: everything counted here is
     /// counted against one log's chunks and means nothing against another's.
-    unit_key: UnitKey,
+    unit_key: AppUnitKey,
     /// The region last asked for.
     wanted: LogRegion,
     /// The region `lines` actually is — always `wanted` here, since resolving
@@ -139,7 +139,7 @@ impl ViewClient for ViewApp {
     /// rather than a build — its memory is the pane's for the run. Resolving
     /// the region is [`sync`](ViewClient::sync)'s job, so the lines and the
     /// states in one frame are taken at the same moment.
-    fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion) {
+    fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion) {
         let Some(key) = key else {
             self.log = None;
             return;
@@ -175,7 +175,7 @@ impl ViewClient for ViewApp {
     ///
     /// The `Err` arm is a key the map does not hold, and the keys came out of
     /// the map — so it leaves `out` empty rather than failing.
-    fn choices(&self, key: UnitKey, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
         let unit_map = self.app.unit_map();
         if unit_map.choices(key, out).is_err() {
             out.clear();

@@ -8,9 +8,10 @@ use tokio::{net::UnixStream, sync::Notify, sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    app::AppUnitKey,
     error::ViewSocketError,
     log::{LogLine, LogRegion},
-    unit::{UnitChoice, UnitEvent, UnitKey},
+    unit::{UnitChoice, UnitEvent},
     util::str::{SmallStr, SmallStrBuilder},
     view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
 };
@@ -30,7 +31,7 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 /// declared under, and the row the pane pointed at holds both.
 #[derive(Clone)]
 struct Wanted {
-    unit_key: UnitKey,
+    unit_key: AppUnitKey,
     key_path: SmallStr,
     region: LogRegion,
 }
@@ -38,7 +39,7 @@ struct Wanted {
 /// One unit's log, as a frame carries it.
 #[derive(Clone)]
 struct FrameLog {
-    unit_key: UnitKey,
+    unit_key: AppUnitKey,
     region: LogRegion,
     revision: u64,
     lines: Vec<LogLine>,
@@ -60,7 +61,7 @@ struct FrameLog {
 struct Frame {
     units: Vec<ViewUnit>,
     log: Option<FrameLog>,
-    choices_key: Option<UnitKey>,
+    choices_key: Option<AppUnitKey>,
     choices: Vec<UnitChoice>,
 }
 
@@ -104,7 +105,7 @@ pub struct ViewSocket {
     /// The last frame taken, which is what every read answers from.
     units: Vec<ViewUnit>,
     log: Option<FrameLog>,
-    choices_key: Option<UnitKey>,
+    choices_key: Option<AppUnitKey>,
     choices: Vec<UnitChoice>,
     shared: Arc<Shared>,
     commands: mpsc::UnboundedSender<Outgoing>,
@@ -163,7 +164,7 @@ impl ViewSocket {
     ///
     /// A scan and not a map: the rows are a session's worth of units, in
     /// name order, and this happens on a keypress rather than on a frame.
-    fn key_path(&self, key: UnitKey) -> Option<SmallStr> {
+    fn key_path(&self, key: AppUnitKey) -> Option<SmallStr> {
         let unit = self.units.iter().find(|unit| unit.unit_key == key)?;
         Some(encode_path_segment(&unit.key))
     }
@@ -208,7 +209,7 @@ impl ViewClient for ViewSocket {
     /// Empty rather than stale when the menu opens on a unit the task has not
     /// asked about yet: the trait allows filling nothing, and a menu of
     /// another unit's verbs would act on the wrong proc.
-    fn choices(&self, key: UnitKey, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
         out.clear();
         if self.choices_key == Some(key) {
             out.extend(self.choices.iter().cloned());
@@ -240,7 +241,7 @@ impl ViewClient for ViewSocket {
     /// name they are not late, they are wrong. Empty until the task answers
     /// is what [`ViewApp`](crate::view::ViewApp) does for the same reason,
     /// and the wakeup below is what keeps that gap to a round trip.
-    fn set_log(&mut self, key: Option<UnitKey>, region: LogRegion) {
+    fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion) {
         let moved = self.log.as_ref().map(|log| log.unit_key) != key;
         if moved {
             self.log = None;

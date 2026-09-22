@@ -39,18 +39,6 @@ pub enum UnitError {
     Runner(RunnerError),
 }
 
-/// What addressing a unit through a [`UnitMap`](crate::unit::UnitMap) can
-/// fail with.
-#[derive(Debug, thiserror::Error)]
-pub enum UnitMapError {
-    #[error("unit not found")]
-    NotFound,
-    #[error("unit not found")]
-    UnitStart(UnitError),
-    #[error("unit not found")]
-    Unknown,
-}
-
 /// What takes the screen down: the terminal, never the session behind it.
 #[derive(Debug, thiserror::Error)]
 pub enum UiError {
@@ -104,8 +92,13 @@ pub enum AppConfigError {
 pub enum AppError {
     #[error("key `{0}` does not exist")]
     InvalidKey(SmallStr),
+    /// A key no unit was declared under — a mistake in a config or a command
+    /// and not a state a unit can be in.
+    #[error("unit not found")]
+    NotFound,
+    /// The unit was found and would not start.
     #[error("{0}")]
-    MapError(#[from] UnitMapError),
+    UnitStart(UnitError),
 }
 
 struct HelperQuoted<'a, T>(&'a T);

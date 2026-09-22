@@ -6,9 +6,8 @@ use std::{
 use parking_lot::Mutex;
 
 use crate::{
-    app::unit_map::AppUnitMap,
+    app::unit_map::{AppUnitKey, AppUnitMap},
     config::Config,
-    unit::UnitKey,
     util::{
         event::{EventDispatcher, EventListener},
         graph::DependencyOrder,
@@ -50,7 +49,7 @@ impl AppSchedule {
     }
 
     /// Ask for `key` to start, once what it depends on has.
-    pub fn schedule(&self, key: UnitKey) {
+    pub fn schedule(&self, key: AppUnitKey) {
         let Some(unit_map) = self.unit_map.upgrade() else {
             return;
         };
@@ -77,7 +76,7 @@ impl AppSchedule {
     /// In that order, because a key can be both — named by the caller and
     /// reached again as something else's dependency — and being named is what
     /// decides whether it gets restarted.
-    fn schedule_inner(&self, chain: DependencyOrder<UnitKey>, direct_keys: &[UnitKey]) {
+    fn schedule_inner(&self, chain: DependencyOrder<AppUnitKey>, direct_keys: &[AppUnitKey]) {
         let mut lock = self.inner.scheduled.lock();
         for item in chain.order() {
             lock.entry(*item).or_insert(AppScheduleKind::Schedule);
@@ -129,9 +128,9 @@ impl AppScheduleRunnerTask {
             return;
         };
         let mut event_listener = inner.event_listener.clone();
-        let mut scheduled: HashMap<UnitKey, AppScheduleKind> = HashMap::new();
-        let mut resolved: HashSet<UnitKey> = HashSet::new();
-        let mut remove: HashSet<UnitKey> = HashSet::new();
+        let mut scheduled: HashMap<AppUnitKey, AppScheduleKind> = HashMap::new();
+        let mut resolved: HashSet<AppUnitKey> = HashSet::new();
+        let mut remove: HashSet<AppUnitKey> = HashSet::new();
         while event_listener.changed().await {
             //
             let Some(unit_map) = self.unit_map.upgrade() else {
@@ -183,7 +182,7 @@ struct AppScheduleInner {
     /// What is waiting to start, and whether it was asked for directly: a
     /// direct request restarts a unit that is already running, one pulled in
     /// as a dependency leaves it alone.
-    scheduled: Mutex<HashMap<UnitKey, AppScheduleKind>>,
+    scheduled: Mutex<HashMap<AppUnitKey, AppScheduleKind>>,
     /// Taken here and not in [`run`](AppScheduleRunnerTask::run), which is
     /// spawned later: a listener only wakes for triggers after it was
     /// created, and a target named on the command line is scheduled before

@@ -4,11 +4,12 @@ use anyhow::Result;
 
 use crate::{
     app::{
+        AppUnitKey,
         schedule::{AppSchedule, AppScheduleRunnerTask},
         unit_map::AppUnitMap,
     },
     config::Config,
-    unit::{UnitAction, UnitEvent, UnitKey},
+    unit::{UnitAction, UnitEvent},
 };
 
 /// A session that has been checked and is ready to be run.
@@ -52,7 +53,7 @@ impl App {
     ///
     /// Returns before any of that has happened: what actually starts it is
     /// the task from [`run_tasks`](App::run_tasks).
-    pub fn schedule(&self, key: UnitKey) {
+    pub fn schedule(&self, key: AppUnitKey) {
         self.schedule.schedule(key);
     }
 
@@ -60,7 +61,7 @@ impl App {
     ///
     /// The `Err` is a key no unit was declared under, and the keys come from
     /// the map, so there is nothing for a caller to do with it.
-    pub fn stop(&self, key: UnitKey) {
+    pub fn stop(&self, key: AppUnitKey) {
         _ = self.unit_map.stop(key);
     }
 
@@ -91,7 +92,7 @@ impl App {
     }
 
     /// Stop every proc and wait until each one is really gone — see
-    /// [`UnitMap::shutdown`](crate::unit::UnitMap::shutdown).
+    /// [`AppUnitMap::shutdown`](crate::app::AppUnitMap::shutdown).
     pub async fn shutdown(&self) {
         self.unit_map.shutdown().await;
     }
@@ -105,7 +106,7 @@ impl App {
     /// Carrying it out belongs here rather than in [`AppUnitMap`], which
     /// cannot reach the schedule: a start it asks for is a start in
     /// dependency order like any other.
-    pub fn dispatch(&self, key: UnitKey, event: UnitEvent) -> anyhow::Result<()> {
+    pub fn dispatch(&self, key: AppUnitKey, event: UnitEvent) -> anyhow::Result<()> {
         let Some(action) = self.unit_map().dispatch(key, event)? else {
             return Ok(());
         };

@@ -96,10 +96,10 @@ pub struct UnitBehavior {
 
 impl UnitBehavior {
     /// One command, as its argv: the program, then its arguments.
-    pub fn run(name: SmallStr, command: SmallVecStr) -> Self {
+    pub fn run(name: SmallStr, command: SmallVecStr, working_dir: Option<SmallStr>) -> Self {
         let mut commands = SmallMultiVecStr::new();
         commands.push(command);
-        Self::run_many(name, Arc::new(commands))
+        Self::run_many(name, Arc::new(commands), working_dir)
     }
 
     /// Several commands, run one after the other, stopping at the first that
@@ -111,12 +111,16 @@ impl UnitBehavior {
     /// Shared and not owned: the commands are read at spawn and never written,
     /// and an `Arc` is what keeps them out of the enum every behavior is — 32
     /// bytes carried by each no-op and each mode, rather than 208.
-    pub fn run_many(name: SmallStr, commands: Arc<SmallMultiVecStr>) -> Self {
+    pub fn run_many(
+        name: SmallStr,
+        commands: Arc<SmallMultiVecStr>,
+        working_dir: Option<SmallStr>,
+    ) -> Self {
         Self::wrap(
             name,
             UnitBehaviorInner::Run(BehaviorRun {
                 commands,
-                working_dir: None,
+                working_dir,
             }),
         )
     }
@@ -153,21 +157,6 @@ impl UnitBehavior {
     /// no short name, which is what it already was.
     pub fn with_short(mut self, short: Option<SmallStr>) -> Self {
         self.short = short;
-        self
-    }
-
-    /// Spawn its commands in `working_dir`, where it has any to spawn.
-    ///
-    /// Silently nothing for a behavior with no commands of its own — a
-    /// [`modes`](UnitBehavior::modes) holds no directory, because each mode
-    /// is a run with its own already resolved.
-    ///
-    /// Takes the `Option` for the reason [`with_short`](UnitBehavior::with_short)
-    /// does: the caller holds the config's field and passes it through.
-    pub fn with_working_dir(mut self, working_dir: Option<SmallStr>) -> Self {
-        if let UnitBehaviorInner::Run(run) = &mut self.inner {
-            run.working_dir = working_dir;
-        }
         self
     }
 

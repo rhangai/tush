@@ -32,8 +32,8 @@ pub struct Unit {
     /// What it runs, behind a lock because a dispatch may change it.
     behavior: Mutex<UnitBehavior>,
     /// Whom to wake when a run resolves. `None` for a unit built on its own
-    /// rather than through a [`UnitMap`](crate::unit::UnitMap), which is the
-    /// only thing that has a dispatcher to give.
+    /// rather than through an [`AppUnitMap`](crate::app::AppUnitMap), which is
+    /// the only thing that has a dispatcher to give.
     event_dispatcher: Option<EventDispatcher>,
     /// The current run and whether one has ever finished — see
     /// [`UnitCurrentHandle`]. Behind an [`Arc`] because the task that waits
@@ -54,7 +54,7 @@ impl Unit {
     }
 
     /// While the unit is still being built: `&mut self`, and
-    /// [`UnitMap::insert`](crate::unit::UnitMap::insert) is where it happens.
+    /// [`AppUnitMap::new`](crate::app::AppUnitMap) is where it happens.
     pub fn set_event_dispatcher(&mut self, event_dispatcher: EventDispatcher) {
         self.event_dispatcher = Some(event_dispatcher.clone());
         self.handle_manager.lock().event_dispatcher = Some(event_dispatcher);
@@ -514,7 +514,7 @@ mod test {
         argv.push(SmallStr::new(script));
         // A size, not the size: nothing here reads the log back, so the
         // smallest one that holds a line will do.
-        Unit::new(UnitBehavior::run(SmallStr::new("test"), argv), 4096)
+        Unit::new(UnitBehavior::run(SmallStr::new("test"), argv, None), 4096)
     }
 
     /// The window the manager's id check closes.

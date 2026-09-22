@@ -75,7 +75,7 @@ const DEFAULT_LOG_SIZE: usize = 1024 * 1024;
 /// A parsed config file: every proc a session is made of.
 ///
 /// A list though the file writes a mapping, because nothing downstream wants
-/// them by name — [`UnitMap`](crate::unit::UnitMap) is the lookup.
+/// them by name — [`AppUnitMap`](crate::app::AppUnitMap) is the lookup.
 ///
 /// **The order is by key, not as written.** `figment`'s value tree is a
 /// `BTreeMap`, so the mapping is already sorted by the time `serde` sees it.
@@ -188,7 +188,7 @@ fn enabled() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct ConfigProc {
     /// The name it is addressed by, and the name the unit goes into a
-    /// [`UnitMap`](crate::unit::UnitMap) with.
+    /// [`AppUnitMap`](crate::app::AppUnitMap) with.
     ///
     /// Skipped rather than read, because it is not written inside the proc: it
     /// is the key the proc was declared under, and [`deserialize_procs`] writes

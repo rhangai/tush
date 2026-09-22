@@ -93,7 +93,7 @@ async fn main() -> Result<()> {
 /// This is the mode that owns what it runs, so what gives the session back
 /// has to take the processes with it — quitting the screen, or the signal
 /// that stands in for it when there is no screen.
-/// [`shutdown`](crate::unit::UnitMap::shutdown) is what makes the children
+/// [`shutdown`](crate::app::AppUnitMap::shutdown) is what makes the children
 /// actually gone, and it is deliberately awaited rather than left to `Drop`,
 /// which cannot.
 ///

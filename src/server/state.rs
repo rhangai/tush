@@ -3,9 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use parking_lot::Mutex;
 
 use crate::{
-    app::App,
+    app::{App, AppUnitKey},
     log::{LogLine, LogReader, LogRegion},
-    unit::UnitKey,
 };
 
 /// One unit's log, as the server follows it.
@@ -37,7 +36,7 @@ pub struct ServerState {
     /// One reader per unit is what makes that possible — a screen moving one
     /// reader between units has to build it at the largest of them, and
     /// `log_size` is per proc.
-    logs: HashMap<UnitKey, Mutex<ServerLog>>,
+    logs: HashMap<AppUnitKey, Mutex<ServerLog>>,
 }
 
 impl ServerState {
@@ -80,7 +79,7 @@ impl ServerState {
     /// waiting on, and this way there is no guard for it to hold.
     pub fn read_log<T>(
         &self,
-        key: UnitKey,
+        key: AppUnitKey,
         region: LogRegion,
         read: impl FnOnce(&[LogLine], u64) -> T,
     ) -> Option<T> {

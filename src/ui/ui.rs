@@ -11,12 +11,12 @@ use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
 
 use crate::{
+    app::AppUnitKey,
     error::UiError,
     ui::{
         render::{Move, UiMenuChoice, UiRender},
         theme::UiTheme,
     },
-    unit::UnitKey,
     view::{ViewClient, ViewCommand, ViewUnit},
 };
 
@@ -252,7 +252,7 @@ impl<C: ViewClient> Ui<C> {
 
     /// Send the command `command` builds for the selected unit's key, if
     /// there is one selected.
-    fn send(&mut self, command: impl FnOnce(UnitKey) -> ViewCommand) {
+    fn send(&mut self, command: impl FnOnce(AppUnitKey) -> ViewCommand) {
         let Some(unit) = self.selected() else {
             return;
         };

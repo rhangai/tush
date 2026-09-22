@@ -10,10 +10,11 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
+    app::AppUnitKey,
     log::{LogLine, LogRegion},
     runner::RunnerState,
     server::state::ServerState,
-    unit::{UnitChoice, UnitEvent, UnitKey},
+    unit::{UnitChoice, UnitEvent},
     util::str::SmallStr,
     view::ViewUnit,
 };
@@ -193,6 +194,6 @@ async fn dispatch(
 
 /// The [`UnitKey`] a config key was interned under, or nothing for a key no
 /// proc was declared with.
-fn key(state: &ServerState, key: &str) -> Option<UnitKey> {
+fn key(state: &ServerState, key: &str) -> Option<AppUnitKey> {
     state.app().unit_map().key(key)
 }

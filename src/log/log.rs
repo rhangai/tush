@@ -961,7 +961,7 @@ impl LogReader {
     ///
     /// If `capacity` is zero, like the ring it is built on.
     ///
-    /// [`log_capacity`]: crate::unit::UnitMap::log_capacity
+    /// [`log_capacity`]: crate::app::AppUnitMap::log_capacity
     pub fn empty(capacity: usize) -> Self {
         Self::new_inner(None, capacity)
     }
