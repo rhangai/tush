@@ -2,6 +2,11 @@
 name = "tush"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal process manager for dev servers, build watchers and setup scripts"
+repository = "https://github.com/rhangai/tush"
+license = "MIT"
+keywords = ["process-manager", "supervisor", "tui", "devtools", "logs"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anstyle-parse = { version = "1.0", features = ["core"] }

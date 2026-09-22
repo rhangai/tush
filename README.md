@@ -33,6 +33,29 @@ tush run -c tush.yaml
 
 > **Early days.** Everything below works, but things still move.
 
+## Why tush
+
+- **The screen and the session come apart.** `tush serve` keeps the procs
+  running with no screen, and `tush attach` draws one over a Unix socket —
+  from inside the container they are running in, if that is where they live.
+  Close the screen and nothing dies.
+- **One proc, several ways to run it.** `modes` gives a proc a `Build` and a
+  `Watch`, and you flip between them from the list without editing anything.
+- **Logs are bounded, per proc.** Each one keeps a fixed number of bytes and
+  drops the oldest, so the watcher that prints all day costs what you said it
+  could.
+- **Nothing is left holding a port.** Every proc runs in its own process
+  group, restarts never overlap, and shutdown waits for the group to empty —
+  `bash -c` wrappers and their children included.
+- **Commands are argv, not shell lines.** Nothing gets re-parsed behind your
+  back.
+
+Reach for something else when your procs are containers (`docker compose`
+already does that), when you just want a Procfile run as-is, or when what you
+actually want is a terminal multiplexer. `process-compose` and `mprocs` live
+in the same neighbourhood and overlap a lot — if the list above is not what
+you are after, one of them probably is.
+
 ## Install
 
 Grab the binary from the [latest
@@ -239,11 +262,13 @@ It works over ssh too, wherever you can get a shell on the session's machine:
 - **Logs are a tail, not a transcript.** Each proc keeps a fixed number of
   bytes (1 MiB by default, `log_size` to change it) and drops the oldest to
   make room, so a chatty watcher cannot run away with your memory.
-- **Restarts do not overlap.** The outgoing run is stopped and waited on
-  before the new one starts — no two dev servers fighting over a port.
 - **Shutdown is orderly.** Each proc gets its own process group, so stopping a
   `bash -c '…'` takes its children too: `SIGTERM`, then `SIGKILL` ten seconds
   later.
 - **`depends` means "has finished", not "is up".** It is for the steps that
   end: `npm ci`, a migration, a build. Name a dev server in a `depends` and
   whatever depends on it waits for good.
+
+---
+
+[MIT licensed](LICENSE).
