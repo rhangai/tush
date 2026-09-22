@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     app::AppUnitKey,
     error::UiError,
+    log::LogRegion,
     ui::{
         render::{Move, UiMenuChoice, UiRender},
         theme::UiTheme,
@@ -39,6 +40,9 @@ pub struct Ui<C: ViewClient> {
     render: UiRender,
     /// Cleared by <kbd>q</kbd>, <kbd>Esc</kbd> or <kbd>Ctrl-C</kbd>.
     running: bool,
+    /// The last thing [`request_log`](Ui::request_log) told the client, and
+    /// `None` before it has told it anything.
+    asked: Option<(Option<AppUnitKey>, LogRegion)>,
 }
 
 impl<C: ViewClient> Ui<C> {
@@ -69,6 +73,7 @@ impl<C: ViewClient> Ui<C> {
             client,
             render: UiRender::new(theme),
             running: true,
+            asked: None,
         };
         let mut terminal = ratatui::init();
         // The wheel is not reported unless asked for, and asking costs the
@@ -125,12 +130,24 @@ impl<C: ViewClient> Ui<C> {
         Ok(())
     }
 
-    /// Tell the client which log the pane shows, and which rectangle of it.
+    /// Tell the client which log the pane shows, and which rectangle of it —
+    /// when either of them has changed.
+    ///
+    /// Said once per change and not once per frame. The client is free to do
+    /// nothing with a repeat, and both of them do, but the pane sits on the
+    /// same unit and the same rectangle for as long as nobody touches the
+    /// keyboard: at ten frames a second that is the same sentence said ten
+    /// times, down a socket, to be answered the same way.
     fn request_log(&mut self) {
         // Copied out to end the borrow on the client before it is handed a
         // `&mut` of itself.
         let key = self.selected().map(|unit| unit.unit_key);
-        self.client.set_log(key, self.render.log_region());
+        let region = self.render.log_region();
+        if self.asked == Some((key, region)) {
+            return;
+        }
+        self.asked = Some((key, region));
+        self.client.set_log(key, region);
     }
 
     /// Pull the log scroll back to what the client actually found.

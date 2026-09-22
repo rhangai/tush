@@ -152,8 +152,10 @@ pub trait ViewClient {
     /// within without asking again, and a rectangle clipped to the pane's
     /// width is cheap whatever the log behind it is.
     ///
-    /// Called every frame; whether anything has to happen is the client's
-    /// call, since it holds the region, the revision and the connection.
+    /// Called when the pane moves or is resized, and not every frame: the
+    /// screen holds what it last said and does not repeat it. A client may
+    /// still be handed the same values twice and has to take that as no news,
+    /// but it is not asked to lean on that ten times a second.
     fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion);
 
     /// How the session says it should be shown.
