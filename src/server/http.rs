@@ -12,17 +12,15 @@ use serde::Serialize;
 use crate::{
     app::AppUnitKey,
     log::{LogLine, LogRegion},
-    runner::RunnerState,
     server::state::ServerState,
     unit::{UnitChoice, UnitEvent},
-    util::str::SmallStr,
     view::ViewUnit,
 };
 
 /// Every route a client speaks, over whatever the caller is listening on.
 ///
 /// Units are addressed by the key the config declared them under, and not by
-/// [`UnitKey`]: a key is an interned symbol that means nothing outside the
+/// [`AppUnitKey`]: a key is an interned symbol that means nothing outside the
 /// process that made it, and a path a person can type is most of why this is
 /// HTTP at all. The conversion happens in the unit map, which is the one place
 /// text becomes a key.
@@ -61,27 +59,21 @@ async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
     let unit_map = state.app().unit_map();
     let mut units: Vec<ViewUnit> = unit_map
         .keys()
-        .map(|unit_key| {
-            let settings = unit_map.settings(unit_key).unwrap_or_default();
-            ViewUnit {
+        .filter_map(|unit_key| {
+            let entry = unit_map.entry(unit_key).ok()?;
+            let unit = entry.unit();
+            let settings = entry.settings();
+            Some(ViewUnit {
                 unit_key,
-                // Unreachable for the same reason as the state below: the keys
-                // came out of the map, which is what interned them.
-                key: unit_map
-                    .key_str(unit_key)
-                    .map(SmallStr::new)
-                    .unwrap_or_default(),
-                name: unit_map.name(unit_key).unwrap_or_default(),
-                name_short: unit_map.name_short(unit_key).unwrap_or(None),
-                mode: unit_map.mode(unit_key).unwrap_or(None),
-                mode_short: unit_map.mode_short(unit_key).unwrap_or(None),
-                // Unreachable: the keys came out of the map. `Stopped` is what
-                // a unit with no handle reports anyway, so it is the answer that
-                // says the same thing rather than a `Default` invented for it.
-                state: unit_map.state(unit_key).unwrap_or(RunnerState::Stopped),
+                key: entry.key().clone(),
+                name: unit.name(),
+                name_short: unit.name_short(),
+                mode: unit.mode(),
+                mode_short: unit.mode_short(),
+                state: unit.state(),
                 parse_ansi: settings.parse_ansi,
                 panel: settings.panel,
-            }
+            })
         })
         .collect();
     units.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));
@@ -149,11 +141,9 @@ async fn choices(
 ) -> Result<Json<Vec<UnitChoice>>, StatusCode> {
     let key = key(&state, &unit).ok_or(StatusCode::NOT_FOUND)?;
     let mut out = Vec::new();
-    state
-        .app()
-        .unit_map()
-        .choices(key, &mut out)
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let unit_map = state.app().unit_map();
+    let entry = unit_map.entry(key).map_err(|_| StatusCode::NOT_FOUND)?;
+    entry.unit().choices(&mut out);
     Ok(Json(out))
 }
 
@@ -195,7 +185,7 @@ async fn dispatch(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// The [`UnitKey`] a config key was interned under, or nothing for a key no
+/// The [`AppUnitKey`] a config key was interned under, or nothing for a key no
 /// proc was declared with.
 fn key(state: &ServerState, key: &str) -> Option<AppUnitKey> {
     state.app().unit_map().key(key)

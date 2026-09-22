@@ -27,7 +27,7 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 /// What the log pane asked for, as the task reads it.
 ///
 /// The key rides along, already encoded, so the task never has to turn a
-/// [`UnitKey`] back into one: a URL addresses a unit by the key it was
+/// [`AppUnitKey`] back into one: a URL addresses a unit by the key it was
 /// declared under, and the row the pane pointed at holds both.
 #[derive(Clone)]
 struct Wanted {
@@ -154,7 +154,7 @@ impl ViewSocket {
         })
     }
 
-    /// The config key a [`UnitKey`] stands for, ready to go into a path.
+    /// The config key an [`AppUnitKey`] stands for, ready to go into a path.
     ///
     /// The key and not [`name`](ViewUnit::name): the server resolves a path
     /// segment through the interner, and the interner only ever saw the key.

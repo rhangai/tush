@@ -10,10 +10,9 @@ use tokio::task::JoinSet;
 use crate::{
     app::TARGET_SEPARATOR,
     config::{Config, ConfigPanel, ConfigProc},
-    error::{AppConfigError, AppError, UnitError},
-    log::{Log, LogReader},
-    runner::RunnerState,
-    unit::{Unit, UnitAction, UnitBehavior, UnitChoice, UnitEvent},
+    error::{AppConfigError, AppError},
+    log::Log,
+    unit::{Unit, UnitBehavior},
     util::{
         event::{EventDispatcher, EventListener},
         graph::{DependencyGraph, DependencyOrder},
@@ -30,10 +29,11 @@ use crate::{
 ///
 /// Every method takes `&self` and the units are held by value, so one map
 /// behind an `Arc` serves the input task, the render loop and whatever
-/// supervises a start, while a log and the run writing to it still have
-/// exactly one owner. That rests on no method being slow or async: a state is
-/// an atomic load, stopping is a cancellation that does not wait, and
-/// starting hands the run to a task rather than doing it.
+/// supervises a start, while a log and the run writing to it keep exactly one
+/// owner — [`entry`](AppUnitMap::entry) lends a unit out for as long as the
+/// map is borrowed, and never gives it away. That rests on no method being
+/// slow or async: a state is an atomic load, stopping is a cancellation that
+/// does not wait, and starting hands the run to a task rather than doing it.
 pub struct AppUnitMap {
     /// The one interner every key in the session was minted against.
     interner: DefaultStringInterner,
@@ -47,14 +47,14 @@ pub struct AppUnitMap {
     log_capacity_max: usize,
     /// The whole `depends` relation, which is what orders a start.
     dependency_graph: DependencyGraph<AppUnitKey>,
-    /// The units declared under each group name, for addressing several at
-    /// once.
-    ///
-    /// The one lookup that stays a map of its own: it is keyed by a group
-    /// name and not by a unit, so there is no [`AppUnit`] for it to sit in.
+    /// The units declared under each group name — the one lookup still keyed
+    /// by something other than a unit, so it has no [`AppUnitEntry`] to sit in.
     groups: HashMap<SmallStr, UnitKeyVec>,
 }
 
+/// A handful of keys: the units of a group, or what one unit waits for.
+/// Sixteen inline, so an ordinary list of either is a copy and not an
+/// allocation.
 type UnitKeyVec = SmallVec<[AppUnitKey; 16]>;
 
 /// One declared proc, as a running session holds it.
@@ -63,9 +63,12 @@ type UnitKeyVec = SmallVec<[AppUnitKey; 16]>;
 /// is in. A map per setting is a parallel table to this one, and each needs
 /// the session default kept beside it to answer for the procs that said
 /// nothing; resolved once here, there is nothing left to fall back to.
-struct AppUnitEntry {
-    /// The unit itself. Private, and reached only through
-    /// [`with`](AppUnitMap::with), so it cannot escape the map.
+pub struct AppUnitEntry {
+    /// The name the config declared it under, kept because an
+    /// [`AppUnitKey`] means nothing outside this process.
+    key: SmallStr,
+    /// The unit itself, lent out by [`unit`](AppUnitEntry::unit) and never
+    /// moved out: the log and the current run have one owner, the map.
     unit: Unit,
     /// What the config said about it that it does not itself act on.
     settings: AppUnitSettings,
@@ -75,32 +78,36 @@ struct AppUnitEntry {
     dependencies: UnitKeyVec,
 }
 
+impl AppUnitEntry {
+    /// The config key, for whatever has to name this unit outside the process.
+    pub fn key(&self) -> &SmallStr {
+        &self.key
+    }
+    /// The unit, for as long as the map is borrowed.
+    pub fn unit(&self) -> &Unit {
+        &self.unit
+    }
+    /// What the config settled about it — see [`AppUnitSettings`].
+    pub fn settings(&self) -> &AppUnitSettings {
+        &self.settings
+    }
+    /// What it waits for, empty when that is nothing.
+    pub fn dependencies(&self) -> &UnitKeyVec {
+        &self.dependencies
+    }
+}
+
 /// What the config said about a proc that the proc itself never acts on.
 ///
-/// Handed out by value: it is two bytes, so a copy beats the borrow it would
-/// otherwise hold on the map — and handing out the [`AppUnit`] it sits in is
-/// not on, since that carries the unit.
+/// Apart from the [`Unit`] because a unit neither draws itself nor reads its
+/// own log back: holding these here is what leaves `unit` with no reason to
+/// know what a panel is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppUnitSettings {
     /// Which of the two lists on screen it is drawn in.
     pub panel: ConfigPanel,
     /// Whether its escape sequences are read as escape sequences.
     pub parse_ansi: bool,
-}
-
-impl Default for AppUnitSettings {
-    /// What a proc that declared nothing gets from a session that said
-    /// nothing either.
-    ///
-    /// Written out because a derived one turns the escapes off. Only a key no
-    /// proc was declared under reaches it, which a caller building a row per
-    /// key never holds.
-    fn default() -> Self {
-        Self {
-            panel: ConfigPanel::Main,
-            parse_ansi: true,
-        }
-    }
 }
 
 /// How a unit is addressed once the config has been checked.
@@ -114,7 +121,7 @@ impl Default for AppUnitSettings {
 /// it means anything against. It goes over the socket as that bare index,
 /// which holds only because the far end is a client of the process that
 /// minted it; anything naming a unit outside that sends the config key
-/// instead — see [`key_str`](AppUnitMap::key_str).
+/// instead — see [`key`](AppUnitEntry::key).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AppUnitKey(DefaultSymbol);
 
@@ -165,6 +172,7 @@ impl AppUnitMap {
                 key,
                 AppUnitEntry {
                     unit,
+                    key: proc.key.clone(),
                     settings: AppUnitSettings {
                         panel: proc.panel,
                         parse_ansi: proc.parse_ansi(parse_ansi_session),
@@ -256,7 +264,8 @@ impl AppUnitMap {
         graph
     }
 
-    /// Get the behavior from the config
+    /// What a proc's `run` or `modes` add up to, with its names and working
+    /// directories folded in.
     fn build_behavior(proc: &ConfigProc) -> UnitBehavior {
         let name = proc.name.clone().unwrap_or_else(|| proc.key.clone());
         let short = proc.name_short.clone();
@@ -301,123 +310,58 @@ impl AppUnitMap {
         self.interner.get(name).map(AppUnitKey)
     }
 
-    /// The text `key` was interned from, for whatever has to name a unit
-    /// outside this process — where an [`AppUnitKey`] means nothing.
-    pub fn key_str(&self, key: AppUnitKey) -> Option<&str> {
-        self.interner.resolve(key.0)
-    }
-
     /// Start the unit under `key`, restarting it if it was already running —
     /// see [`Unit::start`](crate::unit::Unit::start), which sees the old run
     /// out before the new one begins.
     pub fn start(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with(key, Unit::start)?.map_err(AppError::UnitStart)?;
+        let entry = self.entry(key)?;
+        entry.unit().start()?;
         Ok(())
     }
 
     /// Build the unit's run without releasing it, so a unit still waiting on
     /// its dependencies exists and reports
-    /// [`Waiting`](RunnerState::Waiting) instead of nothing at all.
+    /// [`Waiting`](crate::runner::RunnerState::Waiting) instead of nothing at all.
     pub fn ensure_created(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with(key, Unit::ensure_created)?
-            .map_err(AppError::UnitStart)?;
+        let entry = self.entry(key)?;
+        entry.unit().ensure_created()?;
         Ok(())
     }
 
     /// Release the run [`ensure_created`](AppUnitMap::ensure_created) parked,
-    /// or restart the unit if that run has already gone — what the schedule
+    /// or restart the unit if that run is already gone — what the schedule
     /// gives a unit the caller named, against the
-    /// [`ensure_started`](AppUnitMap::ensure_started) one pulled in as a
-    /// dependency gets.
+    /// [`ensure_started`](AppUnitMap::ensure_started) a dependency gets.
     pub fn start_or_resume(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with_unit(key, Unit::start_or_resume).map(|_| ())
+        let entry = self.entry(key)?;
+        entry.unit().start_or_resume()?;
+        Ok(())
     }
 
     /// Start `key` if it has never been started, and leave it alone
     /// otherwise — unlike [`start`](AppUnitMap::start), which restarts it.
     pub fn ensure_started(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with_unit(key, Unit::ensure_started).map(|_| ())
+        let entry = self.entry(key)?;
+        entry.unit().ensure_started()?;
+        Ok(())
     }
 
     /// Stop the unit under `key`.
     ///
     /// Returns without waiting for the process to be gone; the unit keeps
-    /// reporting its terminal state through [`state`](AppUnitMap::state).
+    /// reporting its terminal state through [`Unit::state`](crate::unit::Unit::state).
     pub fn stop(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with_unit(key, |u| {
-            u.stop();
-            Ok(())
-        })
-    }
-
-    /// State of the unit under `key`.
-    ///
-    /// [`Stopped`](RunnerState::Stopped) for a unit that was declared and
-    /// never started — which is a different thing from a key nothing was
-    /// declared under, and that is the error.
-    pub fn state(&self, key: AppUnitKey) -> Result<RunnerState, AppError> {
-        self.with_unit(key, |unit| Ok(unit.state()))
-    }
-
-    /// Which of its modes the unit under `key` is currently on, if it has any.
-    pub fn mode(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
-        self.with(key, Unit::mode)
-    }
-
-    /// That mode's short name, if it declared one.
-    pub fn mode_short(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
-        self.with(key, Unit::mode_short)
-    }
-
-    /// What the unit under `key` is called on screen.
-    pub fn name(&self, key: AppUnitKey) -> Result<SmallStr, AppError> {
-        self.with(key, Unit::name)
-    }
-
-    /// The shorter name for the unit under `key`, if it declared one.
-    pub fn name_short(&self, key: AppUnitKey) -> Result<Option<SmallStr>, AppError> {
-        self.with(key, Unit::name_short)
-    }
-
-    /// Everything that can be asked of the unit under `key` right now.
-    pub fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) -> Result<(), AppError> {
-        self.with(key, |unit| Unit::choices(unit, out))
-    }
-
-    /// Hand `event` to the unit under `key` and report back what it asks for.
-    ///
-    /// Reported and not done: a start has to go through the schedule, which
-    /// is above this layer, so the action is carried out by
-    /// [`App::dispatch`](crate::app::App::dispatch).
-    pub fn dispatch(
-        &self,
-        key: AppUnitKey,
-        event: UnitEvent,
-    ) -> Result<Option<UnitAction>, AppError> {
-        self.with(key, |unit| Unit::dispatch(unit, event))
-    }
-
-    /// A new reader over the log of `key`.
-    pub fn log_reader(&self, key: AppUnitKey) -> Option<LogReader> {
-        self.with(key, Unit::log_reader).ok()
-    }
-
-    /// Put `reader` on the log of `key`, in place of building one.
-    ///
-    /// `false` is a key nothing was declared under, and leaves the reader on
-    /// whatever it was following — a caller that cannot address a unit has
-    /// nothing to show anyway.
-    pub fn log_reader_into(&self, key: AppUnitKey, reader: &mut LogReader) -> bool {
-        self.with(key, |unit| unit.log_reader_into(reader)).is_ok()
+        let entry = self.entry(key)?;
+        entry.unit().stop();
+        Ok(())
     }
 
     /// How many chunks the largest log here holds.
     ///
-    /// The largest and not each, because this is what a caller reusing one
-    /// reader across units builds it at: a reader holds its ring to whichever
-    /// log it is put on but never past the size it was built for, so one
-    /// built smaller would follow a shorter tail than the log it is on — see
-    /// [`LogReader`](crate::log::LogReader).
+    /// The largest and not each, because it is what a caller reusing one
+    /// reader across units builds it at: a reader never holds more than the
+    /// size it was built for, so a smaller one would follow a shorter tail
+    /// than the log it is put on — see [`LogReader`](crate::log::LogReader).
     pub fn log_capacity(&self) -> usize {
         self.log_capacity_max
     }
@@ -440,25 +384,6 @@ impl AppUnitMap {
                 resolved.insert(*value);
             }
         }
-    }
-
-    /// What `key` must wait for, one edge out.
-    ///
-    /// `None` is a key no unit was declared under; a unit that depends on
-    /// nothing answers an empty slice, which the caller that walks it treats
-    /// the same way.
-    pub fn direct_dependencies(&self, key: AppUnitKey) -> Option<&[AppUnitKey]> {
-        Some(self.units.get(&key)?.dependencies.as_slice())
-    }
-
-    /// What the config said about `key`, or `None` for a key no proc was
-    /// declared under.
-    ///
-    /// One answer for every setting rather than an accessor each: a caller
-    /// building a row wants them together, and a setting added later is a
-    /// field here instead of another method.
-    pub fn settings(&self, key: AppUnitKey) -> Option<AppUnitSettings> {
-        Some(self.units.get(&key)?.settings)
     }
 
     /// Every unit declared under a group name, or `None` if none was.
@@ -488,13 +413,11 @@ impl AppUnitMap {
 
     /// Stop every unit, and wait until each one is really gone.
     ///
-    /// [`stop`](AppUnitMap::stop) only asks, and dropping the map does no
-    /// better since `Drop` cannot await. This is the teardown you can
-    /// observe, which is what a session that owns its children wants before
-    /// its own process exits.
-    ///
-    /// Every unit is asked to stop before any of them is waited on, so the
-    /// grace periods overlap instead of queueing up one shutdown at a time.
+    /// [`stop`](AppUnitMap::stop) only asks and `Drop` cannot await, so this
+    /// is the only teardown a caller can observe — what a session that owns
+    /// its children wants before its own process exits. Every unit is asked
+    /// before any is waited on, so the grace periods overlap instead of
+    /// queueing one shutdown at a time.
     pub async fn shutdown(&self) {
         let mut join_set: JoinSet<()> = JoinSet::new();
         for entry in self.units.values() {
@@ -507,11 +430,8 @@ impl AppUnitMap {
         while join_set.join_next().await.is_some() {}
     }
 
-    /// Run `f` on the unit under `key`, or fail naming what was asked for.
-    ///
-    /// An unknown key is a mistake in a config or a command and not a state
-    /// a unit can be in, so it is an error rather than a quiet no-op — said
-    /// once, here, for every method.
+    /// Run `f` on the unit under `key`, for a closure that cannot fail —
+    /// [`with_unit`](AppUnitMap::with_unit) is for the closure that can.
     fn with<T>(&self, key: AppUnitKey, f: impl FnOnce(&Unit) -> T) -> Result<T, AppError> {
         let Some(entry) = self.units.get(&key) else {
             return Err(AppError::NotFound);
@@ -519,15 +439,16 @@ impl AppUnitMap {
         Ok(f(&entry.unit))
     }
 
-    /// Get the unit and do something
-    pub fn with_unit<T>(
-        &self,
-        key: AppUnitKey,
-        f: impl FnOnce(&Unit) -> Result<T, UnitError>,
-    ) -> Result<T, AppError> {
-        let Some(unit) = self.units.get(&key) else {
+    /// Everything the session holds about `key`: the unit, what the config
+    /// said about it, and what it waits for.
+    ///
+    /// One lookup for all three, which is what a caller building a row on
+    /// screen wants. An unknown key is an error and not an empty answer: it is
+    /// a mistake in a config or a command, never a state a unit can be in.
+    pub fn entry(&self, key: AppUnitKey) -> Result<&AppUnitEntry, AppError> {
+        let Some(entry) = self.units.get(&key) else {
             return Err(AppError::NotFound);
         };
-        f(&unit.unit).map_err(AppError::UnitError)
+        Ok(entry)
     }
 }

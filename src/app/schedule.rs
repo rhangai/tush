@@ -143,7 +143,7 @@ impl AppScheduleRunnerTask {
             unit_map.write_resolved(&mut resolved);
             for (scheduled, kind) in &scheduled {
                 _ = unit_map.ensure_created(*scheduled);
-                let deps = unit_map.direct_dependencies(*scheduled);
+                let deps = unit_map.entry(*scheduled).map(|entry| entry.dependencies());
                 let all_resolved = deps.into_iter().flatten().all(|dep| resolved.contains(dep));
                 if all_resolved {
                     match kind {

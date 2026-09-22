@@ -107,7 +107,7 @@ impl App {
     /// cannot reach the schedule: a start it asks for is a start in
     /// dependency order like any other.
     pub fn dispatch(&self, key: AppUnitKey, event: UnitEvent) -> anyhow::Result<()> {
-        let Some(action) = self.unit_map().dispatch(key, event)? else {
+        let Some(action) = self.unit_map().entry(key)?.unit().dispatch(event) else {
             return Ok(());
         };
         match action {

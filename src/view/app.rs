@@ -5,7 +5,6 @@ use crate::{
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
     unit::UnitChoice,
-    util::str::SmallStr,
     view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
 };
 
@@ -64,24 +63,21 @@ impl ViewApp {
         let unit_map = app.unit_map();
         let mut list: Vec<ViewUnit> = unit_map
             .keys()
-            .map(|unit_key| {
-                // Unreachable, like the name below: the key came out of the
-                // map, which is what settled these in the first place.
-                let settings = unit_map.settings(unit_key).unwrap_or_default();
-                ViewUnit {
-                    key: unit_map
-                        .key_str(unit_key)
-                        .map(SmallStr::new)
-                        .unwrap_or_default(),
-                    name: unit_map.name(unit_key).unwrap_or_default(),
-                    name_short: unit_map.name_short(unit_key).unwrap_or(None),
+            .filter_map(|unit_key| {
+                let entry = unit_map.entry(unit_key).ok()?;
+                let unit = entry.unit();
+                let settings = entry.settings();
+                Some(ViewUnit {
+                    key: entry.key().clone(),
+                    name: unit.name(),
+                    name_short: unit.name_short(),
                     unit_key,
                     mode: None,
                     mode_short: None,
                     state: RunnerState::Stopped,
                     parse_ansi: settings.parse_ansi,
                     panel: settings.panel,
-                }
+                })
             })
             .collect();
         list.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));
@@ -120,16 +116,13 @@ impl ViewClient for ViewApp {
     /// map cannot lose one — but skipping the row is cheaper than proving it.
     fn sync(&mut self) {
         let unit_map = self.app.unit_map();
-        for unit in &mut self.units {
-            if let Ok(state) = unit_map.state(unit.unit_key) {
-                unit.state = state;
-            }
-            if let Ok(mode) = unit_map.mode(unit.unit_key) {
-                unit.mode = mode;
-            }
-            if let Ok(short) = unit_map.mode_short(unit.unit_key) {
-                unit.mode_short = short;
-            }
+        for view in &mut self.units {
+            let Ok(unit) = unit_map.entry(view.unit_key).map(|entry| entry.unit()) else {
+                continue;
+            };
+            view.state = unit.state();
+            view.mode = unit.mode();
+            view.mode_short = unit.mode_short();
         }
         self.sync_log();
     }
@@ -152,10 +145,11 @@ impl ViewClient for ViewApp {
         match &mut self.log {
             Some(log) if log.unit_key == key => log.wanted = region,
             _ => {
-                if !self.app.unit_map().log_reader_into(key, &mut self.reader) {
+                let Ok(entry) = self.app.unit_map().entry(key) else {
                     self.log = None;
                     return;
-                }
+                };
+                entry.unit().log_reader_into(&mut self.reader);
                 self.log = Some(AppLog {
                     unit_key: key,
                     region,
@@ -181,10 +175,11 @@ impl ViewClient for ViewApp {
     /// The `Err` arm is a key the map does not hold, and the keys came out of
     /// the map — so it leaves `out` empty rather than failing.
     fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
-        let unit_map = self.app.unit_map();
-        if unit_map.choices(key, out).is_err() {
+        let Ok(entry) = self.app.unit_map().entry(key) else {
             out.clear();
-        }
+            return;
+        };
+        entry.unit().choices(out);
     }
 
     /// Do it, and drop whatever it had to say about it.

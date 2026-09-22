@@ -46,11 +46,12 @@ impl ServerState {
             .unit_map()
             .keys()
             .filter_map(|key| {
+                // Unreachable: the keys came out of this same map.
+                let unit = unit_map.entry(key).ok()?.unit();
                 Some((
                     key,
                     Mutex::new(ServerLog {
-                        // Unreachable: the keys came out of this same map.
-                        reader: unit_map.log_reader(key)?,
+                        reader: unit.log_reader(),
                         lines: Vec::with_capacity(1024),
                     }),
                 ))
