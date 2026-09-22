@@ -62,9 +62,10 @@ impl ViewDispatch {
     /// The list is asked for rather than counted here: the indices belong to
     /// the behavior, and this route is the only thing that reports them.
     ///
-    /// By name first and by index second, so a mode a config actually called
-    /// `1` wins over the second one in the list. Names match without case
-    /// because they are written to read in a menu and typed at a shell.
+    /// Full name, then short name, then position — full first so a mode a
+    /// config actually called `1` wins over the second one in the list. Both
+    /// names match without case, because they are written to read in a menu
+    /// and typed at a shell.
     async fn mode_event(
         &mut self,
         key: &SmallStr,
@@ -79,32 +80,33 @@ impl ViewDispatch {
         )
         .await
         .map_err(|error| unknown_unit(error, key))?;
-        let modes: Vec<(usize, SmallStr)> = choices
+        let modes: Vec<UnitChoice> = choices
             .into_iter()
-            .filter_map(|choice| match (choice.event, choice.mode) {
-                (UnitEvent::StartMode(index), Some(name)) => Some((index, name)),
-                _ => None,
-            })
+            .filter(|choice| mode_index(choice).is_some())
             .collect();
 
         if modes.is_empty() {
             return Err(ViewDispatchError::NoModes(key.to_string()));
         }
-        if let Some((index, _)) = modes
-            .iter()
-            .find(|(_, name)| name.eq_ignore_ascii_case(mode))
-        {
-            return Ok(UnitEvent::StartMode(*index));
+        // Find by name
+        if let Some(choice) = modes.iter().find(|choice| names(&choice.mode, mode)) {
+            return Ok(choice.event);
         }
+        // Find by short name
+        if let Some(choice) = modes.iter().find(|choice| names(&choice.mode_short, mode)) {
+            return Ok(choice.event);
+        }
+        // Find by index
         if let Ok(index) = mode.parse::<usize>()
-            && modes.iter().any(|(candidate, _)| *candidate == index)
+            && modes.iter().any(|choice| mode_index(choice) == Some(index))
         {
             return Ok(UnitEvent::StartMode(index));
         }
+
         Err(ViewDispatchError::UnknownMode {
             unit: key.to_string(),
             mode: mode.to_string(),
-            modes: modes.into_iter().map(|(_, name)| name).collect(),
+            modes: modes.into_iter().filter_map(|choice| choice.mode).collect(),
         })
     }
 
@@ -128,6 +130,22 @@ impl ViewDispatch {
             status => Err(ViewSocketError::Status(status.as_u16()).into()),
         }
     }
+}
+
+/// Which mode a choice runs, and `None` for the entries that are not a mode —
+/// every list has a `Stop` on the end.
+fn mode_index(choice: &UnitChoice) -> Option<usize> {
+    match choice.event {
+        UnitEvent::StartMode(index) => Some(index),
+        _ => None,
+    }
+}
+
+/// Whether `typed` is that name. A mode with no short name is named by nothing
+/// rather than by the empty string.
+fn names(name: &Option<SmallStr>, typed: &str) -> bool {
+    name.as_ref()
+        .is_some_and(|name| name.eq_ignore_ascii_case(typed))
 }
 
 /// A `404` off any of these routes means one thing — no proc is declared under

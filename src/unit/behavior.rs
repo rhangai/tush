@@ -223,6 +223,7 @@ impl UnitBehavior {
         out.push(UnitChoice {
             verb: STOP,
             mode: None,
+            mode_short: None,
             event: UnitEvent::Stop,
             enabled: !state.is_stopped(),
             current: false,
@@ -320,6 +321,7 @@ impl UnitBehaviorKind for BehaviorRun {
         out.push(UnitChoice {
             verb: verb(state),
             mode: None,
+            mode_short: None,
             event: UnitEvent::Start,
             enabled: true,
             current: true,
@@ -421,6 +423,7 @@ impl UnitBehaviorKind for BehaviorModes {
             out.push(UnitChoice {
                 verb: if current { verb(state) } else { START },
                 mode: Some(mode.name()),
+                mode_short: mode.name_short(),
                 event: UnitEvent::StartMode(index),
                 enabled: true,
                 current,

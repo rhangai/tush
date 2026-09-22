@@ -41,6 +41,10 @@ pub struct UnitChoice {
     pub verb: SmallStr,
     /// What the verb applies to, or `None` for a proc that runs one way.
     pub mode: Option<SmallStr>,
+    /// That mode's short name, so a caller matching text a person typed takes
+    /// what the screen shows them — `W` as readily as `Watch`. `None` where
+    /// the config declared no short name.
+    pub mode_short: Option<SmallStr>,
     /// What to send if it is chosen.
     pub event: UnitEvent,
     /// Whether it can be chosen. A disabled entry is drawn dim rather than
