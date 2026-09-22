@@ -38,8 +38,16 @@ pub struct UnitMap {
     /// The one dispatcher every unit in the map was given a clone of, so a
     /// screen watches the session rather than one proc at a time.
     event_dispatcher: EventDispatcher,
-    /// How much output each unit's log keeps, in bytes.
+    /// How much output a unit's log keeps when its caller does not say, in
+    /// bytes.
     log_size: usize,
+    /// The largest log in the map, in chunks.
+    ///
+    /// Kept as the units go in because it is what a shared reader is built
+    /// at: one reader stands in for every log it moves between, and a reader
+    /// smaller than the log it is put on follows a shorter tail than that log
+    /// holds — see [`LogReader::reset`](crate::log::LogReader).
+    log_capacity_max: usize,
 }
 
 /// How a unit is addressed once the config has been checked.
@@ -91,32 +99,40 @@ impl UnitMap {
         map
     }
 
-    /// An empty map with room for `capacity` units.
+    /// An empty map with room for `capacity` units, each keeping `log_size`
+    /// bytes unless it is inserted with a figure of its own.
     ///
-    /// `log_size` is taken here and not per unit because every unit in one
-    /// session gets the same: it is the config's answer to how far back the
-    /// pane scrolls, and there is one config.
+    /// A default and not the rule: how far back a pane scrolls is a property
+    /// of the proc, and a config that says nothing about one is asking for
+    /// the session's answer.
     pub fn with_capacity(capacity: usize, log_size: usize) -> Self {
         Self {
             interner: DefaultStringInterner::new(),
             units: HashMap::with_capacity(capacity),
             event_dispatcher: EventDispatcher::new(),
             log_size,
+            log_capacity_max: 0,
         }
     }
 
-    /// Add a new unit
+    /// Add a new unit, keeping the map's default amount of output.
     pub fn add(&mut self, key: &str, behavior: UnitBehavior) -> UnitKey {
         let key = self.reserve(key);
         self.insert(key, behavior);
         key
     }
 
-    /// Add a new unit
+    /// Add a new unit, keeping the map's default amount of output.
     pub fn insert(&mut self, key: UnitKey, behavior: UnitBehavior) {
-        let mut unit = Unit::new(behavior, self.log_size);
+        self.insert_with(key, behavior, self.log_size);
+    }
+
+    /// Add a new unit keeping `log_size` bytes of its own.
+    pub fn insert_with(&mut self, key: UnitKey, behavior: UnitBehavior, log_size: usize) {
+        let mut unit = Unit::new(behavior, log_size);
         unit.set_event_dispatcher(self.event_dispatcher.clone());
         self.units.insert(key.value, unit);
+        self.log_capacity_max = self.log_capacity_max.max(Log::capacity_for_bytes(log_size));
     }
 
     /// Reserve a key
@@ -249,13 +265,15 @@ impl UnitMap {
         self.with(key, |unit| unit.log_reader_into(reader)).is_ok()
     }
 
-    /// How many chunks every log in this map holds.
+    /// How many chunks the largest log in this map holds.
     ///
-    /// One figure for the map because `log_size` is — see
-    /// [`with_capacity`](UnitMap::with_capacity). It is what a caller sizes a
-    /// reader by when it means to reuse one across units.
+    /// The largest and not each, because this is what a caller reusing one
+    /// reader across units builds it at: the ring holds itself under the
+    /// capacity of whichever log it is put on, so one built at the largest
+    /// fits them all and never allocates on a switch. Built smaller it would
+    /// follow a shorter tail than the log it is on.
     pub fn log_capacity(&self) -> usize {
-        Log::capacity_for_bytes(self.log_size)
+        self.log_capacity_max
     }
 
     /// Whether a unit was declared under `key`.

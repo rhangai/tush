@@ -20,11 +20,13 @@ procs:
 
 ## Structure
 
-`procs` is the only top-level key. Under it, every proc is written as an entry
-whose **key is the proc's name** — how you refer to it, and what `depends`
-entries point at.
+`procs` holds the procs; [`log_size`](#log_size) sets how much output they
+keep. Under `procs`, every proc is written as an entry whose **key is the
+proc's name** — how you refer to it, and what `depends` entries point at.
 
 ```yaml
+log_size: <size>                # optional
+
 procs:
   <name>:
     name:       <string>        # optional
@@ -32,6 +34,7 @@ procs:
     group:      [<string>, ...] # optional
     depends:    [<string>, ...] # optional
     panel:      main | minor    # optional
+    log_size:   <size>          # optional
     run:        <commands>      # optional
     modes:      [<mode>, ...]   # optional
 ```
@@ -43,6 +46,7 @@ procs:
 | `group` | list of strings | Groups this proc belongs to |
 | `depends` | list of strings | Procs that must be up before this one starts |
 | `panel` | `main` or `minor` | Which of the two lists on screen it is drawn in |
+| `log_size` | [size](#log_size) | How much of this proc's output to keep |
 | `run` | [commands](#run) | The one way this proc runs |
 | `modes` | [list of modes](#modes) | Several named ways to run it |
 
@@ -147,6 +151,42 @@ web:
   depends: [api, database]
   run: [npm, run, dev]
 ```
+
+---
+
+## `log_size`
+
+How much output to keep, as a size. Written at the top level it is what every
+proc keeps; written inside a proc it is what that one keeps instead.
+
+```yaml
+log_size: 1M            # what a proc keeps unless it says otherwise
+
+procs:
+  api:
+    run: [npm, start]
+
+  web:
+    log_size: 16M       # this one prints a lot and you read it
+    run: [npm, run, dev]
+
+  db-setup:
+    log_size: 64K       # four lines and done
+    run: [./scripts/db.sh]
+```
+
+Bytes, plain or with a unit: `65536`, `64K`, `8M`, `1G`. Binary units, so `1K`
+is 1024. The default is `1M`.
+
+**Bytes and not lines**, because bytes is what is actually reserved: a proc
+whose lines are long remembers fewer of them than a line count would suggest.
+This is a tail and not a transcript — the oldest output is dropped to make
+room, which is the point of a bounded size and not a failure.
+
+The memory is taken up front and for every proc, so the figure is what a proc
+costs whether or not it ever prints that much. That is the reason for the
+per-proc key: a session with one noisy watcher and ten setup scripts should
+not reserve the watcher's size eleven times.
 
 ---
 

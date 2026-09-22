@@ -187,6 +187,16 @@ pub struct ConfigProc {
     /// would be this layer deciding what the session can be.
     #[serde(default)]
     pub working_dir: Option<SmallStr>,
+    /// How much output this proc's log keeps, in bytes, or `None` to take the
+    /// session's.
+    ///
+    /// Per proc as well as per session because how far back you want to
+    /// scroll is a property of the proc and not of the config: a watcher
+    /// printing a page a second and a setup step printing four lines want
+    /// wildly different tails, and one figure for both either forgets the
+    /// first or reserves for the second what it will never write.
+    #[serde(default)]
+    log_size: Option<ConfigSize>,
     /// Which of the two lists on screen it is drawn in.
     ///
     /// Presentation and nothing else: it moves a row, and never what the proc
@@ -221,6 +231,16 @@ pub enum ConfigPanel {
     Main,
     /// The compact list under it, for what you do not sit and watch.
     Minor,
+}
+
+impl ConfigProc {
+    /// How much output this proc keeps, given what the session keeps.
+    ///
+    /// The fallback is taken here rather than left to the caller so that
+    /// there is one place the two figures meet.
+    pub fn log_size(&self, session: usize) -> usize {
+        self.log_size.map_or(session, |size| size.0)
+    }
 }
 
 /// One named way to run a proc, switched between without redeclaring it.

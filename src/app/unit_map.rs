@@ -64,7 +64,7 @@ impl AppUnitMap {
             if proc.panel != ConfigPanel::default() {
                 panels.insert(key, proc.panel);
             }
-            unit_map.insert(key, behavior);
+            unit_map.insert_with(key, behavior, proc.log_size(config.log_size()));
         }
         if !errors.is_empty() {
             return Err(AppConfigError::Errors(errors));

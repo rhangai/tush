@@ -33,9 +33,10 @@ pub struct ServerState {
     /// comes from a config read once, so the map itself needs no lock and
     /// only the slot does.
     ///
-    /// Each reader starts [detached](LogReader::is_detached) and is put on its
-    /// unit's log by the first read of it. The memory is taken here either
-    /// way, a reader being the log's size over again; only the attach waits.
+    /// Each reader is built on its own unit's log, and so at that log's size.
+    /// One reader per unit is what makes that possible — a screen moving one
+    /// reader between units has to build it at the largest of them, and
+    /// `log_size` is per proc.
     logs: HashMap<UnitKey, Mutex<ServerLog>>,
 }
 
@@ -45,14 +46,15 @@ impl ServerState {
         let logs = app
             .unit_map()
             .keys()
-            .map(|key| {
-                (
+            .filter_map(|key| {
+                Some((
                     key,
                     Mutex::new(ServerLog {
-                        reader: LogReader::empty(unit_map.log_capacity()),
+                        // Unreachable: the keys came out of this same map.
+                        reader: unit_map.log_reader(key)?,
                         lines: Vec::with_capacity(1024),
                     }),
-                )
+                ))
             })
             .collect();
         Self { app, logs }
@@ -83,9 +85,6 @@ impl ServerState {
         read: impl FnOnce(&[LogLine], u64) -> T,
     ) -> Option<T> {
         let mut slot = self.logs.get(&key)?.lock();
-        if slot.reader.is_detached() {
-            self.app.unit_map().log_reader_into(key, &mut slot.reader);
-        }
         let ServerLog { reader, lines } = &mut *slot;
         reader.sync();
         let revision = reader.version();
