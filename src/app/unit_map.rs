@@ -24,42 +24,38 @@ use crate::{
 /// Every proc of a checked config, as a unit, under the key it was interned
 /// as.
 ///
-/// It owns the interner, and so is the only place a name becomes a
-/// [`UnitKey`]: everything above it — the screen, the commands it sends —
+/// It owns the interner, and so is the only place a name becomes an
+/// [`AppUnitKey`]: everything above it — the screen, the commands it sends —
 /// addresses a unit by key and never by text.
 ///
-/// **Shared, not owned.** Every method takes `&self`, so a map behind an
-/// `Arc` can be handed to the input task, the render loop and whatever
-/// supervises a start, and all of them can address units without owning one.
-///
-/// **The units live here**, held by value and reached only through the map,
-/// so nothing hands out a unit that could outlive its name and the log and
-/// the current run have exactly one owner. That works because no method is
-/// slow or async: a state is an atomic load, stopping is a cancellation that
-/// does not wait, and starting hands the run to a task rather than doing it.
+/// Every method takes `&self` and the units are held by value, so one map
+/// behind an `Arc` serves the input task, the render loop and whatever
+/// supervises a start, while a log and the run writing to it still have
+/// exactly one owner. That rests on no method being slow or async: a state is
+/// an atomic load, stopping is a cancellation that does not wait, and
+/// starting hands the run to a task rather than doing it.
 pub struct AppUnitMap {
-    /// Interner for unit keys.
+    /// The one interner every key in the session was minted against.
     interner: DefaultStringInterner,
     /// The units, by key.
     units: HashMap<AppUnitKey, Unit>,
     /// The one dispatcher every unit in the map was given a clone of, so a
     /// screen watches the session rather than one proc at a time.
     event_dispatcher: EventDispatcher,
-    /// The largest log in the map, in chunks.
-    ///
-    /// Kept as the units go in because it is what a shared reader is built
-    /// at: one reader stands in for every log it moves between, and a reader
-    /// smaller than the log it is put on follows a shorter tail than that log
-    /// holds — see [`LogReader::reset`](crate::log::LogReader).
+    /// The largest log here, in chunks — what a shared reader has to be built
+    /// at; see [`log_capacity`](AppUnitMap::log_capacity).
     log_capacity_max: usize,
+    /// The whole `depends` relation, which is what orders a start.
     dependency_graph: DependencyGraph<AppUnitKey>,
     /// What each unit depends on directly, answered once here because the
     /// schedule asks it for every pending unit on every wake. Only units that
     /// depend on something are in it.
     dependencies: HashMap<AppUnitKey, UnitKeyVec>,
+    /// The units declared under each group name, for addressing several at
+    /// once.
     groups: HashMap<SmallStr, UnitKeyVec>,
     /// Which list each proc is drawn in, holding only the procs that are not
-    /// in the default one — the exception list, the way `dependencies` is.
+    /// in the default one — an exception list, the way `dependencies` is.
     panels: HashMap<AppUnitKey, ConfigPanel>,
     /// The procs that read escape sequences differently from the session, on
     /// the same terms as `panels`.
@@ -78,8 +74,11 @@ type UnitKeyVec = SmallVec<[AppUnitKey; 16]>;
 /// there is a string to clone and hash where this is an integer.
 ///
 /// The symbol is private, so every key that exists came from
-/// [`key`](AppUnitMap::key) or [`keys`](AppUnitMap::keys) — which is to say
-/// from the one interner it means anything against.
+/// [`key`](AppUnitMap::key) or [`keys`](AppUnitMap::keys) — the one interner
+/// it means anything against. It goes over the socket as that bare index,
+/// which holds only because the far end is a client of the process that
+/// minted it; anything naming a unit outside that sends the config key
+/// instead — see [`key_str`](AppUnitMap::key_str).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AppUnitKey(DefaultSymbol);
 
@@ -160,7 +159,8 @@ impl AppUnitMap {
         })
     }
 
-    /// Build the dependency graph, while validating
+    /// Intern every proc key and wire its `depends` edges, collecting every
+    /// config problem found on the way into `errors`.
     fn build_dep_graph(
         errors: &mut Vec<AppConfigError>,
         interner: &mut DefaultStringInterner,
@@ -267,14 +267,14 @@ impl AppUnitMap {
 
     /// The key `name` was interned as, if a proc was declared under it.
     ///
-    /// The one door from text to [`UnitKey`]: what comes off a command
+    /// The one door from text to [`AppUnitKey`]: what comes off a command
     /// line or out of a config is a name, and everything past here is a key.
     pub fn key(&self, name: &str) -> Option<AppUnitKey> {
         self.interner.get(name).map(AppUnitKey)
     }
 
     /// The text `key` was interned from, for whatever has to name a unit
-    /// outside this process — where a [`UnitKey`] means nothing.
+    /// outside this process — where an [`AppUnitKey`] means nothing.
     pub fn key_str(&self, key: AppUnitKey) -> Option<&str> {
         self.interner.resolve(key.0)
     }
@@ -287,12 +287,20 @@ impl AppUnitMap {
         Ok(())
     }
 
+    /// Build the unit's run without releasing it, so a unit still waiting on
+    /// its dependencies exists and reports
+    /// [`Waiting`](RunnerState::Waiting) instead of nothing at all.
     pub fn ensure_created(&self, key: AppUnitKey) -> Result<(), AppError> {
         self.with(key, Unit::ensure_created)?
             .map_err(AppError::UnitStart)?;
         Ok(())
     }
 
+    /// Release the run [`ensure_created`](AppUnitMap::ensure_created) parked,
+    /// or restart the unit if that run has already gone — what the schedule
+    /// gives a unit the caller named, against the
+    /// [`ensure_started`](AppUnitMap::ensure_started) one pulled in as a
+    /// dependency gets.
     pub fn start_or_resume(&self, key: AppUnitKey) -> Result<(), AppError> {
         self.with(key, Unit::start_or_resume)?
             .map_err(AppError::UnitStart)?;
@@ -379,10 +387,10 @@ impl AppUnitMap {
     /// How many chunks the largest log here holds.
     ///
     /// The largest and not each, because this is what a caller reusing one
-    /// reader across units builds it at: the ring holds itself under the
-    /// capacity of whichever log it is put on, so one built at the largest
-    /// fits them all and never allocates on a switch. Built smaller it would
-    /// follow a shorter tail than the log it is on.
+    /// reader across units builds it at: a reader holds its ring to whichever
+    /// log it is put on but never past the size it was built for, so one
+    /// built smaller would follow a shorter tail than the log it is on — see
+    /// [`LogReader`](crate::log::LogReader).
     pub fn log_capacity(&self) -> usize {
         self.log_capacity_max
     }
@@ -462,10 +470,10 @@ impl AppUnitMap {
 
     /// Stop every unit, and wait until each one is really gone.
     ///
-    /// [`stop`](AppUnitMap::stop) only asks; the process is still on its way
-    /// out when it returns, and dropping the map does no better — `Drop`
-    /// cannot await. This is the teardown you can observe, which is what a
-    /// session that owns its children wants before its own process exits.
+    /// [`stop`](AppUnitMap::stop) only asks, and dropping the map does no
+    /// better since `Drop` cannot await. This is the teardown you can
+    /// observe, which is what a session that owns its children wants before
+    /// its own process exits.
     ///
     /// Every unit is asked to stop before any of them is waited on, so the
     /// grace periods overlap instead of queueing up one shutdown at a time.
