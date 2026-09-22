@@ -204,15 +204,29 @@ impl Unit {
     /// process running with nothing left to end it — the incoming handle was
     /// what would have. Returns without waiting for either; the current handle
     /// stays in place so its terminal state remains observable.
+    ///
+    /// Which is why a run that has already finished is left alone and says
+    /// nothing: the handle outliving it means its being there is no evidence
+    /// there was anything to stop, and a note for a stop that moved nothing is
+    /// a log saying something happened when nothing did.
+    ///
+    /// [`is_stopped`](RunnerState::is_stopped) and not
+    /// [`is_pending`](RunnerState::is_pending), because a handle still parked
+    /// at the start gate has never run and aborting it is exactly what stops
+    /// it running later.
     pub fn stop(&self) {
         let stopping = {
             let manager = self.handle_manager.lock();
             let mut stopping = false;
-            if let Some(handle) = manager.unit_handle.as_ref() {
+            if let Some(handle) = manager.unit_handle.as_ref()
+                && !handle.state().is_stopped()
+            {
                 handle.abort();
                 stopping = true;
             }
-            if let Some(outgoing) = manager.outgoing.as_ref() {
+            if let Some(outgoing) = manager.outgoing.as_ref()
+                && !outgoing.state().is_stopped()
+            {
                 outgoing.abort();
                 stopping = true;
             }
