@@ -74,6 +74,13 @@ impl ServerClient {
         self.fetch(Method::GET, "/units", None).await
     }
 
+    /// The same rows, written into `out` rather than handed back in a vec of
+    /// their own — for a caller polling on a clock, which would otherwise
+    /// build and drop one every round.
+    pub async fn units_in_place(&mut self, out: &mut Vec<ViewUnit>) -> Result<(), ViewSocketError> {
+        self.fetch_in_place(out, Method::GET, "/units", None).await
+    }
+
     /// What the session says about how it should be shown.
     pub async fn settings(&mut self) -> Result<ViewSettings, ViewSocketError> {
         self.fetch(Method::GET, "/settings", None).await
@@ -83,6 +90,18 @@ impl ServerClient {
     pub async fn choices(&mut self, key: &SmallStr) -> Result<Vec<UnitChoice>, ViewSocketError> {
         let key = key_path(key);
         self.fetch(Method::GET, &format!("/units/{key}/choices"), None)
+            .await
+    }
+
+    /// The same list, written into `out`. See
+    /// [`units_in_place`](ServerClient::units_in_place).
+    pub async fn choices_in_place(
+        &mut self,
+        out: &mut Vec<UnitChoice>,
+        key: &SmallStr,
+    ) -> Result<(), ViewSocketError> {
+        let key = key_path(key);
+        self.fetch_in_place(out, Method::GET, &format!("/units/{key}/choices"), None)
             .await
     }
 
@@ -151,6 +170,37 @@ impl ServerClient {
             return Err(ViewSocketError::Status(status.as_u16()));
         }
         Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// A request whose answer is written into `out`.
+    ///
+    /// [`deserialize_in_place`](serde::Deserialize::deserialize_in_place) and
+    /// not a fetch assigned over `out`: `Vec`'s implementation of it overwrites
+    /// the elements that are already there and pushes only what is left over,
+    /// so a list that came back the same length costs no allocation at all.
+    /// Going through [`fetch`](ServerClient::fetch) would build the vec first
+    /// and throw the old one away, which is the whole thing being avoided.
+    ///
+    /// How much each element saves is its own business: `Vec` reuses the slot,
+    /// and whether the value in it reuses what it holds depends on its own
+    /// `deserialize_in_place`.
+    async fn fetch_in_place<T: serde::de::DeserializeOwned>(
+        &mut self,
+        out: &mut T,
+        method: Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<(), ViewSocketError> {
+        let (status, bytes) = self.request(method, path, body, None).await?;
+        if !status.is_success() {
+            return Err(ViewSocketError::Status(status.as_u16()));
+        }
+        let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+        T::deserialize_in_place(&mut deserializer, out)?;
+        // The trailing bytes are not checked by the call above, and a body
+        // with something after the value is a server this one does not speak.
+        deserializer.end()?;
+        Ok(())
     }
 
     /// A command, and the status it came back with.
