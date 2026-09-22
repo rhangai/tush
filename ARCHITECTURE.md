@@ -117,9 +117,13 @@ checking: they are pending too, and this is the loop that clears them.
 
 `Unit::resolved` is true once a run has reached a terminal state — any
 terminal state, a failure included. It stays true, so a later restart does not
-put dependents back on hold. That is right for setup steps, which is what
-`depends` was drawn for. It is the open question below for anything that never
-exits.
+put dependents back on hold.
+
+That makes `depends` an ordering between steps that end, and nothing else: a
+proc that never exits holds its dependents for as long as it runs. Settled,
+not a predicate still to be written — "up" cannot be read off a process, only
+guessed at from a port, a line on stdout or a grace period, and a guess that
+is wrong releases a dependent into a service that is not there yet.
 
 ## The log has one owner and one rule
 
@@ -196,12 +200,6 @@ file to read.
 Decisions that are not settled, written down so they are not mistaken for
 ones that are.
 
-- **What `depends` means.** The implementation is "has finished"; `CONFIG.md`
-  says "has to be up". A proc that never exits therefore blocks its dependents
-  forever, and `CONFIG.md`'s own `web depends: [api]` example does not run.
-  Either the doc follows the code, or readiness needs a second predicate —
-  running-and-stayed-running, a port, a line on stdout — and `Unit::resolved`
-  becomes the one for `run:` steps only.
 - **What `AppUnitMap` adds.** It owns the interner, the graph and the groups,
   which is its reason to exist; the fifteen methods that forward to `UnitMap`
   and rewrap `UnitMapError` as `AppError` are not, since `AppError` has one

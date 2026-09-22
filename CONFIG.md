@@ -8,11 +8,15 @@ It is a YAML file.
 
 ```yaml
 procs:
+  install:
+    run: [npm, ci]
+
   api:
+    depends: [install]
     run: [npm, start]
 
   web:
-    depends: [api]
+    depends: [install]
     run: [npm, run, dev]
 ```
 
@@ -53,7 +57,7 @@ procs:
 | `name` | string | A label to show instead of the proc's key |
 | `name_short` | string | A shorter label, for where the full one will not fit |
 | `group` | list of strings | Groups this proc belongs to |
-| `depends` | list of strings | Procs that must be up before this one starts |
+| `depends` | list of strings | Procs that have to finish before this one starts |
 | `working_dir` | [path](#working_dir) | Where its commands run |
 | `panel` | `main` or `minor` | Which of the two lists on screen it is drawn in |
 | `log_size` | [size](#log_size) | How much of this proc's output to keep |
@@ -155,14 +159,21 @@ Modes stay in the order you write them.
 
 ## `depends`
 
-The procs that have to be up before this one starts. Each entry is another
-proc's key.
+The procs that have to **finish** before this one starts. Each entry is
+another proc's key.
 
 ```yaml
 web:
-  depends: [api, database]
+  depends: [install, migrate]
   run: [npm, run, dev]
 ```
+
+Finished means the run ended, whatever it ended with: a proc that failed still
+releases what waited on it. So `depends` is for the steps that end — `npm ci`,
+a migration, a build.
+
+A proc that never exits never finishes, and whatever depends on it never
+starts: name a dev server here and it waits for good.
 
 ---
 

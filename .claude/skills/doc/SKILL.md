@@ -1,18 +1,54 @@
 ---
 name: doc
-description: Write or repair doc comments on a named Rust item, file or module in this repo, in the house style — why and not what, terse, English. Use when asked to document a type, trait, function, field, const or module, or when a doc has gone stale.
+description: Write or repair the docs of this repo — doc comments on a named Rust item, file or module, or a Markdown file like README.md or CONFIG.md — in the house style: why and not what, terse, English. Use when asked to document a type, trait, function, field, const or module, to write or improve one of the Markdown docs, or when a doc has gone stale.
 ---
 
 # Documenting
 
-`/doc <target>` — a path (`src/log/chunk.rs`), a type or function name
-(`LogReader`, `copy_region`), or a module (`log`). With no target, ask which
-one and stop; do not pick.
+`/doc <target>` — a path (`src/log/chunk.rs`, `README.md`), a type or function
+name (`LogReader`, `copy_region`), or a module (`log`). With no target, ask
+which one and stop; do not pick.
 
-The deliverable is doc comments on that target and the items inside it.
-Nothing else in the file changes.
+The deliverable is the docs on that target and nothing else. Code never
+changes — see §8.
 
-## What a doc is for here
+## Who is reading
+
+Two kinds of doc live here, and they are written for two different people.
+
+**Development docs** — doc comments, `ARCHITECTURE.md`, `AGENTS.md`. The
+reader is about to change the code. Everything below is about these.
+
+**User docs** — `README.md`, `CONFIG.md`. The reader downloaded a binary and
+wants it running; they will never open `src`. Three rules carry over — find
+the answer in the code and the history rather than guessing (§1), check every
+claim (§6), change no code (§8) — and §U replaces the rest.
+
+## U. User docs
+
+- **Write for someone running the thing, not building it.** What it does, how
+  to install it, how to run it, what the screen means, every flag and key.
+  Contributor material — building from a checkout, the crate's layout, the
+  house rules — stays out: it lives in `ARCHITECTURE.md` and `AGENTS.md`, and
+  a user doc that hands it to the reader reads as an invitation to send
+  patches. This repo does not want one.
+- **Say why only where it changes what the reader does.** "A `Copy` type
+  holding loose parts" is for the code; a user wants the consequence — what it
+  costs them, what they have to do about it. A design justification nobody
+  asked for is the first thing to cut.
+- **Sound like a person.** Short sentences, second person, contractions where
+  they fall naturally. Read a paragraph aloud: if nobody would say it, rewrite
+  it.
+- **Show, then explain.** A config block and a command line carry more than a
+  paragraph about them. Cut the paragraph, not the block.
+- **Terse is about prose, not information.** The tables of keys, flags and
+  defaults stay complete; it is the sentences around them that shrink.
+- **Everything still has to be true.** A README says what the binary does
+  today: check flags against `--help`, keys and defaults against the source,
+  and paths against the code that builds them. §6 is not relaxed because the
+  reader is not a developer.
+
+## What a code doc is for here
 
 The signature already says what the thing is. A doc earns its place by saying
 what a reader cannot recover by reading: what was tried, what it cost, what
@@ -151,6 +187,10 @@ cargo clippy --all-targets      # clean, not quiet
 cargo test
 cargo doc --no-deps             # broken intra-doc links; this style invites them
 ```
+
+A Markdown pass changes no code, so these are not what it is checked by:
+verify the claims instead — `--help` for the flags, the constants for the
+defaults, the source for the keys — and check the links resolve.
 
 Then report short: what was documented, what was left undocumented for want of
 a reason, and anything found broken and left alone. Do not paste the docs back
