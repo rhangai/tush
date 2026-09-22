@@ -9,6 +9,7 @@ use crossterm::{
 };
 use ratatui::DefaultTerminal;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     app::AppUnitKey,
@@ -53,7 +54,17 @@ impl<C: ViewClient> Ui<C> {
     /// The terminal is restored whatever the loop did, error path included —
     /// which is why the result is held rather than `?`-ed. A failure that
     /// leaves raw mode on is a failure you cannot read the message of.
-    pub async fn run(client: C, refresh: Duration, theme: UiTheme) -> Result<(), UiError> {
+    ///
+    /// `cancel` is the other way out, and it has to come through the loop
+    /// rather than end the process: everything that gives the terminal back
+    /// is below this line, and a signal that kills us here leaves a shell in
+    /// raw mode looking at the alternate screen.
+    pub async fn run(
+        client: C,
+        refresh: Duration,
+        theme: UiTheme,
+        cancel: CancellationToken,
+    ) -> Result<(), UiError> {
         let mut ui = Self {
             client,
             render: UiRender::new(theme),
@@ -65,7 +76,7 @@ impl<C: ViewClient> Ui<C> {
         // it, and copying a line takes the terminal's override, `Shift` in
         // nearly all of them.
         let mouse = execute!(std::io::stdout(), EnableMouseCapture);
-        let result = ui.main_loop(&mut terminal, refresh).await;
+        let result = ui.main_loop(&mut terminal, refresh, cancel).await;
         if mouse.is_ok() {
             let _ = execute!(std::io::stdout(), DisableMouseCapture);
         }
@@ -83,6 +94,7 @@ impl<C: ViewClient> Ui<C> {
         &mut self,
         terminal: &mut DefaultTerminal,
         refresh: Duration,
+        cancel: CancellationToken,
     ) -> Result<(), UiError> {
         let mut events = EventStream::new();
         let mut ticks = tokio::time::interval(refresh);
@@ -99,6 +111,9 @@ impl<C: ViewClient> Ui<C> {
                 .map_err(UiError::DrawError)?;
             tokio::select! {
                 _ = ticks.tick() => {}
+                // Whoever wants us gone is waiting on the process, so the
+                // frame in flight is not worth finishing.
+                _ = cancel.cancelled() => break,
                 event = events.next() => match event {
                     Some(event) => self.handle(event.map_err(UiError::EventError)?),
                     // The terminal's input ended under us — a closed pty,
