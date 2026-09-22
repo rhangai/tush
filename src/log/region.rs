@@ -60,8 +60,10 @@ pub struct LogRegion {
     /// unit the region is cut from, not to the screen: turning the colour off
     /// is the screen's business and does not change where a line ends.
     ///
-    /// Defaults to on when a region arrives without it, so the hand written
-    /// query that [`log`](crate::server) answers still means what it used to.
+    /// Over a socket the asking end does not settle it: a region that arrives
+    /// without it defaults to on, and the server overwrites it with what the
+    /// proc was declared with before cutting anything. What comes back says
+    /// which it was.
     #[serde(default = "parse_ansi_default")]
     pub parse_ansi: bool,
 }

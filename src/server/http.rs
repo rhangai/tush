@@ -110,6 +110,15 @@ async fn log(
     let Some(key) = key(&state, &unit) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    // Whatever the query said about reading escape sequences is overwritten
+    // by what the proc was declared with: it is the unit's property and the
+    // session is what read the config, so a client asking cannot be more
+    // right than the answer already here. The region that goes back carries
+    // what was actually used.
+    let Ok(entry) = state.app().unit_map().entry(key) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let region = region.with_parse_ansi(entry.settings().parse_ansi);
     let drawn = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
