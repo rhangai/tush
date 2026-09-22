@@ -1,0 +1,141 @@
+# Cuts a release by hand: computes the next version from the conventional
+# commits, writes the changelog, tags, builds the binary and publishes it.
+#
+# The binary is built with cargo-zigbuild against glibc 2.17 rather than the
+# runner's own glibc, so it runs on distributions far older than ubuntu-latest.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0). Empty = bump from the commits."
+        required: false
+        type: string
+      dry_run:
+        description: "Build and show the changelog, but do not push or publish."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  TARGET: x86_64-unknown-linux-gnu
+  GLIBC: "2.17"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # GitHub already keeps workflow_dispatch to write access; this narrows it
+      # to the maintainers. Asking for the role rather than matching a name so
+      # the list lives in the repo settings and not in here.
+      - name: Only maintainers cut releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          # .permission would say "write" for a maintainer too; .role_name is
+          # the one that tells them apart.
+          role="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
+            --jq .role_name)"
+          echo "$ACTOR: $role"
+          case "$role" in
+            admin|maintain) ;;
+            *) echo "::error::$ACTOR cannot cut a release"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,git-cliff
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version="$(git cliff --bumped-version)"
+          fi
+          version="${version#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version"
+
+      - name: Write changelog
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git cliff --tag "$TAG" -o CHANGELOG.md
+          git cliff --tag "$TAG" --unreleased --strip all -o RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Bump Cargo.toml
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i "0,/^version = .*/s//version = \"$VERSION\"/" Cargo.toml
+          cargo update --workspace
+          grep -m1 '^version' Cargo.toml
+
+      - name: Build
+        run: cargo zigbuild --locked --release --target "$TARGET.$GLIBC"
+
+      # The whole point of zigbuild here is the glibc floor, so check it holds
+      # instead of trusting the flag.
+      - name: Check the glibc floor
+        run: |
+          max="$(objdump -T "target/$TARGET/release/tush" \
+            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          echo "highest required symbol version: $max"
+          top="$(printf '%s\n' "$max" "GLIBC_$GLIBC" | sort -uV | tail -1)"
+          [ "$top" = "GLIBC_$GLIBC" ] || { echo "needs more than GLIBC_$GLIBC"; exit 1; }
+
+      - name: Package
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p dist
+          name="tush-$TAG-$TARGET.tar.gz"
+          tar -czf "dist/$name" -C "target/$TARGET/release" tush
+          (cd dist && sha256sum "$name" > "$name.sha256")
+
+      - name: Commit, tag and publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md Cargo.toml Cargo.lock
+          git commit -m "chore(release): $TAG"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "HEAD:${{ github.ref_name }}" "$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file RELEASE_NOTES.md \
+            dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tush-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-gnu
+          path: dist/*
