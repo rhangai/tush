@@ -23,7 +23,7 @@ pub enum ProcessError {
 /// What supervising one run can fail with — so far, only the process itself.
 #[derive(thiserror::Error, Debug)]
 pub enum RunnerError {
-    #[error("Error {0}")]
+    #[error("{0}")]
     Process(#[from] ProcessError),
 }
 
@@ -31,22 +31,22 @@ pub enum RunnerError {
 /// the run underneath.
 #[derive(Debug, thiserror::Error)]
 pub enum UnitError {
-    #[error("unit not found")]
+    #[error("a command with no program in it")]
     Invalid,
     #[error("unit already started")]
     AlreadyStarted,
-    #[error("unit not found")]
+    #[error("{0}")]
     Runner(RunnerError),
 }
 
 /// What takes the screen down: the terminal, never the session behind it.
 #[derive(Debug, thiserror::Error)]
 pub enum UiError {
-    #[error("unit not found")]
+    #[error("could not draw to the terminal: {0}")]
     DrawError(std::io::Error),
-    #[error("unit not found")]
+    #[error("could not read from the terminal: {0}")]
     EventError(std::io::Error),
-    #[error("unit not found")]
+    #[error("the screen stopped for a reason it did not name")]
     Unknown,
 }
 
@@ -66,21 +66,19 @@ pub enum AppConfigError {
     RunAndModes(SmallStr),
     /// A proc or a group is named with a character a command line needs for
     /// itself.
-    #[error(
-        "`{name}` contains `{character}`, which a command line needs to tell a group from a proc"
-    )]
+    #[error("`{name}` contains reserved `{character}`")]
     ReservedCharacter { name: SmallStr, character: char },
     /// A proc depends on a name that no proc is declared under.
     #[error("`{proc}` depends on `{depends}`, which is not a proc")]
     UnknownDependency { proc: SmallStr, depends: SmallStr },
     /// Procs that wait on each other in a circle, so none of them can be
     /// first. A cycle of one is a proc that depends on itself.
-    #[error("{} depend on each other in a circle", HelperQuoted(.0))]
+    #[error("{} depend on each other in a circle", helper::Quoted(.0))]
     Cycle(Vec<SmallStr>),
     /// Every problem one pass over the config found, because a config with
     /// three mistakes in it is about to be fixed and one mistake per run is
     /// three runs of the same discovery.
-    #[error("{}", HelperLines(.0, "there were problems with the configuration:"))]
+    #[error("{}", helper::Lines(.0, "there were problems with the configuration:"))]
     Errors(Vec<AppConfigError>),
 }
 
@@ -90,47 +88,13 @@ pub enum AppConfigError {
 /// the time there is a session to address, those questions are answered.
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {
-    #[error("key `{0}` does not exist")]
-    InvalidKey(SmallStr),
     /// A key no unit was declared under — a mistake in a config or a command
     /// and not a state a unit can be in.
     #[error("unit not found")]
     NotFound,
     /// The unit was found and would not start.
-    #[error("{0}")]
+    #[error("could not start the unit: {0}")]
     UnitStart(UnitError),
-}
-
-struct HelperQuoted<'a, T>(&'a T);
-impl<'a, T> std::fmt::Display for HelperQuoted<'a, T>
-where
-    &'a T: IntoIterator,
-    <&'a T as IntoIterator>::Item: std::fmt::Display,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, item) in self.0.into_iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "`{item}`")?;
-        }
-        Ok(())
-    }
-}
-
-struct HelperLines<'a, T>(&'a T, &'a str);
-impl<'a, T> std::fmt::Display for HelperLines<'a, T>
-where
-    &'a T: IntoIterator,
-    <&'a T as IntoIterator>::Item: std::fmt::Display,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.1)?;
-        for error in self.0 {
-            write!(f, "\n  - {error}")?;
-        }
-        Ok(())
-    }
 }
 
 /// What stops a server from listening.
@@ -165,4 +129,47 @@ pub enum ViewSocketError {
     Status(u16),
     #[error("could not read what the session said: {0}")]
     Body(#[from] serde_json::Error),
+}
+
+/// What an `#[error]` needs and `std::fmt` does not give it.
+///
+/// A module so the names can be what they are — `helper::Quoted` reads at the
+/// attribute that uses it, where a `HelperQuoted` only said twice where it
+/// came from.
+mod helper {
+    /// A list, each item in backticks: ``a`, `b``.
+    pub struct Quoted<'a, T>(pub &'a T);
+
+    impl<'a, T> std::fmt::Display for Quoted<'a, T>
+    where
+        &'a T: IntoIterator,
+        <&'a T as IntoIterator>::Item: std::fmt::Display,
+    {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            for (i, item) in self.0.into_iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "`{item}`")?;
+            }
+            Ok(())
+        }
+    }
+
+    /// A heading, then one indented line per item.
+    pub struct Lines<'a, T>(pub &'a T, pub &'a str);
+
+    impl<'a, T> std::fmt::Display for Lines<'a, T>
+    where
+        &'a T: IntoIterator,
+        <&'a T as IntoIterator>::Item: std::fmt::Display,
+    {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.1)?;
+            for error in self.0 {
+                write!(f, "\n  - {error}")?;
+            }
+            Ok(())
+        }
+    }
 }
