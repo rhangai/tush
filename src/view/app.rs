@@ -75,7 +75,6 @@ impl ViewApp {
                     mode: None,
                     mode_short: None,
                     state: RunnerState::Stopped,
-                    parse_ansi: settings.parse_ansi,
                     panel: settings.panel,
                 })
             })
@@ -156,7 +155,7 @@ impl ViewClient for ViewApp {
                     self.log = None;
                     return;
                 };
-                entry.unit().log_reader_into(&mut self.reader);
+                entry.log_reader_into(&mut self.reader);
                 self.log = Some(AppLog {
                     unit_key: key,
                     region,

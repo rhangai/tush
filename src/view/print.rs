@@ -53,10 +53,10 @@ impl ViewPrinter {
         let units = unit_map
             .keys()
             .filter_map(|key| {
-                let unit = unit_map.entry(key).ok()?.unit();
+                let entry = unit_map.entry(key).ok()?;
                 Some(ViewPrinterUnit {
-                    name: unit.name(),
-                    reader: unit.log_reader(),
+                    name: entry.unit().name(),
+                    reader: entry.log_reader(),
                     at_line_start: true,
                 })
             })

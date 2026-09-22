@@ -28,9 +28,6 @@ use crate::log::log::LogWriterId;
 ///
 /// Both pairs are half open, and both are counted from the edge the log grows
 /// from.
-///
-/// It also carries [`parse_ansi`](LogRegion::parse_ansi), because what counts
-/// as a column depends on it and nothing else here could answer that.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LogRegion {
     /// The first line, counted back from the newest: `0` is the last line,
@@ -52,25 +49,6 @@ pub struct LogRegion {
     pub column_start: usize,
     /// One column past the last.
     pub column_end: usize,
-    /// Whether an escape sequence is read as one, and so takes no columns.
-    ///
-    /// Off, a `\x1b[31m` is four columns of text like any other and comes back
-    /// in the line for whatever draws it to show — which is what somebody
-    /// looking at what a proc actually writes asked for. It belongs to the
-    /// unit the region is cut from, not to the screen: turning the colour off
-    /// is the screen's business and does not change where a line ends.
-    ///
-    /// Over a socket the asking end does not settle it: a region that arrives
-    /// without it defaults to on, and the server overwrites it with what the
-    /// proc was declared with before cutting anything. What comes back says
-    /// which it was.
-    #[serde(default = "parse_ansi_default")]
-    pub parse_ansi: bool,
-}
-
-/// Escape sequences are read unless a region says otherwise.
-fn parse_ansi_default() -> bool {
-    true
 }
 
 impl LogRegion {
@@ -89,15 +67,7 @@ impl LogRegion {
             line_end: lines.end,
             column_start: columns.start,
             column_end: columns.end,
-            parse_ansi: parse_ansi_default(),
         }
-    }
-
-    /// The same rectangle, reading escape sequences or not — see
-    /// [`parse_ansi`](LogRegion::parse_ansi).
-    pub fn with_parse_ansi(mut self, parse_ansi: bool) -> Self {
-        self.parse_ansi = parse_ansi;
-        self
     }
 }
 
@@ -282,7 +252,7 @@ pub(super) fn clip_into(line: &mut LogLine, text: &str, clip: &mut LogClip, regi
     for (index, character) in text.char_indices() {
         // Unparsed, a sequence is text: every character counts a column, the
         // window falls where the bytes fall, and nothing is styled.
-        if region.parse_ansi {
+        if clip.parse_ansi {
             let mut perform = LogClipPerform {
                 shown: None,
                 style: &mut clip.style,
@@ -332,8 +302,14 @@ pub(super) fn clip_into(line: &mut LogLine, text: &str, clip: &mut LogClip, regi
 ///
 /// Reset per line by the caller, so nothing an unterminated sequence does
 /// reaches the line after it.
-#[derive(Default)]
 pub(super) struct LogClip {
+    /// Whether escapes are read as escapes, which the reader was told when it
+    /// was put on its log.
+    ///
+    /// Held here and not beside the region, because it is a property of the
+    /// walk rather than of the rectangle: unset, a sequence is text like any
+    /// other and nothing is styled.
+    parse_ansi: bool,
     /// The column the next character lands in. A sequence's bytes take none.
     column: usize,
     /// Where the walk is in the escape grammar. Left untouched for a region
@@ -350,6 +326,19 @@ pub(super) struct LogClip {
     /// — a colour set twice, a reset of what was already default — does not
     /// open a run saying the same thing.
     written: LogStyle,
+}
+
+impl LogClip {
+    /// A walk at the start of a line, reading escapes or not.
+    pub(super) fn new(parse_ansi: bool) -> Self {
+        Self {
+            parse_ansi,
+            column: 0,
+            parser: Parser::default(),
+            style: LogStyle::default(),
+            written: LogStyle::default(),
+        }
+    }
 }
 
 /// What the bytes just fed turned out to be: a character the screen shows, or

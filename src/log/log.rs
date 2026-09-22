@@ -478,10 +478,11 @@ impl Log {
     /// It takes its own copy of the chunks, so any number may exist and none
     /// of them holds the log open — a view left behind stops changing rather
     /// than keeping a finished unit's memory alive.
-    pub fn reader(&self) -> LogReader {
+    pub fn reader(&self, settings: LogReaderSettings) -> LogReader {
         LogReader::new(
             Arc::downgrade(&self.inner),
             self.inner.history.lock().chunks.capacity(),
+            settings,
         )
     }
 
@@ -495,10 +496,11 @@ impl Log {
     /// The reader forgets the log it was on entirely — see
     /// [`reset`](LogReader::reset). It keeps its memory, so one whose ring is
     /// shorter than this log's follows a shorter tail rather than growing.
-    pub fn reader_into(&self, reader: &mut LogReader) {
+    pub fn reader_into(&self, reader: &mut LogReader, settings: LogReaderSettings) {
         reader.reset(
             Arc::downgrade(&self.inner),
             self.inner.history.lock().chunks.capacity(),
+            settings,
         );
     }
 
@@ -883,6 +885,29 @@ impl Partials {
 /// A ring *shorter* than the log's is sound and simply a shorter tail, since
 /// each sync still lands on what came before it — but see what
 /// [`sync`](LogReader::sync) then returns.
+/// What a reader is told about the log it is put on.
+///
+/// A struct for one `bool` because it is passed through four signatures to
+/// get here, and `reader(true)` at the end of them says nothing about which
+/// `true` it is. It travels with the reader rather than with a region: every
+/// view of one proc's output wants the same answer, so what a column is
+/// cannot depend on who asked for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogReaderSettings {
+    /// Whether escape sequences are read as escapes — and so take no columns
+    /// and come back as [`LogLine::styles`](crate::log::LogLine) rather than
+    /// as text.
+    pub parse_ansi: bool,
+}
+
+impl Default for LogReaderSettings {
+    /// Written out because a derived one would stop reading escapes, and a
+    /// reader nobody said anything to should read what a terminal would.
+    fn default() -> Self {
+        Self { parse_ansi: true }
+    }
+}
+
 pub struct LogReader {
     /// The log to sync from, or `None` for a reader that has not been put on
     /// one — [`empty`](LogReader::empty) is where those come from, and
@@ -893,6 +918,8 @@ pub struct LogReader {
     /// view of a process that has ended. The two cases read the same from
     /// here on: a sync that does nothing over the chunks already copied.
     inner: Option<Weak<LogInner>>,
+    /// What it was told when it was put on its log.
+    settings: LogReaderSettings,
     /// The copy, and every byte of it: the chunks hold their bytes inline, so
     /// this one `Box<[LogReaderChunk]>` is the reader's whole storage. Held
     /// to the log's capacity and built at whatever size the reader was asked
@@ -930,9 +957,14 @@ impl LogReader {
     /// every slot at once and the chunks carry their bytes inside them, so a
     /// reader is two allocations — the ring and the partial slots — and
     /// nothing it does afterwards adds one.
-    fn new_inner(inner: Option<Weak<LogInner>>, capacity: usize) -> Self {
+    fn new_inner(
+        inner: Option<Weak<LogInner>>,
+        capacity: usize,
+        settings: LogReaderSettings,
+    ) -> Self {
         Self {
             inner,
+            settings,
             chunks: LocalRingBuffer::new_with(capacity, LogReaderChunk::new),
             seen: 0,
             partials: (0..PARTIALS_MAX).map(|_| LogReaderPartial::new()).collect(),
@@ -941,8 +973,8 @@ impl LogReader {
         }
     }
     /// Build a reader for `inner`, holding `capacity` chunks of its own.
-    fn new(inner: Weak<LogInner>, capacity: usize) -> Self {
-        Self::new_inner(Some(inner), capacity)
+    fn new(inner: Weak<LogInner>, capacity: usize, settings: LogReaderSettings) -> Self {
+        Self::new_inner(Some(inner), capacity, settings)
     }
 
     /// A reader of `capacity` chunks that is not on a log yet.
@@ -962,7 +994,7 @@ impl LogReader {
     ///
     /// [`log_capacity`]: crate::app::AppUnitMap::log_capacity
     pub fn empty(capacity: usize) -> Self {
-        Self::new_inner(None, capacity)
+        Self::new_inner(None, capacity, LogReaderSettings::default())
     }
 
     /// Whether it is on no log at all — `true` straight out of
@@ -990,13 +1022,14 @@ impl LogReader {
     /// everything it counted was counted against that same log and still
     /// means what it said: a pane returning to a unit shows what it had
     /// instead of copying the history again.
-    fn reset(&mut self, inner: Weak<LogInner>, capacity: usize) {
+    fn reset(&mut self, inner: Weak<LogInner>, capacity: usize, settings: LogReaderSettings) {
         // Optimization when the inner is already the same
         if self.inner.as_ref().is_some_and(|i| i.ptr_eq(&inner)) {
             self.chunks.set_capacity(capacity);
             return;
         }
         self.inner = Some(inner);
+        self.settings = settings;
         self.chunks.clear();
         self.chunks.set_capacity(capacity);
         self.seen = 0;
@@ -1160,7 +1193,7 @@ impl LogReader {
         // pieces because a line the chunk size split arrives as several, and
         // the window is over the line rather than over any one of them — see
         // [`LogClip`].
-        let mut clip = LogClip::default();
+        let mut clip = LogClip::new(self.settings.parse_ansi);
         let mut open = false;
 
         // No ceiling on the walk: it stops as soon as it has counted back
@@ -1177,7 +1210,7 @@ impl LogReader {
             clip_into(&mut out[lines], piece.as_str(), &mut clip, region);
             if piece.newline() {
                 lines += 1;
-                clip = LogClip::default();
+                clip = LogClip::new(self.settings.parse_ansi);
                 open = false;
             }
         }
@@ -1194,7 +1227,7 @@ impl LogReader {
         if region.line_start < nearest {
             for partial in &self.partials[held - nearest..held - region.line_start] {
                 open_line(out, lines, partial.writer);
-                let mut clip = LogClip::default();
+                let mut clip = LogClip::new(self.settings.parse_ansi);
                 clip_into(&mut out[lines], partial.text.as_str(), &mut clip, region);
                 lines += 1;
             }
@@ -1609,7 +1642,7 @@ mod test {
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write(b"um\ndois\ntres\n");
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
         assert_eq!(render(&reader), "um\ndois\ntres\n");
     }
@@ -1624,7 +1657,7 @@ mod test {
         let longa = "L".repeat(LOG_CHUNK_SIZE + 40);
         buffer.write(format!("{longa}\ndepois\n").as_bytes());
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         // More pieces than lines, and still the same text.
@@ -1650,7 +1683,7 @@ mod test {
         curto.write(b"do outro\n");
         longo.write(b"FIM\n");
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let saida = render(&reader);
@@ -1676,7 +1709,7 @@ mod test {
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write(&"m".repeat(LOG_LINE_SIZE + 8).into_bytes());
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
         assert!(!reader.is_empty(), "nothing reached the log");
         assert!(
@@ -1697,7 +1730,7 @@ mod test {
         // Four lines pack two to a chunk.
         buffer.write(b"um\ndois\ntres\nquatro\n");
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let seen: Vec<_> = reader
@@ -1722,7 +1755,12 @@ mod test {
         let log = Log::new(16);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write(b"algo\n");
-        assert_eq!(log.reader().iter_unsync().count(), 0);
+        assert_eq!(
+            log.reader(LogReaderSettings::default())
+                .iter_unsync()
+                .count(),
+            0
+        );
     }
 
     /// And `iter_sync` fetches first, so it never needs syncing by hand.
@@ -1732,7 +1770,7 @@ mod test {
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write(b"um\ndois\n");
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         assert_eq!(reader.iter_sync().count(), 2, "it walked without fetching");
 
         // And it keeps up without being asked again.
@@ -1744,7 +1782,7 @@ mod test {
     #[test]
     fn a_new_reader_is_empty_and_behind() {
         let log = log_with(16, 4);
-        let reader = log.reader();
+        let reader = log.reader(LogReaderSettings::default());
         assert_eq!(reader.seen(), 0);
         assert!(texts(&reader).is_empty(), "it looked before being asked");
     }
@@ -1754,7 +1792,7 @@ mod test {
     #[test]
     fn the_first_sync_takes_what_was_already_there() {
         let log = log_with(16, 4);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
 
         // Two lines per chunk, so four lines is two chunks.
         assert_eq!(reader.sync(), 2);
@@ -1767,7 +1805,7 @@ mod test {
     #[test]
     fn syncing_twice_over_takes_nothing_the_second_time() {
         let log = log_with(16, 4);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         assert_eq!(reader.sync(), 0);
@@ -1779,7 +1817,7 @@ mod test {
     #[test]
     fn a_later_sync_takes_only_what_arrived_since() {
         let log = log_with(16, 8);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         assert_eq!(reader.sync(), 4);
 
         let mut buffer = LogBuffer::new(log.writer());
@@ -1794,7 +1832,7 @@ mod test {
     #[test]
     fn caught_up_it_mirrors_the_log() {
         let log = log_with(8, 6);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         // Six lines is three chunks, all of which fit — so what it holds is
@@ -1812,7 +1850,7 @@ mod test {
     #[test]
     fn falling_far_behind_leaves_it_mirroring_the_newest() {
         let log = Log::new(4);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
 
         let mut buffer = LogBuffer::new(log.writer());
         // Far more lines than the ring can hold, in one burst.
@@ -1837,7 +1875,7 @@ mod test {
     fn a_reused_reader_picks_up_the_log_it_is_given() {
         let mut reader = LogReader::empty(16);
         let log = log_with(8, 6);
-        log.reader_into(&mut reader);
+        log.reader_into(&mut reader, LogReaderSettings::default());
         reader.sync();
 
         assert_eq!(
@@ -1859,9 +1897,9 @@ mod test {
         let mut outro = LogBuffer::new(dois.writer());
         outro.write(b"bbb\n");
 
-        let mut reader = um.reader();
+        let mut reader = um.reader(LogReaderSettings::default());
         reader.sync();
-        let mut probe = dois.reader();
+        let mut probe = dois.reader(LogReaderSettings::default());
         probe.sync();
         assert_eq!(
             reader.version(),
@@ -1869,7 +1907,7 @@ mod test {
             "the premise: the two logs are at the same version"
         );
 
-        dois.reader_into(&mut reader);
+        dois.reader_into(&mut reader, LogReaderSettings::default());
         assert_eq!(reader.sync(), 1, "it took the new log to be unchanged");
         assert_eq!(render(&reader), "bbb\n");
     }
@@ -1880,11 +1918,11 @@ mod test {
     #[test]
     fn a_reused_reader_takes_the_logs_size_and_keeps_its_own() {
         let grande = Log::new(16);
-        let mut reader = grande.reader();
+        let mut reader = grande.reader(LogReaderSettings::default());
         assert_eq!(reader.capacity(), 16);
 
         let pequeno = Log::new(4);
-        pequeno.reader_into(&mut reader);
+        pequeno.reader_into(&mut reader, LogReaderSettings::default());
         assert_eq!(reader.capacity(), 4);
         assert_eq!(reader.chunks().max_capacity(), 16, "it gave its slots back");
 
@@ -1895,7 +1933,7 @@ mod test {
 
         // Against a reader that only ever saw this log: same contents means
         // nothing of the old one survived and there is no gap in the new.
-        let mut fresh = pequeno.reader();
+        let mut fresh = pequeno.reader(LogReaderSettings::default());
         fresh.sync();
         assert_eq!(reader.len(), 4);
         assert_eq!(render(&reader), render(&fresh));
@@ -1911,7 +1949,7 @@ mod test {
         um.write(b"aa\nbb\n");
         dois.write(b"cccc\n");
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let chunks: Vec<_> = reader.chunks().iter().filter(|c| !c.is_empty()).collect();
@@ -1928,7 +1966,7 @@ mod test {
     #[test]
     fn a_reader_does_not_keep_the_log_alive() {
         let log = log_with(16, 4);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
         let before = reader.len();
 
@@ -1942,7 +1980,7 @@ mod test {
     #[test]
     fn the_whole_reader_is_one_run_of_memory() {
         let log = log_with(8, 32);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
         assert_eq!(reader.len(), 8, "the ring should be full for this");
 
@@ -2007,33 +2045,12 @@ mod test {
         out
     }
 
-    /// [`columns`] with the escapes left unread, so they count as the text
-    /// they are.
-    fn raw_columns(reader: &LogReader, lines: Range<usize>, columns: Range<usize>) -> Vec<String> {
-        region_lines_raw(reader, lines, columns)
-            .into_iter()
-            .map(|line| line.text)
-            .collect()
-    }
-
-    /// [`region_lines`] with the escapes left unread.
-    fn region_lines_raw(
-        reader: &LogReader,
-        lines: Range<usize>,
-        columns: Range<usize>,
-    ) -> Vec<LogLine> {
-        let mut out = Vec::new();
-        let region = LogRegion::new(lines, columns).with_parse_ansi(false);
-        reader.copy_region(region, &mut out);
-        out
-    }
-
     /// The lines are counted back from the newest, and come out oldest first
     /// — the order a pane draws them in.
     #[test]
     fn copy_region_takes_the_lines_it_is_given() {
         let log = log_with(64, 10);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         assert_eq!(region(&reader, 0..3), ["linha 7", "linha 8", "linha 9"]);
@@ -2046,7 +2063,7 @@ mod test {
     #[test]
     fn copy_region_is_the_tail_walk_with_the_columns_taken_off() {
         let log = log_with(64, 10);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         assert_eq!(region(&reader, 1..5), window(&reader, 1..5, usize::MAX));
@@ -2057,7 +2074,7 @@ mod test {
     #[test]
     fn copy_region_windows_the_columns() {
         let log = log_with(64, 2);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         assert_eq!(columns(&reader, 0..2, 0..5), ["linha", "linha"]);
@@ -2072,7 +2089,7 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("coração\n".as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         assert_eq!(columns(&reader, 0..1, 0..4), ["cora"]);
@@ -2087,7 +2104,7 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("\u{1b}[31mvermelho\u{1b}[0m normal\n".as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let line = &region_lines(&reader, 0..1, 0..10)[0];
@@ -2120,10 +2137,12 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("\u{1b}[31mvermelho\u{1b}[0m normal\n".as_bytes());
-        let mut reader = log.reader();
+        // The reader is what settles it, and it was put on this log without
+        // being told to read escapes.
+        let mut reader = log.reader(LogReaderSettings { parse_ansi: false });
         reader.sync();
 
-        let line = &region_lines_raw(&reader, 0..1, 0..10)[0];
+        let line = &region_lines(&reader, 0..1, 0..10)[0];
         assert_eq!(line.text, "\u{1b}[31mvermel");
         assert!(line.styles.is_empty(), "nothing was read to be styled");
     }
@@ -2135,10 +2154,10 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("\u{1b}[31mvermelho\n".as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings { parse_ansi: false });
         reader.sync();
 
-        assert_eq!(raw_columns(&reader, 0..1, 2..6), ["1mve"]);
+        assert_eq!(columns(&reader, 0..1, 2..6), ["1mve"]);
     }
 
     /// A window ending inside the run a sequence opened keeps the run: the
@@ -2149,7 +2168,7 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("ab\u{1b}[1;32mcd\n".as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let line = &region_lines(&reader, 0..1, 0..3)[0];
@@ -2175,7 +2194,7 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("\u{1b}[31mabcdef\n".as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let line = &region_lines(&reader, 0..1, 3..6)[0];
@@ -2203,7 +2222,7 @@ mod test {
         let head = "a".repeat(LOG_CHUNK_SIZE - 2);
         let line = format!("{head}\u{1b}[31mbbb\n");
         buffer.write(line.as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let back = &region_lines(&reader, 0..1, 0..usize::MAX)[0];
@@ -2232,7 +2251,7 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("ab\u{1b}Pq#0;2\u{1b}\\cd\n".as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let line = &region_lines(&reader, 0..1, 0..usize::MAX)[0];
@@ -2247,7 +2266,7 @@ mod test {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("\u{1b}[31maberto\nseguinte\n".as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let lines = region_lines(&reader, 0..2, 0..4);
@@ -2267,7 +2286,7 @@ mod test {
             .map(|n| char::from(b'a' + (n % 26) as u8))
             .collect();
         buffer.write(format!("{longa}\n").as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         // Far past the first chunk, so only a later piece can answer it.
@@ -2287,7 +2306,7 @@ mod test {
         let wide = "z".repeat(4000);
         let text: String = (0..500).map(|_| format!("{wide}\n")).collect();
         buffer.write(text.as_bytes());
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let mut out = Vec::new();
@@ -2302,7 +2321,7 @@ mod test {
     #[test]
     fn a_region_past_the_oldest_line_is_empty() {
         let log = log_with(64, 4);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
         assert!(region(&reader, 10..20).is_empty());
     }
@@ -2312,7 +2331,7 @@ mod test {
     #[test]
     fn copy_region_refills_the_buffer_it_is_given() {
         let log = log_with(64, 10);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let mut out = Vec::new();
@@ -2331,7 +2350,7 @@ mod test {
     /// A reader holding `lines` numbered lines, all of them still in the ring.
     fn tail_reader(lines: usize) -> LogReader {
         let log = log_with(64, lines);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
         reader
     }
@@ -2368,7 +2387,7 @@ mod test {
     #[test]
     fn a_window_composes_with_the_syncing_walk() {
         let log = log_with(64, 6);
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
 
         // Never synced, so the unsynced walk has nothing while the syncing
         // one fetches first and then narrows.
@@ -2460,7 +2479,7 @@ mod test {
         let longa = "L".repeat(LOG_CHUNK_SIZE + 40);
         buffer.write(format!("antes\n{longa}\ndepois\n").as_bytes());
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         assert_eq!(
@@ -2480,7 +2499,7 @@ mod test {
         let longa = "L".repeat(LOG_CHUNK_SIZE * 3);
         buffer.write(format!("{longa}\n").as_bytes());
 
-        let mut reader = log.reader();
+        let mut reader = log.reader(LogReaderSettings::default());
         reader.sync();
 
         let cortada = window(&reader, 0..1, 2);

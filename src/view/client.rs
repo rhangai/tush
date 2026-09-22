@@ -39,12 +39,6 @@ pub struct ViewUnit {
     pub mode_short: Option<SmallStr>,
     /// Where its run was at the last sync.
     pub state: RunnerState,
-    /// Whether its escape sequences are read as escape sequences.
-    ///
-    /// On the unit because that is where the config puts it, and read where
-    /// the region is asked for: what it settles is what counts as a column,
-    /// which is the region's business rather than the pane's.
-    pub parse_ansi: bool,
     /// Which of the two lists it is drawn in.
     ///
     /// Carried rather than derived, because what decides it is the config and

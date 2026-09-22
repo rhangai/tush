@@ -11,7 +11,7 @@ use crate::{
     app::TARGET_SEPARATOR,
     config::{Config, ConfigPanel, ConfigProc},
     error::{AppConfigError, AppError},
-    log::Log,
+    log::{Log, LogReader, LogReaderSettings},
     unit::{Unit, UnitBehavior},
     util::{
         event::{EventDispatcher, EventListener},
@@ -94,6 +94,30 @@ impl AppUnitEntry {
     /// What it waits for, empty when that is nothing.
     pub fn dependencies(&self) -> &UnitKeyVec {
         &self.dependencies
+    }
+
+    /// A new reader over this proc's log.
+    ///
+    /// The one place the unit and what the config said about it are put
+    /// together: a caller that built the reader itself would have to pass
+    /// [`parse_ansi`](AppUnitSettings::parse_ansi) by hand, and passing the
+    /// wrong one is a screen quietly disagreeing with the file.
+    pub fn log_reader(&self) -> LogReader {
+        self.unit.log_reader(self.log_reader_settings())
+    }
+
+    /// [`log_reader`](AppUnitEntry::log_reader) into a reader that already
+    /// exists — see [`Log::reader_into`](crate::log::Log::reader_into).
+    pub fn log_reader_into(&self, reader: &mut LogReader) {
+        self.unit
+            .log_reader_into(reader, self.log_reader_settings());
+    }
+
+    /// What the config said, as a reader is told it.
+    fn log_reader_settings(&self) -> LogReaderSettings {
+        LogReaderSettings {
+            parse_ansi: self.settings.parse_ansi,
+        }
     }
 }
 

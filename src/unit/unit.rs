@@ -9,7 +9,7 @@ use crate::unit::behavior::UnitBehaviorContext;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
-    log::{Log, LogReader},
+    log::{Log, LogReader, LogReaderSettings},
     runner::{RunnerHandle, RunnerState},
     unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior},
 };
@@ -251,13 +251,18 @@ impl Unit {
     }
 
     /// A new reader over this unit's log.
-    pub fn log_reader(&self) -> LogReader {
-        self.log.reader()
+    /// A new reader over this unit's log.
+    ///
+    /// Told rather than remembered: the unit does not hold the settings, and
+    /// [`AppUnitEntry`](crate::app::AppUnitEntry) is where they are paired
+    /// with the unit they belong to.
+    pub fn log_reader(&self, settings: LogReaderSettings) -> LogReader {
+        self.log.reader(settings)
     }
 
     /// Put `reader` on this unit's log, in place of building one.
-    pub fn log_reader_into(&self, reader: &mut LogReader) {
-        self.log.reader_into(reader);
+    pub fn log_reader_into(&self, reader: &mut LogReader, settings: LogReaderSettings) {
+        self.log.reader_into(reader, settings);
     }
 }
 

@@ -103,7 +103,8 @@ pub use buffer::{LogBuffer, LogBufferAny, LogBufferWriter};
 
 #[allow(unused_imports)]
 pub use log::{
-    Log, LogReader, LogReaderIter, LogReaderRef, LogWriterId, LogWriterNotes, LogWriterRef,
+    Log, LogReader, LogReaderIter, LogReaderRef, LogReaderSettings, LogWriterId, LogWriterNotes,
+    LogWriterRef,
 };
 
 #[allow(unused_imports)]
