@@ -61,24 +61,27 @@ async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
     let unit_map = state.app().unit_map();
     let mut units: Vec<ViewUnit> = unit_map
         .keys()
-        .map(|unit_key| ViewUnit {
-            unit_key,
-            // Unreachable for the same reason as the state below: the keys
-            // came out of the map, which is what interned them.
-            key: unit_map
-                .key_str(unit_key)
-                .map(SmallStr::new)
-                .unwrap_or_default(),
-            name: unit_map.name(unit_key).unwrap_or_default(),
-            name_short: unit_map.name_short(unit_key).unwrap_or(None),
-            mode: unit_map.mode(unit_key).unwrap_or(None),
-            mode_short: unit_map.mode_short(unit_key).unwrap_or(None),
-            // Unreachable: the keys came out of the map. `Stopped` is what
-            // a unit with no handle reports anyway, so it is the answer that
-            // says the same thing rather than a `Default` invented for it.
-            state: unit_map.state(unit_key).unwrap_or(RunnerState::Stopped),
-            parse_ansi: unit_map.parse_ansi(unit_key),
-            panel: unit_map.panel(unit_key),
+        .map(|unit_key| {
+            let settings = unit_map.settings(unit_key).unwrap_or_default();
+            ViewUnit {
+                unit_key,
+                // Unreachable for the same reason as the state below: the keys
+                // came out of the map, which is what interned them.
+                key: unit_map
+                    .key_str(unit_key)
+                    .map(SmallStr::new)
+                    .unwrap_or_default(),
+                name: unit_map.name(unit_key).unwrap_or_default(),
+                name_short: unit_map.name_short(unit_key).unwrap_or(None),
+                mode: unit_map.mode(unit_key).unwrap_or(None),
+                mode_short: unit_map.mode_short(unit_key).unwrap_or(None),
+                // Unreachable: the keys came out of the map. `Stopped` is what
+                // a unit with no handle reports anyway, so it is the answer that
+                // says the same thing rather than a `Default` invented for it.
+                state: unit_map.state(unit_key).unwrap_or(RunnerState::Stopped),
+                parse_ansi: settings.parse_ansi,
+                panel: settings.panel,
+            }
         })
         .collect();
     units.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));

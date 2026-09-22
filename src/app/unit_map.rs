@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 use crate::{
     app::TARGET_SEPARATOR,
     config::{Config, ConfigPanel, ConfigProc},
-    error::{AppConfigError, AppError},
+    error::{AppConfigError, AppError, UnitError},
     log::{Log, LogReader},
     runner::RunnerState,
     unit::{Unit, UnitAction, UnitBehavior, UnitChoice, UnitEvent},
@@ -37,8 +37,8 @@ use crate::{
 pub struct AppUnitMap {
     /// The one interner every key in the session was minted against.
     interner: DefaultStringInterner,
-    /// The units, by key.
-    units: HashMap<AppUnitKey, Unit>,
+    /// Every proc of the config, by key.
+    units: HashMap<AppUnitKey, AppUnitEntry>,
     /// The one dispatcher every unit in the map was given a clone of, so a
     /// screen watches the session rather than one proc at a time.
     event_dispatcher: EventDispatcher,
@@ -47,25 +47,61 @@ pub struct AppUnitMap {
     log_capacity_max: usize,
     /// The whole `depends` relation, which is what orders a start.
     dependency_graph: DependencyGraph<AppUnitKey>,
-    /// What each unit depends on directly, answered once here because the
-    /// schedule asks it for every pending unit on every wake. Only units that
-    /// depend on something are in it.
-    dependencies: HashMap<AppUnitKey, UnitKeyVec>,
     /// The units declared under each group name, for addressing several at
     /// once.
+    ///
+    /// The one lookup that stays a map of its own: it is keyed by a group
+    /// name and not by a unit, so there is no [`AppUnit`] for it to sit in.
     groups: HashMap<SmallStr, UnitKeyVec>,
-    /// Which list each proc is drawn in, holding only the procs that are not
-    /// in the default one — an exception list, the way `dependencies` is.
-    panels: HashMap<AppUnitKey, ConfigPanel>,
-    /// The procs that read escape sequences differently from the session, on
-    /// the same terms as `panels`.
-    parse_ansi: HashMap<AppUnitKey, bool>,
-    /// What the session said, and so the answer for every proc not in
-    /// `parse_ansi`.
-    parse_ansi_session: bool,
 }
 
 type UnitKeyVec = SmallVec<[AppUnitKey; 16]>;
+
+/// One declared proc, as a running session holds it.
+///
+/// Everything the config settled about one proc, in the entry the unit itself
+/// is in. A map per setting is a parallel table to this one, and each needs
+/// the session default kept beside it to answer for the procs that said
+/// nothing; resolved once here, there is nothing left to fall back to.
+struct AppUnitEntry {
+    /// The unit itself. Private, and reached only through
+    /// [`with`](AppUnitMap::with), so it cannot escape the map.
+    unit: Unit,
+    /// What the config said about it that it does not itself act on.
+    settings: AppUnitSettings,
+    /// What it waits for, one edge out, flattened from the graph because the
+    /// schedule asks it for every pending unit on every wake. Empty for a
+    /// proc that depends on nothing.
+    dependencies: UnitKeyVec,
+}
+
+/// What the config said about a proc that the proc itself never acts on.
+///
+/// Handed out by value: it is two bytes, so a copy beats the borrow it would
+/// otherwise hold on the map — and handing out the [`AppUnit`] it sits in is
+/// not on, since that carries the unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppUnitSettings {
+    /// Which of the two lists on screen it is drawn in.
+    pub panel: ConfigPanel,
+    /// Whether its escape sequences are read as escape sequences.
+    pub parse_ansi: bool,
+}
+
+impl Default for AppUnitSettings {
+    /// What a proc that declared nothing gets from a session that said
+    /// nothing either.
+    ///
+    /// Written out because a derived one turns the escapes off. Only a key no
+    /// proc was declared under reaches it, which a caller building a row per
+    /// key never holds.
+    fn default() -> Self {
+        Self {
+            panel: ConfigPanel::Main,
+            parse_ansi: true,
+        }
+    }
+}
 
 /// How a unit is addressed once the config has been checked.
 ///
@@ -107,11 +143,10 @@ impl AppUnitMap {
         let dependency_graph = Self::build_dep_graph(&mut errors, &mut interner, config);
 
         let event_dispatcher = EventDispatcher::new();
-        let mut units: HashMap<AppUnitKey, Unit> = HashMap::with_capacity(config.procs.len());
+        let mut units: HashMap<AppUnitKey, AppUnitEntry> =
+            HashMap::with_capacity(config.procs.len());
         let mut log_capacity_max = 0;
         let mut groups: HashMap<SmallStr, UnitKeyVec> = HashMap::new();
-        let mut panels: HashMap<AppUnitKey, ConfigPanel> = HashMap::new();
-        let mut parse_ansi: HashMap<AppUnitKey, bool> = HashMap::new();
         let log_size_session = config.log_size();
         let parse_ansi_session = config.parse_ansi();
         for proc in &config.procs {
@@ -122,28 +157,25 @@ impl AppUnitMap {
             for group in &proc.groups {
                 groups.entry(group.clone()).or_default().push(key);
             }
-            if proc.panel != ConfigPanel::default() {
-                panels.insert(key, proc.panel);
-            }
-            if proc.parse_ansi(parse_ansi_session) != parse_ansi_session {
-                parse_ansi.insert(key, !parse_ansi_session);
-            }
 
             let log_size = proc.log_size(log_size_session);
             let mut unit = Unit::new(Self::build_behavior(proc), log_size);
             unit.set_event_dispatcher(event_dispatcher.clone());
-            units.insert(key, unit);
+            units.insert(
+                key,
+                AppUnitEntry {
+                    unit,
+                    settings: AppUnitSettings {
+                        panel: proc.panel,
+                        parse_ansi: proc.parse_ansi(parse_ansi_session),
+                    },
+                    dependencies: dependency_graph.dependencies_copy(key).collect(),
+                },
+            );
             log_capacity_max = log_capacity_max.max(Log::capacity_for_bytes(log_size));
         }
         if !errors.is_empty() {
             return Err(AppConfigError::Errors(errors));
-        }
-        let mut dependencies: HashMap<AppUnitKey, UnitKeyVec> = HashMap::new();
-        for key in units.keys() {
-            let deps: UnitKeyVec = dependency_graph.dependencies_copy(*key).collect();
-            if !deps.is_empty() {
-                dependencies.insert(*key, deps);
-            }
         }
         Ok(Self {
             interner,
@@ -151,11 +183,7 @@ impl AppUnitMap {
             event_dispatcher,
             log_capacity_max,
             dependency_graph,
-            dependencies,
             groups,
-            panels,
-            parse_ansi,
-            parse_ansi_session,
         })
     }
 
@@ -302,17 +330,13 @@ impl AppUnitMap {
     /// [`ensure_started`](AppUnitMap::ensure_started) one pulled in as a
     /// dependency gets.
     pub fn start_or_resume(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with(key, Unit::start_or_resume)?
-            .map_err(AppError::UnitStart)?;
-        Ok(())
+        self.with_unit(key, Unit::start_or_resume).map(|_| ())
     }
 
     /// Start `key` if it has never been started, and leave it alone
     /// otherwise — unlike [`start`](AppUnitMap::start), which restarts it.
     pub fn ensure_started(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with(key, Unit::ensure_started)?
-            .map_err(AppError::UnitStart)?;
-        Ok(())
+        self.with_unit(key, Unit::ensure_started).map(|_| ())
     }
 
     /// Stop the unit under `key`.
@@ -320,7 +344,10 @@ impl AppUnitMap {
     /// Returns without waiting for the process to be gone; the unit keeps
     /// reporting its terminal state through [`state`](AppUnitMap::state).
     pub fn stop(&self, key: AppUnitKey) -> Result<(), AppError> {
-        self.with(key, Unit::stop)
+        self.with_unit(key, |u| {
+            u.stop();
+            Ok(())
+        })
     }
 
     /// State of the unit under `key`.
@@ -329,7 +356,7 @@ impl AppUnitMap {
     /// never started — which is a different thing from a key nothing was
     /// declared under, and that is the error.
     pub fn state(&self, key: AppUnitKey) -> Result<RunnerState, AppError> {
-        self.with(key, Unit::state)
+        self.with_unit(key, |unit| Ok(unit.state()))
     }
 
     /// Which of its modes the unit under `key` is currently on, if it has any.
@@ -408,8 +435,8 @@ impl AppUnitMap {
     /// every wake keeps one set instead of building a new one each time.
     pub fn write_resolved(&self, resolved: &mut HashSet<AppUnitKey>) {
         resolved.clear();
-        for (value, unit) in &self.units {
-            if unit.resolved() {
+        for (value, entry) in &self.units {
+            if entry.unit.resolved() {
                 resolved.insert(*value);
             }
         }
@@ -417,30 +444,21 @@ impl AppUnitMap {
 
     /// What `key` must wait for, one edge out.
     ///
-    /// `None` is "nothing to wait for" — both a unit that depends on nothing
-    /// and a key no unit was declared under, which want the same answer.
-    pub fn direct_dependencies(&self, key: AppUnitKey) -> Option<&UnitKeyVec> {
-        self.dependencies.get(&key)
+    /// `None` is a key no unit was declared under; a unit that depends on
+    /// nothing answers an empty slice, which the caller that walks it treats
+    /// the same way.
+    pub fn direct_dependencies(&self, key: AppUnitKey) -> Option<&[AppUnitKey]> {
+        Some(self.units.get(&key)?.dependencies.as_slice())
     }
 
-    /// Which list `key` is drawn in.
+    /// What the config said about `key`, or `None` for a key no proc was
+    /// declared under.
     ///
-    /// [`Main`](ConfigPanel::Main) for a key no proc was declared under, which
-    /// wants the same answer as a proc that said nothing: there is one list
-    /// until a config asks for two.
-    pub fn panel(&self, key: AppUnitKey) -> ConfigPanel {
-        self.panels.get(&key).copied().unwrap_or_default()
-    }
-
-    /// Whether `key`'s escape sequences are read as escape sequences.
-    ///
-    /// The session's answer for a key no proc was declared under, which is
-    /// what a proc that said nothing gets too.
-    pub fn parse_ansi(&self, key: AppUnitKey) -> bool {
-        self.parse_ansi
-            .get(&key)
-            .copied()
-            .unwrap_or(self.parse_ansi_session)
+    /// One answer for every setting rather than an accessor each: a caller
+    /// building a row wants them together, and a setting added later is a
+    /// field here instead of another method.
+    pub fn settings(&self, key: AppUnitKey) -> Option<AppUnitSettings> {
+        Some(self.units.get(&key)?.settings)
     }
 
     /// Every unit declared under a group name, or `None` if none was.
@@ -479,8 +497,8 @@ impl AppUnitMap {
     /// grace periods overlap instead of queueing up one shutdown at a time.
     pub async fn shutdown(&self) {
         let mut join_set: JoinSet<()> = JoinSet::new();
-        for unit in self.units.values() {
-            if let Some(handle) = unit.clone_handle() {
+        for entry in self.units.values() {
+            if let Some(handle) = entry.unit.clone_handle() {
                 join_set.spawn(async move {
                     handle.abort_and_wait().await;
                 });
@@ -495,9 +513,21 @@ impl AppUnitMap {
     /// a unit can be in, so it is an error rather than a quiet no-op — said
     /// once, here, for every method.
     fn with<T>(&self, key: AppUnitKey, f: impl FnOnce(&Unit) -> T) -> Result<T, AppError> {
+        let Some(entry) = self.units.get(&key) else {
+            return Err(AppError::NotFound);
+        };
+        Ok(f(&entry.unit))
+    }
+
+    /// Get the unit and do something
+    pub fn with_unit<T>(
+        &self,
+        key: AppUnitKey,
+        f: impl FnOnce(&Unit) -> Result<T, UnitError>,
+    ) -> Result<T, AppError> {
         let Some(unit) = self.units.get(&key) else {
             return Err(AppError::NotFound);
         };
-        Ok(f(unit))
+        f(&unit.unit).map_err(AppError::UnitError)
     }
 }

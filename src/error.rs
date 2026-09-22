@@ -95,6 +95,9 @@ pub enum AppError {
     /// The unit was found and would not start.
     #[error("could not start the unit: {0}")]
     UnitStart(UnitError),
+    /// The unit was found and would not start.
+    #[error("error with the unit: {0}")]
+    UnitError(UnitError),
 }
 
 /// What stops a server from listening.

@@ -64,19 +64,24 @@ impl ViewApp {
         let unit_map = app.unit_map();
         let mut list: Vec<ViewUnit> = unit_map
             .keys()
-            .map(|unit_key| ViewUnit {
-                key: unit_map
-                    .key_str(unit_key)
-                    .map(SmallStr::new)
-                    .unwrap_or_default(),
-                name: unit_map.name(unit_key).unwrap_or_default(),
-                name_short: unit_map.name_short(unit_key).unwrap_or(None),
-                unit_key,
-                mode: None,
-                mode_short: None,
-                state: RunnerState::Stopped,
-                parse_ansi: unit_map.parse_ansi(unit_key),
-                panel: unit_map.panel(unit_key),
+            .map(|unit_key| {
+                // Unreachable, like the name below: the key came out of the
+                // map, which is what settled these in the first place.
+                let settings = unit_map.settings(unit_key).unwrap_or_default();
+                ViewUnit {
+                    key: unit_map
+                        .key_str(unit_key)
+                        .map(SmallStr::new)
+                        .unwrap_or_default(),
+                    name: unit_map.name(unit_key).unwrap_or_default(),
+                    name_short: unit_map.name_short(unit_key).unwrap_or(None),
+                    unit_key,
+                    mode: None,
+                    mode_short: None,
+                    state: RunnerState::Stopped,
+                    parse_ansi: settings.parse_ansi,
+                    panel: settings.panel,
+                }
             })
             .collect();
         list.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));
