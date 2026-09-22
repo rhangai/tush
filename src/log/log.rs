@@ -69,9 +69,12 @@ impl LogWriterRef {
     /// Fork the ref
     pub fn fork(&self) -> Self {
         let Some(inner) = self.inner.upgrade() else {
+            // No log left to mint an id from, and this ref will never reach
+            // one: `UNSET` rather than a number that would collide with a
+            // live writer's.
             return Self {
                 inner: Weak::new(),
-                id: LogWriterId::new(0),
+                id: LogWriterId::UNSET,
             };
         };
         let id = inner.next_writer_id();
