@@ -1,0 +1,227 @@
+# Changelog
+
+All notable changes to this project are documented here.
+## [0.1.0] - 2026-09-22
+
+### Bug Fixes
+
+- Deadlock when dispatching events on the unit
+- Allocation on frame render
+- Prevent a pid resue problem
+
+### Documentation
+
+- *(doc)* Added ARCHITECTURE.md
+- *(doc)* Improved docs
+
+### Miscellaneous
+
+- Initial commit
+- Added tokio
+- Added ring buffer
+- Improved log structure
+- Fixed some structures
+- Added process
+- Updated log
+- Added basic unit functionality
+- Improved RingBuf and Log
+- Improved process handling
+- Improved process
+- Improved errors
+- Improved implementation of ProcessPool
+- Improved process handling
+- Improved process
+- Added basic unit
+- Improving Unit
+- Improved Unit
+- Improved runner
+- Improved unit
+- Improved unit
+- Improved process
+- Updated clippy rules
+- Improved docs
+- Melhorado testes e implementação do chunk
+- Atualizado readme
+- Added LocalRingBuffer
+- Improvind log
+- Improved LogChunk
+- Improved log
+- Improved log
+- Changed log to use the new structure
+- Updated log implementation
+- Removed old util
+- Atualizado log
+- Improved log contention
+- Changed buf to static
+- Improved docs
+- Fixed log writing
+- Fixed log
+- Added WriterId to chunk
+- Cgire> Added LogBufferLine
+- Added LoggerBufferLine to LogBuffer
+- Updated log line implementation
+- Multi line chunk, to allow a better flexibility when using
+- Simplified LogChunk operation
+- Added Arena
+- Removed Box from LogBufferLine
+- Improved arena allocation for chunk and log
+- Some optimizations
+- Trocado Option por ManuallyDrop
+- Removed queue for log, using a reader strategy
+- Removed old methods and interfaces
+- Improved docs
+- Chore: Added LogReader to keep a copy of the log for better cache
+locality
+- Improved LogReader
+- Improved interface of log_reader
+- Added graph dependency
+- Added UnitMap
+- Basic configuration
+- Docs for yaml
+- Added App from Config
+- Moved errors to errors.rs
+- Added more modes for unitdescription
+- Changed from Description to UnitBehavior
+- Added RunnerSerial
+- Added RunnerPolicy
+- Changed behavior order
+- Added share method on LoggerWriterRef
+- Added more behaviors
+- Implemented dispatcher for BehaviorModes
+- Removed LogReader return in add and improved interface
+- Improved app
+- Improved App
+- Improved interfaces
+- Improved stderr support
+- Improved App Logic
+- Improved unit behavior
+- Added more methods to UnitMap
+- Base implementatio for UI
+- Added tail e tail_range in LogReaderIter
+- Added spece for log on the ui
+- Improved UI
+- Added copy_region to log
+- Added log_region for APi
+- Updated LogRegion
+- Updated behavior when pressing enter
+- Base for ArcStr
+- Updated some props to ArcStr
+- Updated rendering
+- Added AGENTS
+- Improved Ui Rendering
+- Added partial line
+- Dropped stdin for processess
+- Added cli arguments
+- Improved shortcuts
+- Added bottom of scrolled lines
+- Updated agents
+- Atualizado notes do logger
+- Added LogWriterNotes
+- Improved notes
+- Improved UX & UI
+- Updated AGENTS
+- Improved docs
+- Improved list
+- Changed interface of UnitBehavior to prevent allocation
+- Added name_short
+- Added smallvec
+- Improved short name
+- Added theme configuration
+- Added internal Str struct to implement SmallStrings internally
+- Removed ArcStr
+- Adjusted layout
+- Changed theme
+- Renamed to SmallMultiVecStr
+- Base for JaggedVec
+- Updated AGENTS.md
+- Improved Deserialization for Config
+- Improved process shutdown
+- Improved serialization
+- Changed RunnerHandle
+- Removed RunnerStateAtomic
+- Changed running only when really running
+- Removed RunnerStateAtomic
+- Added EventListener
+- Changed the behavior of Runner and Handle
+- Improved docs
+- Removing anyhow
+- Removing anyhow
+- Moved AppError and AppErrors to errors.rs
+- Improving AppUnitMap
+- Moved from SmallStr to interning the key
+- Updated docs
+- Clippy
+- Moved UnitKey to UnitMap and removed generic
+- Improved Unit
+- Improved unit and runners
+- Added dependencies method in DependencyGraph
+- Improved schedule
+- Improved docs
+- Fixed bug on dock
+- Chore: Moved runner to another struct to prevent the future from running
+forever
+- Improved dependency handling
+- Improved unit reuse logic
+- Removed spawn_paused
+- Added enum to improve readability
+- Removed Unit::create
+- Test for unit
+- Fixed GrandChild Processes log
+- Zeroed PID when the process exits
+- Added niche optimization to LogWriterId
+- Improved note taking
+- Added SmallStrBuilder
+- Added LogWriter for UiClient
+- Added notes for process
+- Added styled notes
+- Moved from UiClient to ViewClient
+- Shutdown is now paralellized
+- Basic server implementation
+- Improved printing
+- Changed UnitChoice to use SmallStr instead
+- Added TUSH_SOCKET env and --socket flag
+- Added log_size in the config
+- Changed parse to use size units, like 10M or 1G
+- Improved Log creation functions
+- Added soft_capacity to localring
+- Added a way to reuse a LogReader
+- Renamed capacity in LocalRingBuffer
+- Reused LogReader per ViewApp
+- Optimizations for LogReader
+- Added ServerState
+- Doc for Log and RingBuffer
+- Added server
+- Added attach
+- Improved default sock path
+- Added working_dir
+- Improved process logging
+- Changed default sock for running
+- Fixed log dessync when attaching
+- Changed API to use key instead of name
+- Added urlencode
+- Added panel
+- *(ui)* Changed panels
+- Removed duplicated stopping notes
+- Refreshed modal when the state changes
+- Added log_size per unit
+- *(log)* Escape sequences take no columns
+- Fixed log panicing when forking the writer on a killed inner
+- Fixed testing
+- Added basic vt parsing
+- Removed warning of tests
+- Removed UnitMap in favor of AppUnitMap
+- Fixed doc for unit_map
+- Improved errors
+- Improved UnitMap
+- Imrpved AppUnitMap interface
+- Improved ansi parsing
+- Moved region.rs
+- Added style parsing
+- Added UI settings on the wire when attaching
+- Added color rendering
+- Fixed parse_ansi not crossing the wire
+- Improved LogReader and its settings
+- Fixed sgr_color
+- *(ci)* Added git-cliff
+- *(ci)* Added github pipeline
+
