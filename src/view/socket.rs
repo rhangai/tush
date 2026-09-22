@@ -201,6 +201,7 @@ impl ViewSocket {
                 incoming,
                 cancel: cancel.clone(),
                 client,
+                held: FrameLog::new(),
             }
             .run(),
         );
@@ -346,6 +347,17 @@ struct Poller {
     incoming: mpsc::UnboundedReceiver<Outgoing>,
     cancel: CancellationToken,
     client: ServerClient,
+    /// The window last read, and the buffer the next one is read into.
+    ///
+    /// A field and not a local, because it is what a `304` is answered from:
+    /// it has to outlive the round that filled it, and outliving the round is
+    /// also what lets its lines outlive their allocation.
+    ///
+    /// Not an `Option`, because [`Gone`](ServerLogKind::Gone) already says
+    /// there is nothing to show. A second way to say it is a second thing to
+    /// keep in step, and this one threw the buffer away every time it was
+    /// said — which is the allocation it was supposed to be saving.
+    held: FrameLog,
 }
 
 impl Poller {
@@ -370,9 +382,6 @@ impl Poller {
 
     /// Poll on one connection until it fails; `true` if it was cancelled.
     async fn rounds(&mut self) -> bool {
-        // Held here rather than in the frame so a `304` costs a clone of what
-        // is already known instead of the lines themselves crossing again.
-        let mut held: Option<FrameLog> = None;
         let mut ticks = tokio::time::interval(self.poll);
         loop {
             tokio::select! {
@@ -382,7 +391,7 @@ impl Poller {
                 _ = self.shared.moved.notified() => {}
                 _ = ticks.tick() => {}
             }
-            if self.round(&mut held).await.is_err() {
+            if self.round().await.is_err() {
                 return false;
             }
         }
@@ -392,7 +401,7 @@ impl Poller {
     ///
     /// The requests go one after another on the one connection, which is what
     /// makes "one in flight" structural rather than something to remember.
-    async fn round(&mut self, held: &mut Option<FrameLog>) -> Result<(), ViewSocketError> {
+    async fn round(&mut self) -> Result<(), ViewSocketError> {
         while let Ok(outgoing) = self.incoming.try_recv() {
             // The status is dropped: a command is fire and forget from here,
             // and a `404` off a row that has since gone is not a reason to
@@ -408,13 +417,17 @@ impl Poller {
         let wanted = self.shared.wanted.lock().clone();
 
         let (log, choices_key, choices) = match wanted {
-            None => {
-                *held = None;
-                (None, None, Vec::new())
-            }
+            // The pane is showing nothing. `held` is left as it is rather than
+            // emptied: what is in it is the last window read, and a pane coming
+            // back to that unit finds the buffer, and its revision, still here.
+            None => (None, None, Vec::new()),
             Some(wanted) => {
-                let log = self.fetch_log(&wanted, held).await?;
+                self.fetch_log(&wanted).await?;
                 let choices = self.client.choices(&wanted.key).await.unwrap_or_default();
+                let log = match self.held.kind() {
+                    ServerLogKind::Gone => None,
+                    _ => Some(self.held.clone()),
+                };
                 (log, Some(wanted.unit_key), choices)
             }
         };
@@ -428,43 +441,28 @@ impl Poller {
         Ok(())
     }
 
-    /// The wanted rectangle, whether or not it had to cross the socket.
+    /// Read the wanted rectangle into [`held`](Poller::held).
     ///
     /// The revision goes out as `If-None-Match`, which is the test
     /// [`ViewApp`](crate::view::ViewApp) does against its own reader moved
-    /// onto the wire. [`Unchanged`](ServerLog::Unchanged) answers with the
-    /// lines already held rather than with a word meaning "keep yours": see
-    /// [`Frame`].
-    async fn fetch_log(
-        &mut self,
-        wanted: &Wanted,
-        held: &mut Option<FrameLog>,
-    ) -> Result<Option<FrameLog>, ViewSocketError> {
-        let same = held.as_ref().is_some_and(|log| {
-            log.unit_key() == Some(wanted.unit_key) && log.region() == wanted.region
-        });
-        let revision = same
-            .then(|| held.as_ref().map(FrameLog::revision))
-            .flatten();
+    /// onto the wire — and only when what is held is the same window of the
+    /// same unit, since that is what a revision counts against.
+    ///
+    /// Written in place, into the buffer that is already there: a
+    /// [`Changed`](ServerLogKind::Changed) refills it and the other two leave
+    /// it alone, so the lines are allocated once and then written over.
+    async fn fetch_log(&mut self, wanted: &Wanted) -> Result<(), ViewSocketError> {
+        let same = self.held.kind() != ServerLogKind::Gone
+            && self.held.unit_key() == Some(wanted.unit_key)
+            && self.held.region() == wanted.region;
+        let revision = same.then(|| self.held.revision());
 
-        let answer = self
-            .client
-            .log(&wanted.key, wanted.region, revision)
-            .await?;
-        match answer.kind {
-            // The lines are already here; only the wire was spared.
-            ServerLogKind::Unchanged => Ok(held.clone()),
-            ServerLogKind::Gone => {
-                *held = None;
-                Ok(None)
-            }
-            ServerLogKind::Changed => {
-                let mut log = FrameLog::new();
-                log.set_unit_key(wanted.unit_key);
-                *log.server_log_mut() = answer;
-                *held = Some(log.clone());
-                Ok(Some(log))
-            }
-        }
+        // Split, so that the client and the buffer are two borrows of `self`
+        // and not one.
+        let Self { client, held, .. } = self;
+        held.set_unit_key(wanted.unit_key);
+        client
+            .log_in_place(held.server_log_mut(), &wanted.key, wanted.region, revision)
+            .await
     }
 }
