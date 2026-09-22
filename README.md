@@ -12,6 +12,13 @@ Write your project's commands down once. `tush` runs them, keeps the tail of
 each one's output, and gives you a screen to drive it all from: start, stop,
 restart, flip a proc from `build` to `watch`, without leaving the keyboard.
 
+<p align="center">
+  <img src="assets/demo.gif" width="900"
+       alt="tush running a project's procs: setup steps finishing, a dev server and a worker started, logs streaming, and one proc switched from Watch to Build">
+</p>
+
+All of that comes from one file and one command:
+
 ```yaml
 # tush.yaml
 procs:
@@ -30,8 +37,6 @@ procs:
 ```sh
 tush run -c tush.yaml
 ```
-
-> **Early days.** Everything below works, but things still move.
 
 ## Why tush
 
