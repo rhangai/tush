@@ -75,6 +75,7 @@ impl ViewApp {
                 mode: None,
                 mode_short: None,
                 state: RunnerState::Stopped,
+                parse_ansi: unit_map.parse_ansi(unit_key),
                 panel: unit_map.panel(unit_key),
             })
             .collect();

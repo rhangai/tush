@@ -36,6 +36,12 @@ pub struct AppUnitMap {
     /// Which list each proc is drawn in, holding only the procs that are not
     /// in the default one — the exception list, the way `dependencies` is.
     panels: HashMap<UnitKey, ConfigPanel>,
+    /// The procs that read escape sequences differently from the session, on
+    /// the same terms as `panels`.
+    parse_ansi: HashMap<UnitKey, bool>,
+    /// What the session said, and so the answer for every proc not in
+    /// `parse_ansi`.
+    parse_ansi_session: bool,
 }
 
 type UnitKeyVec = SmallVec<[UnitKey; 16]>;
@@ -52,6 +58,8 @@ impl AppUnitMap {
         let dependency_graph = Self::build_dep_graph(&mut errors, &mut unit_map, config);
         let mut groups: HashMap<SmallStr, UnitKeyVec> = HashMap::new();
         let mut panels: HashMap<UnitKey, ConfigPanel> = HashMap::new();
+        let mut parse_ansi: HashMap<UnitKey, bool> = HashMap::new();
+        let parse_ansi_session = config.parse_ansi();
         for proc in &config.procs {
             let Some(key) = unit_map.key(proc.key.as_ref()) else {
                 errors.push(AppConfigError::LogicErrorKey(proc.key.clone()));
@@ -63,6 +71,9 @@ impl AppUnitMap {
             }
             if proc.panel != ConfigPanel::default() {
                 panels.insert(key, proc.panel);
+            }
+            if proc.parse_ansi(parse_ansi_session) != parse_ansi_session {
+                parse_ansi.insert(key, !parse_ansi_session);
             }
             unit_map.insert_with(key, behavior, proc.log_size(config.log_size()));
         }
@@ -82,6 +93,8 @@ impl AppUnitMap {
             dependencies,
             groups,
             panels,
+            parse_ansi,
+            parse_ansi_session,
         })
     }
 
@@ -293,6 +306,17 @@ impl AppUnitMap {
     /// until a config asks for two.
     pub fn panel(&self, key: UnitKey) -> ConfigPanel {
         self.panels.get(&key).copied().unwrap_or_default()
+    }
+
+    /// Whether `key`'s escape sequences are read as escape sequences.
+    ///
+    /// The session's answer for a key no proc was declared under, which is
+    /// what a proc that said nothing gets too.
+    pub fn parse_ansi(&self, key: UnitKey) -> bool {
+        self.parse_ansi
+            .get(&key)
+            .copied()
+            .unwrap_or(self.parse_ansi_session)
     }
 
     /// Every unit declared under a group name, or `None` if none was.

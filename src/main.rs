@@ -121,7 +121,11 @@ async fn run(args: RunArgs) -> Result<()> {
     }
 
     let refresh = args.screen.refresh()?;
-    let result = Ui::run(ViewApp::new(app.clone()), refresh, UiTheme::default()).await;
+    let theme = UiTheme {
+        log_colors: config.ui.colors,
+        ..UiTheme::default()
+    };
+    let result = Ui::run(ViewApp::new(app.clone()), refresh, theme).await;
     app.shutdown().await;
     Ok(result?)
 }

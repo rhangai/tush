@@ -76,6 +76,7 @@ async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
             // a unit with no handle reports anyway, so it is the answer that
             // says the same thing rather than a `Default` invented for it.
             state: unit_map.state(unit_key).unwrap_or(RunnerState::Stopped),
+            parse_ansi: unit_map.parse_ansi(unit_key),
             panel: unit_map.panel(unit_key),
         })
         .collect();

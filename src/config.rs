@@ -97,6 +97,17 @@ pub struct Config {
     /// proc scrolls.
     #[serde(default)]
     log_size: Option<ConfigSize>,
+    /// Whether a proc's escape sequences are read as escape sequences.
+    ///
+    /// Off, they are the text they are: what a person looking at what a proc
+    /// actually writes asked for. It is not only a matter of colour, which is
+    /// why it is not under [`ui`](Config::ui) — it decides what counts as a
+    /// column, and so reaches the log.
+    #[serde(default)]
+    parse_ansi: Option<bool>,
+    /// How the screen draws this session.
+    #[serde(default)]
+    pub ui: ConfigUi,
     /// Every proc the file declared, sorted by key.
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_procs")]
@@ -132,6 +143,39 @@ impl Config {
     pub fn log_size(&self) -> usize {
         self.log_size.map_or(DEFAULT_LOG_SIZE, |s| s.0)
     }
+
+    /// Whether escape sequences are parsed, for the procs that do not say.
+    pub fn parse_ansi(&self) -> bool {
+        self.parse_ansi.unwrap_or(true)
+    }
+}
+
+/// What the screen decides, as against what a proc decides.
+///
+/// Its own section because nothing in it is about a proc: these are
+/// properties of the terminal a session is watched on, and the same session
+/// watched from two of them wants two answers.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigUi {
+    /// Whether the colours found in a log are painted.
+    ///
+    /// Sequences are still read with this off — that is
+    /// [`parse_ansi`](Config::parse_ansi) — so what it buys is the text
+    /// without them, for a terminal that would make a mess of the colours.
+    #[serde(default = "enabled")]
+    pub colors: bool,
+}
+
+impl Default for ConfigUi {
+    fn default() -> Self {
+        Self { colors: true }
+    }
+}
+
+/// `true`, for the flags a file turns off rather than on.
+fn enabled() -> bool {
+    true
 }
 
 /// One declared process: the recipe a [`Unit`](crate::unit::Unit) is built
@@ -197,6 +241,14 @@ pub struct ConfigProc {
     /// first or reserves for the second what it will never write.
     #[serde(default)]
     log_size: Option<ConfigSize>,
+    /// Whether this proc's escape sequences are read as escape sequences, or
+    /// `None` to take the session's.
+    ///
+    /// Per proc as well because it is a property of what the proc writes: one
+    /// that draws a progress bar and one that prints a log the terminal is
+    /// meant to render want opposite answers.
+    #[serde(default)]
+    parse_ansi: Option<bool>,
     /// Which of the two lists on screen it is drawn in.
     ///
     /// Presentation and nothing else: it moves a row, and never what the proc
@@ -240,6 +292,13 @@ impl ConfigProc {
     /// there is one place the two figures meet.
     pub fn log_size(&self, session: usize) -> usize {
         self.log_size.map_or(session, |size| size.0)
+    }
+
+    /// Whether this proc's escape sequences are parsed, given what the
+    /// session says. Resolved here for the reason
+    /// [`log_size`](ConfigProc::log_size) is.
+    pub fn parse_ansi(&self, session: bool) -> bool {
+        self.parse_ansi.unwrap_or(session)
     }
 }
 

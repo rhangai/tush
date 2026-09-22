@@ -341,16 +341,36 @@ impl Default for UiThemeColors {
 }
 
 /// How the screen looks.
-#[derive(Default)]
 pub struct UiTheme {
     /// How the units pane lays a unit out.
     pub menu_layout: UiThemeMenuLayout,
+    /// Whether the colours found in a log are painted.
+    ///
+    /// Here and not in [`colors`](UiTheme::colors), which is the fixed list
+    /// the screen draws itself with — this one decides whether a colour the
+    /// *log* named is used at all, on a terminal that would make a mess of
+    /// it.
+    pub log_colors: bool,
     /// Every fixed character.
     pub symbols: UiThemeSymbols,
     /// Every fixed word.
     pub texts: UiThemeTexts,
     /// Every colour.
     pub colors: UiThemeColors,
+}
+
+impl Default for UiTheme {
+    /// Written out rather than derived, because a derived one turns the log's
+    /// colours off: they are on unless a config says otherwise.
+    fn default() -> Self {
+        Self {
+            menu_layout: UiThemeMenuLayout::default(),
+            log_colors: true,
+            symbols: UiThemeSymbols::default(),
+            texts: UiThemeTexts::default(),
+            colors: UiThemeColors::default(),
+        }
+    }
 }
 
 impl UiTheme {
@@ -362,6 +382,7 @@ impl UiTheme {
     pub fn ascii() -> Self {
         Self {
             menu_layout: UiThemeMenuLayout::default(),
+            log_colors: true,
             symbols: UiThemeSymbols::ascii(),
             texts: UiThemeTexts::default(),
             colors: UiThemeColors::default(),
