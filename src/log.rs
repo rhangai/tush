@@ -96,12 +96,15 @@ mod buffer;
 mod chunk;
 mod line;
 mod log;
+mod region;
 
 #[allow(unused_imports)]
 pub use buffer::{LogBuffer, LogBufferAny, LogBufferWriter};
 
 #[allow(unused_imports)]
 pub use log::{
-    Log, LogLine, LogReader, LogReaderIter, LogReaderRef, LogRegion, LogWriterId, LogWriterNotes,
-    LogWriterRef,
+    Log, LogReader, LogReaderIter, LogReaderRef, LogWriterId, LogWriterNotes, LogWriterRef,
 };
+
+#[allow(unused_imports)]
+pub use region::{LogLine, LogRegion};
