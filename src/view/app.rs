@@ -5,7 +5,7 @@ use crate::{
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
     unit::UnitChoice,
-    view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
+    view::client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
 };
 
 /// The one log a [`ViewApp`] is following, and the last rectangle read out of it.
@@ -129,6 +129,13 @@ impl ViewClient for ViewApp {
 
     fn units(&self) -> &[ViewUnit] {
         &self.units
+    }
+
+    /// Straight off the session, which is where the config was read.
+    fn settings(&self) -> ViewSettings {
+        ViewSettings {
+            colors: self.app.ui().colors,
+        }
     }
 
     /// Point the reader at `key`, and remember the rectangle wanted from it.

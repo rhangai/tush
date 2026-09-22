@@ -76,7 +76,7 @@ use crate::{
     config::Config,
     server::{Server, default_socket_path},
     ui::{Ui, UiTheme},
-    view::{ViewApp, ViewPrinter, ViewSocket},
+    view::{ViewApp, ViewClient, ViewPrinter, ViewSocket},
 };
 
 #[tokio::main]
@@ -121,11 +121,9 @@ async fn run(args: RunArgs) -> Result<()> {
     }
 
     let refresh = args.screen.refresh()?;
-    let theme = UiTheme {
-        log_colors: config.ui.colors,
-        ..UiTheme::default()
-    };
-    let result = Ui::run(ViewApp::new(app.clone()), refresh, theme).await;
+    let client = ViewApp::new(app.clone());
+    let theme = theme_for(&client);
+    let result = Ui::run(client, refresh, theme).await;
     app.shutdown().await;
     Ok(result?)
 }
@@ -157,7 +155,20 @@ async fn attach(args: AttachArgs) -> Result<()> {
     let refresh = args.screen.refresh()?;
     let socket = args.socket.unwrap_or_else(default_socket_path);
     let client = ViewSocket::connect(socket, refresh).await?;
-    Ok(Ui::run(client, refresh, UiTheme::default()).await?)
+    let theme = theme_for(&client);
+    Ok(Ui::run(client, refresh, theme).await?)
+}
+
+/// The screen a session asked for.
+///
+/// Both ways in go through the client rather than through the config, so an
+/// `attach` — which never reads a file — is told the same things a `run`
+/// reads for itself.
+fn theme_for(client: &impl ViewClient) -> UiTheme {
+    UiTheme {
+        log_colors: client.settings().colors,
+        ..UiTheme::default()
+    }
 }
 
 /// Build a session, print it, and let something else attach to it.

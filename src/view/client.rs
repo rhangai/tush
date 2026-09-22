@@ -73,6 +73,22 @@ pub enum ViewCommand {
     Dispatch { key: AppUnitKey, event: UnitEvent },
 }
 
+/// What the session says about how it should be shown.
+///
+/// Its own type rather than [`ConfigUi`](crate::config::ConfigUi) crossing:
+/// what a file may say and what a screen is told are free to drift, and this
+/// one is what a client holds whether it read a config or a socket.
+///
+/// These are defaults and not orders. They come from the session because that
+/// is where a config was read, but the terminal in front of the person is the
+/// one that knows what it can draw — so a screen is free to override what it
+/// is handed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ViewSettings {
+    /// Whether the colours found in a log are worth painting.
+    pub colors: bool,
+}
+
 /// What a client has for the log pane: some lines, and what they are.
 pub struct ViewLog<'a> {
     /// The answer's region, not the question's. A client behind a scroll
@@ -145,6 +161,13 @@ pub trait ViewClient {
     /// Called every frame; whether anything has to happen is the client's
     /// call, since it holds the region, the revision and the connection.
     fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion);
+
+    /// How the session says it should be shown.
+    ///
+    /// Read once, when a screen is built: it comes from a config file that is
+    /// read before the session exists and never re-read, so there is nothing
+    /// here for a [`sync`](ViewClient::sync) to pick up.
+    fn settings(&self) -> ViewSettings;
 
     /// The lines for the pane, as of the last [`sync`](ViewClient::sync).
     ///

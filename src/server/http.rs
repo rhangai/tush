@@ -14,7 +14,7 @@ use crate::{
     log::{LogLine, LogRegion},
     server::state::ServerState,
     unit::{UnitChoice, UnitEvent},
-    view::ViewUnit,
+    view::{ViewSettings, ViewUnit},
 };
 
 /// Every route a client speaks, over whatever the caller is listening on.
@@ -29,6 +29,7 @@ use crate::{
 /// and two procs may share — the interner only ever saw the key.
 pub fn router(state: Arc<ServerState>) -> Router {
     Router::new()
+        .route("/settings", get(settings))
         .route("/units", get(units))
         .route("/units/{key}/log", get(log))
         .route("/units/{key}/choices", get(choices))
@@ -48,6 +49,17 @@ struct LogBody<'a> {
     region: LogRegion,
     revision: u64,
     lines: &'a [LogLine],
+}
+
+/// What the session says about how it should be shown.
+///
+/// Read once by a client when it attaches: it comes from a config file the
+/// session read before it existed, so there is nothing here that can change
+/// while it is listening.
+async fn settings(State(state): State<Arc<ServerState>>) -> Json<ViewSettings> {
+    Json(ViewSettings {
+        colors: state.app().ui().colors,
+    })
 }
 
 /// Every unit, as a row.

@@ -13,7 +13,7 @@ use crate::{
     log::{LogLine, LogRegion},
     unit::{UnitChoice, UnitEvent},
     util::str::{SmallStr, SmallStrBuilder},
-    view::client::{ViewClient, ViewCommand, ViewLog, ViewUnit},
+    view::client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
 };
 
 /// How long to wait before reaching for a server that went away.
@@ -104,6 +104,8 @@ struct Shared {
 pub struct ViewSocket {
     /// The last frame taken, which is what every read answers from.
     units: Vec<ViewUnit>,
+    /// What the session said about the screen when this one attached.
+    settings: ViewSettings,
     log: Option<FrameLog>,
     choices_key: Option<AppUnitKey>,
     choices: Vec<UnitChoice>,
@@ -123,6 +125,9 @@ impl ViewSocket {
     pub async fn connect(path: PathBuf, poll: Duration) -> Result<Self, ViewSocketError> {
         let mut sender = dial(&path).await?;
         let units: Vec<ViewUnit> = fetch(&mut sender, Method::GET, "/units", None).await?;
+        // Asked for once, here: they come from a config the session read
+        // before it existed, so no later poll would ever find them changed.
+        let settings: ViewSettings = fetch(&mut sender, Method::GET, "/settings", None).await?;
 
         let shared = Arc::new(Shared {
             frame: Mutex::new(None),
@@ -144,6 +149,7 @@ impl ViewSocket {
 
         Ok(Self {
             units,
+            settings,
             log: None,
             choices_key: None,
             choices: Vec::new(),
@@ -201,6 +207,12 @@ impl ViewClient for ViewSocket {
 
     fn units(&self) -> &[ViewUnit] {
         &self.units
+    }
+
+    /// What the session said when this one attached — see
+    /// [`connect`](ViewSocket::connect).
+    fn settings(&self) -> ViewSettings {
+        self.settings
     }
 
     /// Whatever the last poll fetched for this unit, and nothing for any

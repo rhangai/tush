@@ -8,7 +8,7 @@ use crate::{
         schedule::{AppSchedule, AppScheduleRunnerTask},
         unit_map::AppUnitMap,
     },
-    config::Config,
+    config::{Config, ConfigUi},
     unit::{UnitAction, UnitEvent},
 };
 
@@ -22,6 +22,9 @@ use crate::{
 pub struct App {
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
     unit_map: Arc<AppUnitMap>,
+    /// What the file said about the screen, kept because a client asks the
+    /// session for it — the file is read here and nowhere else.
+    ui: ConfigUi,
     /// Holds the starts that cannot happen yet, and performs them when they
     /// can — see [`AppSchedule`].
     schedule: AppSchedule,
@@ -41,7 +44,16 @@ impl App {
     pub fn new(config: &Config) -> Result<Self> {
         let unit_map = Arc::new(AppUnitMap::new(config)?);
         let schedule = AppSchedule::new(config, &unit_map)?;
-        Ok(Self { unit_map, schedule })
+        Ok(Self {
+            unit_map,
+            schedule,
+            ui: config.ui,
+        })
+    }
+
+    /// What the config said about the screen.
+    pub fn ui(&self) -> ConfigUi {
+        self.ui
     }
 
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.

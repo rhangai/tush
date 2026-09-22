@@ -30,4 +30,4 @@ pub use print::ViewPrinter;
 pub use socket::ViewSocket;
 
 #[allow(unused_imports)]
-pub use client::{ViewClient, ViewCommand, ViewLog, ViewUnit};
+pub use client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit};

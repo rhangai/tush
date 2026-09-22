@@ -155,7 +155,7 @@ impl Config {
 /// Its own section because nothing in it is about a proc: these are
 /// properties of the terminal a session is watched on, and the same session
 /// watched from two of them wants two answers.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigUi {
     /// Whether the colours found in a log are painted.
