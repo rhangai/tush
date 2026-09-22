@@ -3,12 +3,12 @@ use unicode_width::UnicodeWidthStr;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, StatefulWidget, Widget},
 };
 
 use crate::{
-    log::{LogLine, LogRegion},
+    log::{LogColor, LogEffect, LogLine, LogRegion, LogStyle},
     runner::RunnerState,
     ui::{
         render::{DIGITS_MAX, decimal, room, set_clipped},
@@ -222,15 +222,91 @@ impl StatefulWidget for UiRenderLog<'_> {
         let plain = Style::new();
         let dim = plain.add_modifier(Modifier::DIM);
         for (row, line) in lines.iter().enumerate() {
-            let style = if line.writer.is_note() { dim } else { plain };
-            buffer.set_stringn(
-                text.x,
-                text.y + row as u16,
-                &line.text,
-                text.width as usize,
-                style,
-            );
+            let base = if line.writer.is_note() { dim } else { plain };
+            let y = text.y + row as u16;
+            if self.theme.log_colors {
+                draw_runs(buffer, line, text, y, base);
+            } else {
+                buffer.set_stringn(text.x, y, &line.text, text.width as usize, base);
+            }
         }
+    }
+}
+
+/// Draw one line as the runs the log found in it.
+///
+/// Each run is a slice of the line's own text handed straight to the buffer,
+/// so a frame of coloured output allocates nothing — the strings were built
+/// when the region was copied and are not built again here.
+///
+/// A line with no runs is one `set_stringn`, which is nearly all of them.
+fn draw_runs(buffer: &mut Buffer, line: &LogLine, area: Rect, y: u16, base: Style) {
+    let right = area.right();
+    let mut x = area.x;
+    let mut written = 0;
+    for (index, run) in line.styles.iter().enumerate() {
+        // Text before the first run, which is a line that starts in no colour
+        // and picks one up part way along.
+        if run.index > written {
+            x = buffer
+                .set_stringn(x, y, &line.text[written..run.index], room(x, right), base)
+                .0;
+            written = run.index;
+        }
+        let end = line
+            .styles
+            .get(index + 1)
+            .map_or(line.text.len(), |next| next.index);
+        let style = styled(base, run.style);
+        x = buffer
+            .set_stringn(x, y, &line.text[written..end], room(x, right), style)
+            .0;
+        written = end;
+    }
+    if written < line.text.len() {
+        buffer.set_stringn(x, y, &line.text[written..], room(x, right), base);
+    }
+}
+
+/// What the log found, as the screen draws it.
+///
+/// Folded onto `base` rather than replacing it, so a note stays dim whatever
+/// colour the process asked for.
+fn styled(base: Style, style: LogStyle) -> Style {
+    let mut out = base;
+    if let Some(foreground) = style.foreground {
+        out = out.fg(color(foreground));
+    }
+    if let Some(background) = style.background {
+        out = out.bg(color(background));
+    }
+    for effect in style.effects {
+        out = out.add_modifier(modifier(effect));
+    }
+    out
+}
+
+/// A colour a sequence named, as a terminal takes it.
+///
+/// An index stays an index: the sixteen named colours and the 256 palette are
+/// one table, and which of its cells is which is the terminal's business and
+/// not ours — the theme's own colours are the ones this program chooses.
+fn color(color: LogColor) -> Color {
+    match color {
+        LogColor::Indexed(index) => Color::Indexed(index),
+        LogColor::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+    }
+}
+
+/// One decoration, as ratatui spells it.
+fn modifier(effect: LogEffect) -> Modifier {
+    match effect {
+        LogEffect::Bold => Modifier::BOLD,
+        LogEffect::Dim => Modifier::DIM,
+        LogEffect::Italic => Modifier::ITALIC,
+        LogEffect::Underline => Modifier::UNDERLINED,
+        LogEffect::Reverse => Modifier::REVERSED,
+        LogEffect::Strike => Modifier::CROSSED_OUT,
     }
 }
 
