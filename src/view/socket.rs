@@ -12,7 +12,7 @@ use crate::{
     util::str::SmallStr,
     view::{
         client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
-        server::{ServerClient, ServerLog},
+        server::{ServerClient, ServerLogKind},
     },
 };
 
@@ -402,19 +402,20 @@ impl Poller {
             .then(|| held.as_ref().map(|log| log.revision))
             .flatten();
 
-        match client.log(&wanted.key, wanted.region, revision).await? {
+        let answer = client.log(&wanted.key, wanted.region, revision).await?;
+        match answer.kind {
             // The lines are already here; only the wire was spared.
-            ServerLog::Unchanged => Ok(held.clone()),
-            ServerLog::Gone => {
+            ServerLogKind::Unchanged => Ok(held.clone()),
+            ServerLogKind::Gone => {
                 *held = None;
                 Ok(None)
             }
-            ServerLog::Body(body) => {
+            ServerLogKind::Changed => {
                 let log = FrameLog {
                     unit_key: wanted.unit_key,
-                    region: body.region,
-                    revision: body.revision,
-                    lines: body.lines,
+                    region: answer.body.region,
+                    revision: answer.body.revision,
+                    lines: answer.body.lines,
                 };
                 *held = Some(log.clone());
                 Ok(Some(log))

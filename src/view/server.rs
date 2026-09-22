@@ -1,7 +1,12 @@
 use std::path::Path;
 
 use http_body_util::{BodyExt, Full};
-use hyper::{Method, Request, StatusCode, body::Bytes, client::conn::http1::SendRequest, header};
+use hyper::{
+    Method, Request, StatusCode,
+    body::{Bytes, Incoming},
+    client::conn::http1::SendRequest,
+    header,
+};
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
 
@@ -25,18 +30,60 @@ use crate::{
 /// keeps polling, and `tush dispatch` exits non-zero.
 pub struct ServerClient {
     sender: SendRequest<Full<Bytes>>,
+    /// Where a body that arrived in more than one frame is gathered, kept
+    /// between requests so that it is refilled rather than built. Empty and
+    /// untouched for a body that came whole, which is nearly all of them.
+    spill: Vec<u8>,
 }
 
-/// What the log route answered.
+/// What the log route answered, and the rectangle it answered with.
+///
+/// The body is the caller's buffer and not the answer's: it keeps whatever was
+/// last written into it, so a `Changed` refills it rather than building one.
+/// That is the whole reason this is a struct and not an enum carrying the
+/// rectangle — an enum would drop the buffer on every answer that is not a
+/// body, which is most of them.
+///
+/// Which leaves the body meaning different things per kind, and it is worth
+/// being exact: `Changed` has just rewritten it, `Unchanged` has not touched it
+/// and does not need to — nothing moved, so what is in there still *is* the
+/// window — and `Gone` has not touched it either, and there it is stale.
+pub struct ServerLog {
+    pub kind: ServerLogKind,
+    pub body: ServerLogBody,
+}
+
+impl Default for ServerLog {
+    /// [`Gone`](ServerLogKind::Gone) over an empty rectangle, which is what a
+    /// buffer nothing has been read into yet honestly holds.
+    ///
+    /// Written here rather than derived so that the two halves need no
+    /// `Default` of their own: a bare [`ServerLogKind`] has no default answer
+    /// and a bare [`ServerLogBody`] no default rectangle — only the pair,
+    /// standing for "not asked yet", means anything.
+    fn default() -> Self {
+        Self {
+            kind: ServerLogKind::Gone,
+            body: ServerLogBody {
+                region: LogRegion::new(0..0, 0..0),
+                revision: 0,
+                lines: Vec::new(),
+            },
+        }
+    }
+}
+
+/// Which of the three things the log route said.
 ///
 /// Three answers and not a `Result`, because two of them are not failures: a
 /// `304` means the caller's copy is still current and a `404` means there is
 /// nothing to show. Collapsing either into an error moves the decision back to
-/// the call site, which is the thing this type exists to take away.
-pub enum ServerLog {
-    /// The rectangle as it actually came out, which can hold fewer lines than
-    /// were asked for.
-    Body(ServerLogBody),
+/// the call site, which is the thing this exists to take away.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ServerLogKind {
+    /// The body has been rewritten with the rectangle as it actually came out,
+    /// which can hold fewer lines than were asked for.
+    Changed,
     /// The revision that went out as `If-None-Match` is still current.
     Unchanged,
     /// No unit under that key, or no log under the unit.
@@ -66,12 +113,21 @@ impl ServerClient {
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            spill: Vec::new(),
+        })
     }
 
     /// Every unit, as a row.
+    ///
+    /// The vec it fills is a fresh one, and that is all that separates it from
+    /// [`units_in_place`](ServerClient::units_in_place) — one route, decoded
+    /// one way, for a caller that has no buffer to lend.
     pub async fn units(&mut self) -> Result<Vec<ViewUnit>, ViewSocketError> {
-        self.fetch(Method::GET, "/units", None).await
+        let mut out = Vec::new();
+        self.units_in_place(&mut out).await?;
+        Ok(out)
     }
 
     /// The same rows, written into `out` rather than handed back in a vec of
@@ -87,10 +143,12 @@ impl ServerClient {
     }
 
     /// Everything that can be asked of one unit right now.
+    ///
+    /// Over a fresh vec; see [`units`](ServerClient::units).
     pub async fn choices(&mut self, key: &SmallStr) -> Result<Vec<UnitChoice>, ViewSocketError> {
-        let key = key_path(key);
-        self.fetch(Method::GET, &format!("/units/{key}/choices"), None)
-            .await
+        let mut out = Vec::new();
+        self.choices_in_place(&mut out, key).await?;
+        Ok(out)
     }
 
     /// The same list, written into `out`. See
@@ -131,30 +189,69 @@ impl ServerClient {
 
     /// A rectangle of one unit's log, or word that nothing changed.
     ///
-    /// `revision` is what the caller already drew, sent as `If-None-Match`.
-    ///
-    /// The region goes out field by field rather than serialized, and has to
-    /// keep agreeing with the `Query<LogRegion>` the route parses it back
-    /// with — a field added there and not here is one the server would take
-    /// and no client would ever send.
+    /// Over a fresh body; see [`units`](ServerClient::units).
     pub async fn log(
         &mut self,
         key: &SmallStr,
         region: LogRegion,
         revision: Option<u64>,
     ) -> Result<ServerLog, ViewSocketError> {
+        let mut out = ServerLog::default();
+        self.log_in_place(&mut out, key, region, revision).await?;
+        Ok(out)
+    }
+
+    /// The same answer, written into `out`.
+    ///
+    /// Sets `out.kind` whatever happened, and rewrites `out.body` only for a
+    /// [`Changed`](ServerLogKind::Changed) — the other two say to keep and to
+    /// drop what the caller has, and neither is this function's to decide.
+    ///
+    /// A failure leaves both alone: `out` is the caller's buffer from the last
+    /// round, and a request that did not answer is no reason to lose it.
+    ///
+    /// `revision` is what the caller already drew, sent as `If-None-Match`.
+    ///
+    /// The region goes out field by field rather than serialized, and has to
+    /// keep agreeing with the `Query<LogRegion>` the route parses it back
+    /// with — a field added there and not here is one the server would take
+    /// and no client would ever send.
+    pub async fn log_in_place(
+        &mut self,
+        out: &mut ServerLog,
+        key: &SmallStr,
+        region: LogRegion,
+        revision: Option<u64>,
+    ) -> Result<(), ViewSocketError> {
         let key = key_path(key);
         let path = format!(
             "/units/{key}/log?line_start={}&line_end={}&column_start={}&column_end={}",
             region.line_start, region.line_end, region.column_start, region.column_end
         );
-        let (status, bytes) = self.request(Method::GET, &path, None, revision).await?;
-        match status {
-            StatusCode::NOT_MODIFIED => Ok(ServerLog::Unchanged),
-            StatusCode::NOT_FOUND => Ok(ServerLog::Gone),
-            status if status.is_success() => Ok(ServerLog::Body(serde_json::from_slice(&bytes)?)),
-            status => Err(ViewSocketError::Status(status.as_u16())),
-        }
+        let response = self.send(Method::GET, &path, None, revision).await?;
+        let status = response.status();
+        let body = response.into_body();
+        let kind = match status {
+            StatusCode::NOT_MODIFIED => {
+                self.read_body(body, |_| Ok(ServerLogKind::Unchanged))
+                    .await?
+            }
+            StatusCode::NOT_FOUND => self.read_body(body, |_| Ok(ServerLogKind::Gone)).await?,
+            status if status.is_success() => {
+                let into = &mut out.body;
+                self.read_body(body, |bytes| {
+                    decode_in_place(into, bytes)?;
+                    Ok(ServerLogKind::Changed)
+                })
+                .await?
+            }
+            status => {
+                self.read_body(body, |_| Ok(())).await?;
+                return Err(ViewSocketError::Status(status.as_u16()));
+            }
+        };
+        out.kind = kind;
+        Ok(())
     }
 
     /// A request whose answer is read as `T`, with anything but a success
@@ -165,11 +262,15 @@ impl ServerClient {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<T, ViewSocketError> {
-        let (status, bytes) = self.request(method, path, body, None).await?;
+        let response = self.send(method, path, body, None).await?;
+        let status = response.status();
+        let body = response.into_body();
         if !status.is_success() {
+            self.read_body(body, |_| Ok(())).await?;
             return Err(ViewSocketError::Status(status.as_u16()));
         }
-        Ok(serde_json::from_slice(&bytes)?)
+        self.read_body(body, |bytes| Ok(serde_json::from_slice(bytes)?))
+            .await
     }
 
     /// A request whose answer is written into `out`.
@@ -178,8 +279,6 @@ impl ServerClient {
     /// not a fetch assigned over `out`: `Vec`'s implementation of it overwrites
     /// the elements that are already there and pushes only what is left over,
     /// so a list that came back the same length costs no allocation at all.
-    /// Going through [`fetch`](ServerClient::fetch) would build the vec first
-    /// and throw the old one away, which is the whole thing being avoided.
     ///
     /// How much each element saves is its own business: `Vec` reuses the slot,
     /// and whether the value in it reuses what it holds depends on its own
@@ -191,16 +290,15 @@ impl ServerClient {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<(), ViewSocketError> {
-        let (status, bytes) = self.request(method, path, body, None).await?;
+        let response = self.send(method, path, body, None).await?;
+        let status = response.status();
+        let body = response.into_body();
         if !status.is_success() {
+            self.read_body(body, |_| Ok(())).await?;
             return Err(ViewSocketError::Status(status.as_u16()));
         }
-        let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
-        T::deserialize_in_place(&mut deserializer, out)?;
-        // The trailing bytes are not checked by the call above, and a body
-        // with something after the value is a server this one does not speak.
-        deserializer.end()?;
-        Ok(())
+        self.read_body(body, |bytes| decode_in_place(out, bytes))
+            .await
     }
 
     /// A command, and the status it came back with.
@@ -213,17 +311,55 @@ impl ServerClient {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<StatusCode, ViewSocketError> {
-        Ok(self.request(Method::POST, path, body, None).await?.0)
+        let response = self.send(Method::POST, path, body, None).await?;
+        let status = response.status();
+        self.read_body(response.into_body(), |_| Ok(())).await?;
+        Ok(status)
     }
 
-    /// One request, and the status and bytes it answered with.
-    async fn request(
+    /// Read a response body and hand it to `decode` as one slice.
+    ///
+    /// Reads one frame ahead: until a second turns up, the first is the whole
+    /// body, and being a slice of hyper's own read buffer it is decoded where
+    /// it lies. Only a body split across frames is gathered, into
+    /// [`spill`](ServerClient::spill), which is kept between requests and
+    /// refilled rather than built.
+    ///
+    /// **Every caller reads to the end, including the ones that want nothing.**
+    /// The poller puts its requests down one connection, one after another, and
+    /// hyper only reuses a connection whose last body was finished — a `304` or
+    /// a command's empty answer dropped unread costs a reconnect per round.
+    async fn read_body<R>(
+        &mut self,
+        mut body: Incoming,
+        decode: impl FnOnce(&[u8]) -> Result<R, ViewSocketError>,
+    ) -> Result<R, ViewSocketError> {
+        let first = next_data(&mut body).await?.unwrap_or_default();
+        let Some(second) = next_data(&mut body).await? else {
+            return decode(&first);
+        };
+
+        self.spill.clear();
+        self.spill.extend_from_slice(&first);
+        self.spill.extend_from_slice(&second);
+        while let Some(data) = next_data(&mut body).await? {
+            self.spill.extend_from_slice(&data);
+        }
+        decode(&self.spill)
+    }
+
+    /// One request, answered but not read.
+    ///
+    /// Answering and reading are separate because the status decides what the
+    /// body is worth — and the ones it is worth nothing for still have to be
+    /// drained. See [`read_body`](ServerClient::read_body).
+    async fn send(
         &mut self,
         method: Method,
         path: &str,
         body: Option<Vec<u8>>,
         revision: Option<u64>,
-    ) -> Result<(StatusCode, Bytes), ViewSocketError> {
+    ) -> Result<hyper::Response<Incoming>, ViewSocketError> {
         let mut builder = Request::builder()
             .method(method)
             // Required of every HTTP/1.1 request, and meaningless here: there
@@ -241,20 +377,40 @@ impl ServerClient {
             None => Full::new(Bytes::new()),
         };
         let request = builder.body(body).map_err(ViewSocketError::Request)?;
-        let response = self
-            .sender
+        self.sender
             .send_request(request)
             .await
-            .map_err(ViewSocketError::Http)?;
-        let status = response.status();
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(ViewSocketError::Http)?
-            .to_bytes();
-        Ok((status, bytes))
+            .map_err(ViewSocketError::Http)
     }
+}
+
+/// The next chunk of body, skipping trailers and empty frames, and `None` at
+/// the end of it.
+async fn next_data(body: &mut Incoming) -> Result<Option<Bytes>, ViewSocketError> {
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(ViewSocketError::Http)?;
+        if let Ok(data) = frame.into_data()
+            && !data.is_empty()
+        {
+            return Ok(Some(data));
+        }
+    }
+    Ok(None)
+}
+
+/// Decode `bytes` over whatever `out` already holds.
+///
+/// The trailing bytes are checked separately: `deserialize_in_place` stops at
+/// the end of the value, and a body with something after it is a server this
+/// one does not speak.
+fn decode_in_place<T: serde::de::DeserializeOwned>(
+    out: &mut T,
+    bytes: &[u8],
+) -> Result<(), ViewSocketError> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    T::deserialize_in_place(&mut deserializer, out)?;
+    deserializer.end()?;
+    Ok(())
 }
 
 /// `key` with everything a path segment cannot carry percent-encoded.
