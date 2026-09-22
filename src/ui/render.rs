@@ -206,6 +206,17 @@ impl UiRender {
         self.menu.is_open()
     }
 
+    /// The unit the menu is open for, if it is open.
+    pub fn menu_key(&self) -> Option<UnitKey> {
+        self.menu.key()
+    }
+
+    /// Put the menu's entries back, re-read — see
+    /// [`refresh`](UiRenderMenuState::refresh).
+    pub fn refresh_menu(&mut self, items: Vec<UnitChoice>) {
+        self.menu.refresh(items);
+    }
+
     /// Lend out the menu's entry buffer to be refilled.
     pub fn take_menu_items(&mut self) -> Vec<UnitChoice> {
         self.menu.take_items()

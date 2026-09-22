@@ -32,9 +32,15 @@ const CANCEL_GAP: u16 = 1;
 
 /// What the menu is showing, and which row the cursor is on.
 ///
-/// The entries are read out of the session once, when it opens, and held
-/// still here: rebuilt per frame they would renumber themselves under the
-/// cursor the moment a process exited.
+/// The entries are re-read every frame, so an open menu says what the unit is
+/// now rather than what it was when it opened: `start` becomes `restart` once
+/// a run begins, and `stop` goes dim the moment one ends.
+///
+/// That is safe because the rows belong to the behavior, not to the run: how
+/// many there are, their order and what each one sends come from the modes,
+/// which a process starting or exiting neither adds to nor takes from. The
+/// state reaches only the verb and whether a row can be chosen, so nothing
+/// moves under the cursor — see [`refresh`](Self::refresh).
 #[derive(Default)]
 pub struct UiRenderMenuState {
     /// The unit it is open for, `None` when closed. Kept rather than re-read
@@ -81,6 +87,26 @@ impl UiRenderMenuState {
         self.unit_key = Some(key);
     }
 
+    /// The unit it is open for, or `None` when it is closed.
+    pub fn key(&self) -> Option<UnitKey> {
+        self.unit_key
+    }
+
+    /// Take the entries again, leaving the cursor where it is.
+    ///
+    /// Where it is even when that row has just gone dim: moving it would be
+    /// the menu shifting under a finger already on its way down, and
+    /// [`chosen`](Self::chosen) turns a press on a dim row into the way out.
+    ///
+    /// The clamp is for a behavior that one day answers with a different
+    /// number of rows for a different state. None does — which is the whole
+    /// reason this may be called per frame — and `items.len()` is the way
+    /// out's own row, so that is where a cursor past the end lands.
+    pub fn refresh(&mut self, items: Vec<UnitChoice>) {
+        self.items = items;
+        self.cursor = self.cursor.min(self.items.len());
+    }
+
     /// Give the keys back, keeping the buffer.
     pub fn close(&mut self) {
         self.unit_key = None;
@@ -106,11 +132,10 @@ impl UiRenderMenuState {
 
     /// What <kbd>Enter</kbd> means where the cursor is.
     ///
-    /// The disabled arm is unreachable rather than tolerated — [`open`] and
-    /// [`select`](Self::select) keep the cursor off those rows — and answers
-    /// `Cancel` so that a press can never leave the menu just sitting there.
-    ///
-    /// [`open`]: Self::open
+    /// A row can go dim under a resting cursor — `stop` does, the moment the
+    /// run it would have ended finishes on its own — so the disabled arm
+    /// answers `Cancel` rather than being unreachable: the entry is visibly
+    /// dim by then, and closing is an answer where doing nothing is not.
     pub fn chosen(&self) -> UiMenuChoice {
         let Some(key) = self.unit_key.as_ref() else {
             return UiMenuChoice::Cancel;

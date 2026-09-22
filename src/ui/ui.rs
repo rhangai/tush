@@ -92,6 +92,7 @@ impl<C: ViewClient> Ui<C> {
             // has been told about a scroll before it is asked what it has.
             self.request_log();
             self.client.sync();
+            self.refresh_menu();
             self.clamp_log();
             terminal
                 .draw(|frame| self.render.draw(frame, &self.client))
@@ -199,6 +200,22 @@ impl<C: ViewClient> Ui<C> {
             },
             _ => {}
         }
+    }
+
+    /// Read the open menu's entries again, so the verbs say what the unit is
+    /// doing now and not what it was doing when it opened.
+    ///
+    /// After the sync, so the entries and the rows behind them are taken from
+    /// the same moment. The buffer goes out and comes back as it does at
+    /// open — a borrow of the screen held across a read of the session is the
+    /// one shape the borrow checker will not have.
+    fn refresh_menu(&mut self) {
+        let Some(key) = self.render.menu_key() else {
+            return;
+        };
+        let mut items = self.render.take_menu_items();
+        self.client.choices(key, &mut items);
+        self.render.refresh_menu(items);
     }
 
     /// Open the action menu over the selected unit.
