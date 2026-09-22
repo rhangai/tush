@@ -465,10 +465,10 @@ mod test {
             ("deep", &[]),
         ];
         let graph = graph(spec);
-        let mut direct = graph.dependencies_copy(&"a").collect::<Vec<_>>();
+        let mut direct = graph.dependencies_copy("a").collect::<Vec<_>>();
         direct.sort_unstable();
         assert_eq!(direct, ["b", "c"]);
-        assert_eq!(graph.dependencies_copy(&"c").count(), 0);
+        assert_eq!(graph.dependencies_copy("c").count(), 0);
     }
 
     /// Documented as reverse declaration order, so it is worth pinning: the
@@ -477,7 +477,7 @@ mod test {
     fn direct_dependencies_come_back_in_reverse_declaration_order() {
         assert_eq!(
             graph(&[("a", &["x", "y", "z"])])
-                .dependencies_copy(&"a")
+                .dependencies_copy("a")
                 .collect::<Vec<_>>(),
             ["z", "y", "x"]
         );
@@ -488,7 +488,7 @@ mod test {
     fn what_depends_on_the_key_is_not_a_dependency_of_it() {
         assert_eq!(
             graph(&[("a", &["b"]), ("b", &[])])
-                .dependencies_copy(&"b")
+                .dependencies_copy("b")
                 .count(),
             0
         );
@@ -496,7 +496,7 @@ mod test {
 
     #[test]
     fn the_dependencies_of_an_unknown_key_are_nothing() {
-        assert_eq!(graph(&[("a", &[])]).dependencies_copy(&"nope").count(), 0);
+        assert_eq!(graph(&[("a", &[])]).dependencies_copy("nope").count(), 0);
     }
 
     fn order_from(
