@@ -16,6 +16,7 @@ use crate::{
         localring::LocalRingBuffer,
     },
 };
+use anstyle_parse::{Parser, Perform};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use tokio::{io::AsyncRead, task::JoinHandle};
@@ -1153,11 +1154,11 @@ impl LogReader {
         let mut lines = 0;
 
         let history = region.line_start.saturating_sub(held)..region.line_end.saturating_sub(held);
-        // How far into the line the pieces so far have reached, in columns.
-        // Kept across pieces because a line the chunk size split arrives as
-        // several, and the window is over the line rather than over any one
-        // of them.
-        let mut column = 0;
+        // How far into the line the pieces so far have reached. Kept across
+        // pieces because a line the chunk size split arrives as several, and
+        // the window is over the line rather than over any one of them — see
+        // [`LogClip`].
+        let mut clip = LogClip::default();
         let mut open = false;
 
         // No ceiling on the walk: it stops as soon as it has counted back
@@ -1171,10 +1172,10 @@ impl LogReader {
                 open_line(out, lines, piece.writer());
                 open = true;
             }
-            clip_into(&mut out[lines].text, piece.as_str(), &mut column, region);
+            clip_into(&mut out[lines].text, piece.as_str(), &mut clip, region);
             if piece.newline() {
                 lines += 1;
-                column = 0;
+                clip = LogClip::default();
                 open = false;
             }
         }
@@ -1191,11 +1192,11 @@ impl LogReader {
         if region.line_start < nearest {
             for partial in &self.partials[held - nearest..held - region.line_start] {
                 open_line(out, lines, partial.writer);
-                let mut column = 0;
+                let mut clip = LogClip::default();
                 clip_into(
                     &mut out[lines].text,
                     partial.text.as_str(),
-                    &mut column,
+                    &mut clip,
                     region,
                 );
                 lines += 1;
@@ -1362,10 +1363,22 @@ fn open_line(out: &mut Vec<LogLine>, line: usize, writer: LogWriterId) {
 /// reached, and is advanced past all of `text` whether or not any of it was
 /// taken — the window is over the line, and a piece entirely to the left of
 /// it still moves the position along.
-fn clip_into(out: &mut String, text: &str, column: &mut usize, region: LogRegion) {
-    for character in text.chars() {
-        let start = *column;
-        *column += character.width().unwrap_or(0);
+fn clip_into(out: &mut String, text: &str, clip: &mut LogClip, region: LogRegion) {
+    let bytes = text.as_bytes();
+    for (index, character) in text.char_indices() {
+        let mut shown = LogClipShown::default();
+        for byte in &bytes[index..index + character.len_utf8()] {
+            clip.parser.advance(&mut shown, *byte);
+        }
+        if shown.0.is_none() {
+            // A sequence's own bytes. They take no columns, and are kept
+            // wherever they fall — including left of the window, since what
+            // colours the visible run is usually set before it.
+            out.push(character);
+            continue;
+        }
+        let start = clip.column;
+        clip.column += character.width().unwrap_or(0);
         if start >= region.column_end {
             // Past the right hand edge, and so is everything after it. The
             // position is left where it is because nothing will read it
@@ -1374,9 +1387,46 @@ fn clip_into(out: &mut String, text: &str, column: &mut usize, region: LogRegion
         }
         // A character straddling an edge is dropped: half of one is not
         // something a terminal can draw.
-        if start >= region.column_start && *column <= region.column_end {
+        if start >= region.column_start && clip.column <= region.column_end {
             out.push(character);
         }
+    }
+}
+
+/// How far into a line [`clip_into`] has got.
+///
+/// One value and not two `&mut`s because a line arrives in pieces and both
+/// halves have to survive the gap between them: at [`LOG_CHUNK_SIZE`] a
+/// `\x1b[1;32m` sitting across a chunk boundary is routine rather than a
+/// corner, and a walk that forgot it was mid sequence would count the
+/// parameters as text and cut the sequence in half.
+///
+/// Reset per line by the caller, so nothing an unterminated sequence does
+/// reaches the line after it.
+#[derive(Default)]
+struct LogClip {
+    /// The column the next character lands in. A sequence's bytes take none.
+    column: usize,
+    /// Where the walk is in the escape grammar.
+    ///
+    /// Borrowed rather than written here, and from the crate `clap` already
+    /// pulls in: the screen has to walk the same grammar to know which run
+    /// each colour applies to, and two copies of where a sequence ends is a
+    /// second chance for the window and the render to disagree.
+    parser: Parser,
+}
+
+/// Whether the bytes just fed made a character the screen would show.
+///
+/// Every other callback is left at its default, which is the whole of what
+/// this has to say: anything that is not text is a sequence, and a sequence
+/// takes no columns whatever it turns out to mean.
+#[derive(Default)]
+struct LogClipShown(Option<char>);
+
+impl Perform for LogClipShown {
+    fn print(&mut self, character: char) {
+        self.0 = Some(character);
     }
 }
 
@@ -2149,6 +2199,118 @@ mod test {
 
         assert_eq!(columns(&reader, 0..1, 0..4), ["cora"]);
         assert_eq!(columns(&reader, 0..1, 4..7), ["ção"]);
+    }
+
+    /// Whatever a terminal reads as a command rather than as text takes no
+    /// columns: a window of ten is ten visible characters, however many bytes
+    /// of colour are threaded through them.
+    #[test]
+    fn an_escape_sequence_takes_no_columns() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("\u{1b}[31mvermelho\u{1b}[0m normal\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        let line = &columns(&reader, 0..1, 0..10)[0];
+        assert_eq!(visible(line), "vermelho n");
+    }
+
+    /// Half a sequence is worse than none: a terminal handed one would read
+    /// the parameters of the next as text, or sit in a colour nothing closes.
+    #[test]
+    fn a_window_never_cuts_a_sequence_in_half() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("ab\u{1b}[1;32mcd\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        // The window ends inside the run the sequence sits in.
+        let line = &columns(&reader, 0..1, 0..3)[0];
+        assert!(line.contains("\u{1b}[1;32m"), "{line:?}");
+        assert_eq!(visible(line), "abc");
+    }
+
+    /// What colours the window is usually to the left of it, so a sequence
+    /// before `column_start` is kept while the text there is dropped —
+    /// otherwise scrolling right hands the pane the wrong colour.
+    #[test]
+    fn a_sequence_left_of_the_window_is_kept() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("\u{1b}[31mabcdef\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        let line = &columns(&reader, 0..1, 3..6)[0];
+        assert_eq!(line, "\u{1b}[31mdef");
+    }
+
+    /// The state that matters most, because a chunk is [`LOG_CHUNK_SIZE`] and
+    /// a coloured line runs past one constantly: a walk that forgot it was
+    /// mid sequence at the boundary would count `31m` as three columns of
+    /// text.
+    #[test]
+    fn a_sequence_split_across_chunks_is_still_one_sequence() {
+        let log = Log::new(4096);
+        let mut buffer = LogBuffer::new(log.writer());
+        let head = "a".repeat(LOG_CHUNK_SIZE - 2);
+        let line = format!("{head}\u{1b}[31mbbb\n");
+        buffer.write(line.as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        let back = &columns(&reader, 0..1, 0..usize::MAX)[0];
+        assert!(back.contains("\u{1b}[31m"), "the sequence arrived broken");
+        assert_eq!(visible(back).len(), head.len() + 3);
+    }
+
+    /// A device control string carries a payload that is not text either —
+    /// sixel, a `tmux` passthrough — and the whole of it takes no columns.
+    ///
+    /// This is what walking the real grammar buys over knowing `CSI` and
+    /// `OSC`: `ESC P` opens a string, and a walk that read it as a two
+    /// character sequence would count the payload as six columns of text.
+    #[test]
+    fn a_device_control_string_takes_no_columns() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("ab\u{1b}Pq#0;2\u{1b}\\cd\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(visible(&columns(&reader, 0..1, 0..usize::MAX)[0]), "abcd");
+    }
+
+    /// A sequence nothing closed is the line's own problem and not the next
+    /// line's — the walk starts each one over.
+    #[test]
+    fn an_unterminated_sequence_does_not_reach_the_next_line() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("\u{1b}[31maberto\nseguinte\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(columns(&reader, 0..2, 0..4), ["\u{1b}[31maber", "segu"]);
+    }
+
+    /// The text a terminal would actually show, for the assertions above.
+    fn visible(line: &str) -> String {
+        let mut parser: Parser = Parser::default();
+        let mut out = String::new();
+        let bytes = line.as_bytes();
+        for (index, character) in line.char_indices() {
+            let mut shown = LogClipShown::default();
+            for byte in &bytes[index..index + character.len_utf8()] {
+                parser.advance(&mut shown, *byte);
+            }
+            if shown.0.is_some() {
+                out.push(character);
+            }
+        }
+        out
     }
 
     /// A line the chunk size split arrives as several pieces, so the column
