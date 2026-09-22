@@ -196,13 +196,13 @@ impl ViewSocket {
         let cancel = CancellationToken::new();
         let task = tokio::spawn(
             Poller {
-                path,
                 poll,
                 shared: shared.clone(),
                 incoming,
                 cancel: cancel.clone(),
+                client,
             }
-            .run(client),
+            .run(),
         );
 
         Ok(Self {
@@ -341,11 +341,11 @@ impl ViewClient for ViewSocket {
 
 /// The half that talks, on a task of its own.
 struct Poller {
-    path: PathBuf,
     poll: Duration,
     shared: Arc<Shared>,
     incoming: mpsc::UnboundedReceiver<Outgoing>,
     cancel: CancellationToken,
+    client: ServerClient,
 }
 
 impl Poller {
@@ -354,30 +354,22 @@ impl Poller {
     /// A connection that fails ends that round and not the task: the session
     /// is a separate process and may be restarted under a screen that is
     /// still up. What the screen shows meanwhile is its last frame.
-    async fn run(mut self, client: ServerClient) {
-        let mut client = Some(client);
+    async fn run(mut self) {
         loop {
-            let connected = match client.take() {
-                Some(client) => client,
-                None => {
-                    tokio::select! {
-                        _ = self.cancel.cancelled() => return,
-                        _ = tokio::time::sleep(RECONNECT_DELAY) => {}
-                    }
-                    match ServerClient::connect(&self.path).await {
-                        Ok(client) => client,
-                        Err(_) => continue,
-                    }
-                }
-            };
-            if self.rounds(connected).await {
+            let is_connected = self.client.ensure_connected().await.is_ok();
+            if is_connected && self.rounds().await {
                 return;
             }
+            tokio::select! {
+                _ = self.cancel.cancelled() => return,
+                _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+            }
+            _ = self.client.reconnect().await;
         }
     }
 
     /// Poll on one connection until it fails; `true` if it was cancelled.
-    async fn rounds(&mut self, mut client: ServerClient) -> bool {
+    async fn rounds(&mut self) -> bool {
         // Held here rather than in the frame so a `304` costs a clone of what
         // is already known instead of the lines themselves crossing again.
         let mut held: Option<FrameLog> = None;
@@ -390,7 +382,7 @@ impl Poller {
                 _ = self.shared.moved.notified() => {}
                 _ = ticks.tick() => {}
             }
-            if self.round(&mut client, &mut held).await.is_err() {
+            if self.round(&mut held).await.is_err() {
                 return false;
             }
         }
@@ -400,23 +392,19 @@ impl Poller {
     ///
     /// The requests go one after another on the one connection, which is what
     /// makes "one in flight" structural rather than something to remember.
-    async fn round(
-        &mut self,
-        client: &mut ServerClient,
-        held: &mut Option<FrameLog>,
-    ) -> Result<(), ViewSocketError> {
+    async fn round(&mut self, held: &mut Option<FrameLog>) -> Result<(), ViewSocketError> {
         while let Ok(outgoing) = self.incoming.try_recv() {
             // The status is dropped: a command is fire and forget from here,
             // and a `404` off a row that has since gone is not a reason to
             // throw the connection away. The `?` is the connection itself.
             let _ = match outgoing {
-                Outgoing::Start(key) => client.start(&key).await?,
-                Outgoing::Stop(key) => client.stop(&key).await?,
-                Outgoing::Dispatch(key, event) => client.dispatch(&key, event).await?,
+                Outgoing::Start(key) => self.client.start(&key).await?,
+                Outgoing::Stop(key) => self.client.stop(&key).await?,
+                Outgoing::Dispatch(key, event) => self.client.dispatch(&key, event).await?,
             };
         }
 
-        let units = client.units().await?;
+        let units = self.client.units().await?;
         let wanted = self.shared.wanted.lock().clone();
 
         let (log, choices_key, choices) = match wanted {
@@ -425,8 +413,8 @@ impl Poller {
                 (None, None, Vec::new())
             }
             Some(wanted) => {
-                let log = self.fetch_log(client, &wanted, held).await?;
-                let choices = client.choices(&wanted.key).await.unwrap_or_default();
+                let log = self.fetch_log(&wanted, held).await?;
+                let choices = self.client.choices(&wanted.key).await.unwrap_or_default();
                 (log, Some(wanted.unit_key), choices)
             }
         };
@@ -448,8 +436,7 @@ impl Poller {
     /// lines already held rather than with a word meaning "keep yours": see
     /// [`Frame`].
     async fn fetch_log(
-        &self,
-        client: &mut ServerClient,
+        &mut self,
         wanted: &Wanted,
         held: &mut Option<FrameLog>,
     ) -> Result<Option<FrameLog>, ViewSocketError> {
@@ -460,7 +447,10 @@ impl Poller {
             .then(|| held.as_ref().map(FrameLog::revision))
             .flatten();
 
-        let answer = client.log(&wanted.key, wanted.region, revision).await?;
+        let answer = self
+            .client
+            .log(&wanted.key, wanted.region, revision)
+            .await?;
         match answer.kind {
             // The lines are already here; only the wire was spared.
             ServerLogKind::Unchanged => Ok(held.clone()),

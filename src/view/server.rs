@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -18,6 +18,10 @@ use crate::{
     view::client::{ViewSettings, ViewUnit},
 };
 
+enum ServerClientAddress {
+    UnixSocket(PathBuf),
+}
+
 /// One connection to a session's socket, with a method per route.
 ///
 /// Every route the server declares is spelled once, here. It was spelled at
@@ -29,7 +33,10 @@ use crate::{
 /// two of them disagree — a screen firing a command at a row that has gone
 /// keeps polling, and `tush dispatch` exits non-zero.
 pub struct ServerClient {
-    sender: SendRequest<Full<Bytes>>,
+    /// The address for the client
+    address: ServerClientAddress,
+    /// The sender. None if not connected
+    sender: Option<SendRequest<Full<Bytes>>>,
     /// Where a body that arrived in more than one frame is gathered, kept
     /// between requests so that it is refilled rather than built. Empty and
     /// untouched for a body that came whole, which is nearly all of them.
@@ -100,24 +107,48 @@ pub struct ServerLogBody {
 }
 
 impl ServerClient {
+    /// Only creates the client
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            address: ServerClientAddress::UnixSocket(path.into()),
+            sender: None,
+            spill: Vec::new(),
+        }
+    }
     /// Open a connection and put its driver on a task of its own.
     ///
     /// The driver is what moves bytes; dropping it closes the connection, so
     /// it is spawned and left to end when the socket does.
     pub async fn connect(path: &Path) -> Result<Self, ViewSocketError> {
-        let stream = UnixStream::connect(path)
-            .await
-            .map_err(ViewSocketError::Connect)?;
+        let mut client = Self::new(path);
+        client.reconnect().await?;
+        Ok(client)
+    }
+
+    /// Ensure the client is connected
+    pub async fn ensure_connected(&mut self) -> Result<(), ViewSocketError> {
+        if self.sender.is_none() {
+            self.reconnect().await?;
+        }
+        Ok(())
+    }
+
+    /// Reconnects the sender, if needed
+    pub async fn reconnect(&mut self) -> Result<(), ViewSocketError> {
+        self.sender = None;
+        let stream = match &self.address {
+            ServerClientAddress::UnixSocket(path_buf) => UnixStream::connect(path_buf)
+                .await
+                .map_err(ViewSocketError::Connect)?,
+        };
         let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
             .map_err(ViewSocketError::Http)?;
+        self.sender = Some(sender);
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        Ok(Self {
-            sender,
-            spill: Vec::new(),
-        })
+        Ok(())
     }
 
     /// Every unit, as a row.
@@ -361,6 +392,7 @@ impl ServerClient {
         body: Option<Vec<u8>>,
         revision: Option<u64>,
     ) -> Result<hyper::Response<Incoming>, ViewSocketError> {
+        let sender = self.sender.as_mut().ok_or(ViewSocketError::NotConnected)?;
         let mut builder = Request::builder()
             .method(method)
             // Required of every HTTP/1.1 request, and meaningless here: there
@@ -378,7 +410,7 @@ impl ServerClient {
             None => Full::new(Bytes::new()),
         };
         let request = builder.body(body).map_err(ViewSocketError::Request)?;
-        self.sender
+        sender
             .send_request(request)
             .await
             .map_err(ViewSocketError::Http)

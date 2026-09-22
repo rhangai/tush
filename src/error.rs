@@ -122,6 +122,8 @@ pub enum ServerError {
 /// which neither waits nor fails.
 #[derive(Debug, thiserror::Error)]
 pub enum ViewSocketError {
+    #[error("socket not connected")]
+    NotConnected,
     #[error("could not reach the session: {0}")]
     Connect(std::io::Error),
     #[error("the session answered badly: {0}")]
