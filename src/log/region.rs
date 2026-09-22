@@ -209,6 +209,12 @@ pub enum LogColor {
 /// the `38` itself (`38:5:1`) or as the parameters after it (`38;5;1`), and
 /// both spellings are in the wild.
 fn sgr_color<'a>(param: &[u16], rest: &mut impl Iterator<Item = &'a [u16]>) -> Option<LogColor> {
+    // T.416 puts a colour space id between the `2` and the red and writes it
+    // empty — `38:2::10:20:30` — which arrives as a zero. Counted and not
+    // read, since an empty subparameter and a real `0` are the same word by
+    // the time it gets here: four after the `2` mean the slot is there, three
+    // mean it is not.
+    let padded = param.len() > 5;
     let mut subs = param[1..].iter().copied();
     let mut next = move || {
         subs.next()
@@ -216,7 +222,12 @@ fn sgr_color<'a>(param: &[u16], rest: &mut impl Iterator<Item = &'a [u16]>) -> O
     };
     match next()? {
         5 => Some(LogColor::Indexed(next()? as u8)),
-        2 => Some(LogColor::Rgb(next()? as u8, next()? as u8, next()? as u8)),
+        2 => {
+            if padded {
+                next()?;
+            }
+            Some(LogColor::Rgb(next()? as u8, next()? as u8, next()? as u8))
+        }
         _ => None,
     }
 }
@@ -318,6 +329,11 @@ pub(super) struct LogClip {
     /// Borrowed rather than written here, and from the crate `clap` already
     /// pulls in: writing a second one is writing a second opinion about where
     /// a sequence ends.
+    ///
+    /// Its `core` feature is on to keep the OSC buffer inline: one of these is
+    /// built per line, and a `Vec` there costs three allocations for every
+    /// line with a hyperlink in it, every frame. Measured, and paid for in
+    /// size — 424 bytes against 1432.
     parser: Parser,
     /// What the sequences so far add up to, which is what the next visible
     /// character is drawn in.
@@ -431,6 +447,16 @@ mod test {
     fn a_colour_spelled_out_is_read_in_full() {
         assert_eq!(
             style_of("\u{1b}[48;2;10;20;30m").background,
+            Some(LogColor::Rgb(10, 20, 30))
+        );
+    }
+
+    /// T.416 writes an empty colour space id before the red, and it arrives
+    /// as a zero — read as a component it shifts every one of them along.
+    #[test]
+    fn a_colour_space_slot_is_not_a_component() {
+        assert_eq!(
+            style_of("\u{1b}[38:2::10:20:30m").foreground,
             Some(LogColor::Rgb(10, 20, 30))
         );
     }
