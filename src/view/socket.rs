@@ -12,7 +12,7 @@ use crate::{
     util::str::SmallStr,
     view::{
         client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
-        server::{ServerClient, ServerLogKind},
+        server::{ServerClient, ServerLog, ServerLogKind},
     },
 };
 
@@ -37,12 +37,70 @@ struct Wanted {
 }
 
 /// One unit's log, as a frame carries it.
+///
+/// The key and the answer, and nothing taken apart from them: the rectangle,
+/// the revision and the lines are all inside the [`ServerLog`], which is the
+/// buffer [`log_in_place`](ServerClient::log_in_place) writes into. Read
+/// through methods so that reading cannot take it apart — a caller that only
+/// wanted to look at the region has no business owning the lines.
 #[derive(Clone)]
 struct FrameLog {
-    unit_key: AppUnitKey,
-    region: LogRegion,
-    revision: u64,
-    lines: Vec<LogLine>,
+    /// Which unit the answer is about, and `None` for a buffer nothing has
+    /// been read into yet: an [`AppUnitKey`] has no empty value, every one of
+    /// them having come from the interner.
+    unit_key: Option<AppUnitKey>,
+    log: ServerLog,
+}
+
+impl FrameLog {
+    /// An empty buffer, naming no unit.
+    fn new() -> Self {
+        Self {
+            unit_key: None,
+            log: ServerLog::default(),
+        }
+    }
+
+    /// Which unit the answer inside is about.
+    fn unit_key(&self) -> Option<AppUnitKey> {
+        self.unit_key
+    }
+
+    /// Say which unit the next answer is about.
+    ///
+    /// Apart from [`server_log_mut`](FrameLog::server_log_mut) because the two
+    /// are written at different moments: the key is known before the request
+    /// goes out, the answer only after it comes back.
+    fn set_unit_key(&mut self, unit_key: AppUnitKey) {
+        self.unit_key = Some(unit_key);
+    }
+
+    /// The buffer to read the next answer into.
+    fn server_log_mut(&mut self) -> &mut ServerLog {
+        &mut self.log
+    }
+
+    /// Which of the three things the session last said.
+    fn kind(&self) -> ServerLogKind {
+        self.log.kind
+    }
+
+    /// The lines as they stand. What they are worth depends on
+    /// [`kind`](FrameLog::kind) — see [`ServerLog`].
+    fn lines(&self) -> &Vec<LogLine> {
+        &self.log.body.lines
+    }
+
+    /// The rectangle those lines actually came out as, which can be smaller
+    /// than the one asked for.
+    fn region(&self) -> LogRegion {
+        self.log.body.region
+    }
+
+    /// The revision they were read at, for the next `If-None-Match`.
+    fn revision(&self) -> u64 {
+        self.log.body.revision
+    }
 }
 
 /// One poll's worth of session, published whole.
@@ -254,7 +312,7 @@ impl ViewClient for ViewSocket {
     /// is what [`ViewApp`](crate::view::ViewApp) does for the same reason,
     /// and the wakeup below is what keeps that gap to a round trip.
     fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion) {
-        let moved = self.log.as_ref().map(|log| log.unit_key) != key;
+        let moved = self.log.as_ref().and_then(FrameLog::unit_key) != key;
         if moved {
             self.log = None;
         }
@@ -274,9 +332,9 @@ impl ViewClient for ViewSocket {
     fn log(&self) -> Option<ViewLog<'_>> {
         let log = self.log.as_ref()?;
         Some(ViewLog {
-            region: log.region,
-            revision: log.revision,
-            lines: &log.lines,
+            region: log.region(),
+            revision: log.revision(),
+            lines: log.lines(),
         })
     }
 }
@@ -395,11 +453,11 @@ impl Poller {
         wanted: &Wanted,
         held: &mut Option<FrameLog>,
     ) -> Result<Option<FrameLog>, ViewSocketError> {
-        let same = held
-            .as_ref()
-            .is_some_and(|log| log.unit_key == wanted.unit_key && log.region == wanted.region);
+        let same = held.as_ref().is_some_and(|log| {
+            log.unit_key() == Some(wanted.unit_key) && log.region() == wanted.region
+        });
         let revision = same
-            .then(|| held.as_ref().map(|log| log.revision))
+            .then(|| held.as_ref().map(FrameLog::revision))
             .flatten();
 
         let answer = client.log(&wanted.key, wanted.region, revision).await?;
@@ -411,12 +469,9 @@ impl Poller {
                 Ok(None)
             }
             ServerLogKind::Changed => {
-                let log = FrameLog {
-                    unit_key: wanted.unit_key,
-                    region: answer.body.region,
-                    revision: answer.body.revision,
-                    lines: answer.body.lines,
-                };
+                let mut log = FrameLog::new();
+                log.set_unit_key(wanted.unit_key);
+                *log.server_log_mut() = answer;
                 *held = Some(log.clone());
                 Ok(Some(log))
             }

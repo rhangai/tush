@@ -48,6 +48,7 @@ pub struct ServerClient {
 /// being exact: `Changed` has just rewritten it, `Unchanged` has not touched it
 /// and does not need to — nothing moved, so what is in there still *is* the
 /// window — and `Gone` has not touched it either, and there it is stale.
+#[derive(Clone)]
 pub struct ServerLog {
     pub kind: ServerLogKind,
     pub body: ServerLogBody,
