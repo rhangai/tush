@@ -472,9 +472,9 @@ mod test {
     }
 
     impl Fake {
-        /// Writer zero, for the tests that only have one.
+        /// The first process id, for the tests that only have one writer.
         fn new(handed: &Rc<RefCell<Handed>>) -> Self {
-            Self::with_id(handed, 0)
+            Self::with_id(handed, 2)
         }
 
         /// A writer with a stamp of its own, sharing one record with the
@@ -708,7 +708,7 @@ mod test {
         let longa = "z".repeat(LOG_CHUNK_SIZE * 3);
         buffer(&handed).write(format!("{longa}\n").as_bytes());
 
-        assert_eq!(lines(&handed), [(LogWriterId::new(0), longa)]);
+        assert_eq!(lines(&handed), [(LogWriterId::new(2), longa)]);
     }
 
     /// The point of the stamp: two processes writing into one log stay
@@ -716,15 +716,15 @@ mod test {
     #[test]
     fn interleaved_writers_keep_their_lines_apart() {
         let handed = Handed::new();
-        let mut um = LogBufferAny::new(Fake::with_id(&handed, 0));
-        let mut dois = LogBufferAny::new(Fake::with_id(&handed, 1));
+        let mut um = LogBufferAny::new(Fake::with_id(&handed, 2));
+        let mut dois = LogBufferAny::new(Fake::with_id(&handed, 3));
 
         um.write(b"um-a\n");
         dois.write(b"dois-a\n");
         um.write(b"um-b\n");
         dois.write(b"dois-b\n");
 
-        let (a, b) = (LogWriterId::new(0), LogWriterId::new(1));
+        let (a, b) = (LogWriterId::new(2), LogWriterId::new(3));
         assert_eq!(
             lines(&handed),
             [
@@ -823,7 +823,7 @@ mod test {
         let mut buffer = buffer(&handed);
         while buffer.read(&mut src).await.unwrap() {}
 
-        let a = LogWriterId::new(0);
+        let a = LogWriterId::new(2);
         assert_eq!(lines(&handed), [(a, longa), (a, "depois".to_string())]);
     }
 
@@ -851,8 +851,8 @@ mod test {
     #[tokio::test]
     async fn a_split_line_is_not_spliced_with_another_writers() {
         let handed = Handed::new();
-        let mut longo = LogBufferAny::new(Fake::with_id(&handed, 0));
-        let mut curto = LogBufferAny::new(Fake::with_id(&handed, 1));
+        let mut longo = LogBufferAny::new(Fake::with_id(&handed, 2));
+        let mut curto = LogBufferAny::new(Fake::with_id(&handed, 3));
 
         // One read brings more than the line buffer holds without closing the
         // line, so it leaves as a fragment and the last chunk stays Partial.
@@ -867,7 +867,7 @@ mod test {
         let mut src = &b"FIM\n"[..];
         longo.read(&mut src).await.unwrap();
 
-        let (a, b) = (LogWriterId::new(0), LogWriterId::new(1));
+        let (a, b) = (LogWriterId::new(2), LogWriterId::new(3));
         let lines = lines(&handed);
         assert!(
             lines.contains(&(b, "do outro".to_string())),

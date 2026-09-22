@@ -2074,10 +2074,10 @@ mod test {
         let chunks: Vec<_> = reader.chunks().iter().filter(|c| !c.is_empty()).collect();
         assert_eq!(chunks.len(), 2);
         assert_eq!((chunks[0].count(), chunks[0].len()), (2, 4));
-        // Numbered from one: zero is [`LogWriterId::NOTES`].
-        assert_eq!(chunks[0].writer().index(), 1);
+        // Processes are numbered from two: one is [`LogWriterId::NOTES`].
+        assert_eq!(chunks[0].writer().index(), 2);
         assert_eq!((chunks[1].count(), chunks[1].len()), (1, 4));
-        assert_eq!(chunks[1].writer().index(), 2);
+        assert_eq!(chunks[1].writer().index(), 3);
     }
 
     /// A reader does not hold its log open: a view left behind on a unit that
