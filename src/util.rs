@@ -3,7 +3,7 @@
 pub mod arena;
 pub mod event;
 pub mod graph;
+pub mod jagged_vec;
 pub mod localring;
 pub mod str;
 pub mod types;
-pub mod vec;
