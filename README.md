@@ -192,11 +192,16 @@ FROM rust:1 AS tush
 RUN cargo install --git https://github.com/rhangai/tush
 
 FROM node:22
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=tush /usr/local/cargo/bin/tush /usr/local/bin/tush
 WORKDIR /app
 # So neither command has to spell it out, and neither depends on the
 # container having an XDG_RUNTIME_DIR.
 ENV TUSH_SOCKET=/tmp/tush.sock
+# An init as PID 1 — see below.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["tush", "serve", "-c", "tush.yaml"]
 ```
 
@@ -211,6 +216,16 @@ stop` sends `SIGTERM` to `tush serve`, which is the orderly shutdown — bear in
 mind that it gives a proc ten seconds before `SIGKILL`, which is also Docker's
 own default grace period, so a session with slow procs wants a longer
 `stop_grace_period`.
+
+**Give the container an init.** A session is a lot of processes, and as PID 1
+`tush` inherits every orphan among them — a `bash -c` wrapper that exits
+before what it started, anything a proc daemonises. It reaps the children it
+spawned itself and nothing else, so the rest pile up as zombies. That costs
+more at shutdown than in memory: a run is over when its process group is
+empty, and a zombie still answers a signal, so a proc that is really gone can
+sit there until the ten seconds run out. `tini` above does the reaping;
+`docker run --init` and `init: true` on a compose service are the same thing
+without touching the image.
 
 The same works wherever you can get a shell on the machine the session is on:
 `ssh -t host tush attach`.
