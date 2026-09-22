@@ -49,6 +49,49 @@ away twice. Tests belong on the data structures — `log`, `util`, `unit` — wh
 the arithmetic is subtle and the shape is settled. Ask before adding tests
 anywhere else.
 
+## Altitude
+
+**Answer at the altitude of the question.** A question about one line is
+answered about that line. Pointing at a call is not an invitation to redesign
+what it is part of — if the surrounding design is wrong, say so in two
+sentences and let that be decided on its own.
+
+**A finding is not a mandate.** Measuring one thing turns up another. Report
+it in a paragraph and stop: do not price it, do not offer three fixes, do not
+fix it. A bug found on the way to something else has taken over the session
+more than once, and each time the thing that was actually asked for arrived
+late behind it.
+
+**Before optimising anything, say in one sentence what the target is, and
+wait.** "Fewer allocator calls in the poll loop", "the same buffer refilled
+instead of rebuilt" and "fewer bytes on the wire" are three different jobs
+with three different answers. Building the wrong one costs a round of
+measurements and a rewrite, and the sentence costs one line.
+
+## Cleverness
+
+**Each of these needs permission, every time it is reached for:** a type
+parameter added so a name is not written twice; `Arc`, `Rc` or a refcount
+added so a clone goes away; `mem::forget`, `catch_unwind`, `unsafe`; a new
+trait; a dependency's undocumented or unstable feature. Every item is on the
+list because it was written here and taken out again.
+
+**Sharing is not reuse.** When the ask is about allocation, the answer is the
+same allocation being refilled — cleared and written into, or handed back and
+filled again. `Arc` removes a copy and leaves the allocation exactly where it
+was. An answer that begins "wrap it in" is not an answer to that question.
+
+**A field that only means something given another field is not a defect
+here.** Several types exist to keep a buffer alive between calls, and a buffer
+outliving its meaning is the point of them. Say in the doc what it holds in
+each case. Do not reach for a shape that makes the invalid state
+unrepresentable: it makes the surviving buffer unrepresentable too, which was
+the whole feature.
+
+**Prefer the version a tired reader gets right the first time.** If explaining
+the choice needs the words "generic", "blanket", "phantom" or "zero cost", it
+needed permission before it was written.
+
 ## Claims
 
 **Measure before asserting.** "This does not allocate", "this is not a hole",
