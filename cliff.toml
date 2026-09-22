@@ -1,0 +1,53 @@
+# git-cliff: turns the conventional-commit log into CHANGELOG.md and the
+# release notes, and computes the next version. Kept in the repo so a local
+# `git cliff` and the release workflow produce the same text.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented here.
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}{{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}\n
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+topo_order = false
+sort_commits = "oldest"
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactor" },
+  { message = "^doc", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  # Release commits are made by the workflow itself; they say nothing.
+  { message = "^chore\\(release\\)", skip = true },
+  # Skills and prompts for the agent are not part of the released binary.
+  { message = "^chore\\(ai\\)", skip = true },
+  { message = "^chore\\(doc\\)", group = "Documentation" },
+  { message = "^chore", group = "Miscellaneous" },
+  { message = "^ci|^build", group = "Build" },
+  { message = ".*", group = "Miscellaneous" },
+]
+
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = false
