@@ -20,23 +20,32 @@ procs:
 
 ## Structure
 
-`procs` holds the procs; [`log_size`](#log_size) sets how much output they
-keep. Under `procs`, every proc is written as an entry whose **key is the
-proc's name** — how you refer to it, and what `depends` entries point at.
+`procs` holds the procs. The keys beside it are the session's own settings:
+[`log_size`](#log_size) and [`parse_ansi`](#parse_ansi) are what a proc gets
+unless it says otherwise, and [`ui`](#ui) is about the screen rather than
+about any proc. Under `procs`, every proc is written as an entry whose **key
+is the proc's name** — how you refer to it, and what `depends` entries point
+at.
 
 ```yaml
-log_size: <size>                # optional
+log_size:   <size>               # optional
+parse_ansi: <boolean>            # optional
+
+ui:                              # optional
+  colors: <boolean>
 
 procs:
   <name>:
-    name:       <string>        # optional
-    name_short: <string>        # optional
-    group:      [<string>, ...] # optional
-    depends:    [<string>, ...] # optional
-    panel:      main | minor    # optional
-    log_size:   <size>          # optional
-    run:        <commands>      # optional
-    modes:      [<mode>, ...]   # optional
+    name:        <string>        # optional
+    name_short:  <string>        # optional
+    group:       [<string>, ...] # optional
+    depends:     [<string>, ...] # optional
+    working_dir: <path>          # optional
+    panel:       main | minor    # optional
+    log_size:    <size>          # optional
+    parse_ansi:  <boolean>       # optional
+    run:         <commands>      # optional
+    modes:       [<mode>, ...]   # optional
 ```
 
 | Key | Type | Meaning |
@@ -45,8 +54,10 @@ procs:
 | `name_short` | string | A shorter label, for where the full one will not fit |
 | `group` | list of strings | Groups this proc belongs to |
 | `depends` | list of strings | Procs that must be up before this one starts |
+| `working_dir` | [path](#working_dir) | Where its commands run |
 | `panel` | `main` or `minor` | Which of the two lists on screen it is drawn in |
 | `log_size` | [size](#log_size) | How much of this proc's output to keep |
+| `parse_ansi` | [boolean](#parse_ansi) | Whether its escape sequences are read as escape sequences |
 | `run` | [commands](#run) | The one way this proc runs |
 | `modes` | [list of modes](#modes) | Several named ways to run it |
 
@@ -134,8 +145,9 @@ modes:
     run: [npm, run, watch]
 ```
 
-Every mode needs a `name` and a `run`; `name_short` is the only other key it
-may have. A mode's `run` takes the same two spellings as a proc's.
+Every mode needs a `name` and a `run`; `name_short` and
+[`working_dir`](#working_dir) are the only other keys it may have. A mode's
+`run` takes the same two spellings as a proc's.
 
 Modes stay in the order you write them.
 
@@ -150,6 +162,41 @@ proc's key.
 web:
   depends: [api, database]
   run: [npm, run, dev]
+```
+
+---
+
+## `working_dir`
+
+Where the proc's commands run. Leave it out and they run wherever `tush` was
+started.
+
+```yaml
+web:
+  working_dir: ./frontend
+  run: [npm, run, dev]
+```
+
+A relative path is **relative to `tush`'s own working directory, not to the
+config file**. A config kept in `config/tush.yaml` and started from the
+project root still writes `./frontend`.
+
+Nothing checks the directory when the config loads, because a directory an
+earlier proc creates is a working config. One that is still missing when the
+proc starts fails the way a missing program does — and the log line names the
+directory, which is what tells the two apart.
+
+A mode may carry its own, and a mode's wins over the proc's:
+
+```yaml
+web:
+  working_dir: ./frontend
+  modes:
+    - name: Watch
+      run: [npm, run, dev]
+    - name: E2E
+      working_dir: ./e2e        # this mode only
+      run: [npm, test]
 ```
 
 ---
@@ -187,6 +234,60 @@ The memory is taken up front and for every proc, so the figure is what a proc
 costs whether or not it ever prints that much. That is the reason for the
 per-proc key: a session with one noisy watcher and ten setup scripts should
 not reserve the watcher's size eleven times.
+
+---
+
+## `parse_ansi`
+
+Whether a proc's escape sequences are read as escape sequences. On by default.
+At the top level it is what every proc gets; inside a proc it is what that one
+gets instead.
+
+```yaml
+parse_ansi: true            # what a proc gets unless it says otherwise
+
+procs:
+  api:
+    run: [cargo, run]
+
+  codegen:
+    parse_ansi: false       # show exactly what it writes
+    run: [./scripts/gen.sh]
+```
+
+On, a sequence is consumed where the line is cut: its bytes leave the text and
+what they said becomes the colour of the run that follows. Off, the sequence
+stays in the line as the characters it is made of, and each of them takes a
+column like any other character.
+
+**It is not only about colour**, which is why it is not under [`ui`](#ui):
+reading the sequences is what decides where a column falls, so the answer
+reaches the log itself and not just the screen. A proc that redraws a progress
+bar and a proc whose output you want to read exactly as written want opposite
+answers — hence the per-proc key.
+
+---
+
+## `ui`
+
+What the screen does, as against what a proc does. Its own section because
+nothing in it is about a proc.
+
+```yaml
+ui:
+  colors: true
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `colors` | boolean | Whether the colours found in a log are painted. On by default. |
+
+With `colors: false` the sequences are still read — that is
+[`parse_ansi`](#parse_ansi) — so what you get is the text without them, for a
+terminal that would make a mess of the colours.
+
+It belongs to the session and not to the screen reading it, so a `tush attach`
+is told what this file said.
 
 ---
 

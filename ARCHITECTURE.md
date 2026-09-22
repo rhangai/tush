@@ -23,6 +23,21 @@ it buys the caller.
 `view` is the one seam that points both ways by design: it reads `app`, `log`,
 `runner` and `unit`, and none of them read it.
 
+| Module | What is in it |
+| --- | --- |
+| `util` | Data structures with nothing to do with processes: `SmallStr`, the arenas and rings the logs are built on, the dependency graph. |
+| `base` | The OS: a child `Process` in its own group, and the `ExitReason` it finished with. |
+| `log` | Capture of a proc's output into a bounded `Log`, and the readers and regions a view sees it through. |
+| `runner` | Supervision of one run: the `Runner` trait, its `RunnerHandle` and the `RunnerState` it publishes. |
+| `unit` | A named, restartable proc, and the `UnitBehavior` that decides what starting it means. |
+| `app` | A checked `Config` and the session built from it: the unit map, the dependency graph, the schedule. |
+| `config` | The file, parsed. |
+| `view` | A session as something outside it reads and drives it — `ViewClient` and its two implementations. |
+| `ui` | The terminal screen. |
+| `server` | A session with no screen, listening for something to attach. |
+| `cli` | The command line, as `clap` reads it. |
+| `error` | Every error type in the crate, gathered in one file. |
+
 ## A handle is one run; a unit outlives its runs
 
 `RunnerHandle` supervises exactly one run and stays terminal once it is.
@@ -34,6 +49,18 @@ Handles are created **parked** at a start gate. The replacement can therefore
 exist and be observed before the outgoing run has finished dying, which is
 what makes "no two dev servers fighting over the same port" structural rather
 than a sequence somebody has to get right.
+
+## A run's state only moves forward
+
+`RunnerState`'s variants are ordered — everything from `ExitSuccess` down is
+terminal — and the three `set_*` methods are the whole of the rule: each names
+the states it may leave and returns the rest untouched. A report that arrives
+late, a `run` closure firing after an abort, is dropped rather than rewinding
+the run, and how a run finished outranks the abort that came too late.
+
+It is published on a `watch`, so anything — a screen, the schedule, another
+unit — reads the latest state without a channel of its own and without the
+run knowing who is looking.
 
 ## `App` is the proof
 
