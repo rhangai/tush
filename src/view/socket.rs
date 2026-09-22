@@ -1,10 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use http_body_util::{BodyExt, Full};
-use hyper::{Method, Request, StatusCode, body::Bytes, client::conn::http1::SendRequest, header};
-use hyper_util::rt::TokioIo;
 use parking_lot::Mutex;
-use tokio::{net::UnixStream, sync::Notify, sync::mpsc, task::JoinHandle};
+use tokio::{sync::Notify, sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -12,8 +9,11 @@ use crate::{
     error::ViewSocketError,
     log::{LogLine, LogRegion},
     unit::{UnitChoice, UnitEvent},
-    util::str::{SmallStr, SmallStrBuilder},
-    view::client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
+    util::str::SmallStr,
+    view::{
+        client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
+        server::{ServerClient, ServerLog},
+    },
 };
 
 /// How long to wait before reaching for a server that went away.
@@ -26,13 +26,13 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 
 /// What the log pane asked for, as the task reads it.
 ///
-/// The key rides along, already encoded, so the task never has to turn a
-/// [`AppUnitKey`] back into one: a URL addresses a unit by the key it was
-/// declared under, and the row the pane pointed at holds both.
+/// The config key rides along so the task never has to turn an [`AppUnitKey`]
+/// back into one: the client addresses a unit by the key it was declared
+/// under, and the row the pane pointed at holds both.
 #[derive(Clone)]
 struct Wanted {
     unit_key: AppUnitKey,
-    key_path: SmallStr,
+    key: SmallStr,
     region: LogRegion,
 }
 
@@ -123,11 +123,11 @@ impl ViewSocket {
     /// drawn against a session it has not met — and a socket with nothing on
     /// the other end fails here, where there is still a terminal to print to.
     pub async fn connect(path: PathBuf, poll: Duration) -> Result<Self, ViewSocketError> {
-        let mut sender = dial(&path).await?;
-        let units: Vec<ViewUnit> = fetch(&mut sender, Method::GET, "/units", None).await?;
+        let mut client = ServerClient::connect(&path).await?;
+        let units = client.units().await?;
         // Asked for once, here: they come from a config the session read
         // before it existed, so no later poll would ever find them changed.
-        let settings: ViewSettings = fetch(&mut sender, Method::GET, "/settings", None).await?;
+        let settings = client.settings().await?;
 
         let shared = Arc::new(Shared {
             frame: Mutex::new(None),
@@ -144,7 +144,7 @@ impl ViewSocket {
                 incoming,
                 cancel: cancel.clone(),
             }
-            .run(sender),
+            .run(client),
         );
 
         Ok(Self {
@@ -160,19 +160,19 @@ impl ViewSocket {
         })
     }
 
-    /// The config key an [`AppUnitKey`] stands for, ready to go into a path.
+    /// The config key an [`AppUnitKey`] stands for.
     ///
-    /// The key and not [`name`](ViewUnit::name): the server resolves a path
-    /// segment through the interner, and the interner only ever saw the key.
-    ///
-    /// Encoded here and not at the five `format!`s that use it, so a route
-    /// added later cannot be the one that forgets.
+    /// The key and not [`name`](ViewUnit::name): the server resolves a unit
+    /// through the interner, and the interner only ever saw the key. Handing
+    /// it over raw is deliberate — turning one into a path segment belongs to
+    /// [`ServerClient`], which is the only thing that knows what a route
+    /// looks like.
     ///
     /// A scan and not a map: the rows are a session's worth of units, in
     /// name order, and this happens on a keypress rather than on a frame.
-    fn key_path(&self, key: AppUnitKey) -> Option<SmallStr> {
+    fn config_key(&self, key: AppUnitKey) -> Option<SmallStr> {
         let unit = self.units.iter().find(|unit| unit.unit_key == key)?;
-        Some(encode_path_segment(&unit.key))
+        Some(unit.key.clone())
     }
 }
 
@@ -235,11 +235,11 @@ impl ViewClient for ViewSocket {
     /// command with, and the same gap.
     fn send(&self, command: ViewCommand) {
         let outgoing = match command {
-            ViewCommand::Start { key } => self.key_path(key).map(Outgoing::Start),
-            ViewCommand::Stop { key } => self.key_path(key).map(Outgoing::Stop),
-            ViewCommand::Dispatch { key, event } => {
-                self.key_path(key).map(|key| Outgoing::Dispatch(key, event))
-            }
+            ViewCommand::Start { key } => self.config_key(key).map(Outgoing::Start),
+            ViewCommand::Stop { key } => self.config_key(key).map(Outgoing::Stop),
+            ViewCommand::Dispatch { key, event } => self
+                .config_key(key)
+                .map(|key| Outgoing::Dispatch(key, event)),
         };
         if let Some(outgoing) = outgoing {
             let _ = self.commands.send(outgoing);
@@ -261,7 +261,7 @@ impl ViewClient for ViewSocket {
         let wanted = key.and_then(|unit_key| {
             Some(Wanted {
                 unit_key,
-                key_path: self.key_path(unit_key)?,
+                key: self.config_key(unit_key)?,
                 region,
             })
         });
@@ -296,18 +296,18 @@ impl Poller {
     /// A connection that fails ends that round and not the task: the session
     /// is a separate process and may be restarted under a screen that is
     /// still up. What the screen shows meanwhile is its last frame.
-    async fn run(mut self, sender: SendRequest<Full<Bytes>>) {
-        let mut sender = Some(sender);
+    async fn run(mut self, client: ServerClient) {
+        let mut client = Some(client);
         loop {
-            let connected = match sender.take() {
-                Some(sender) => sender,
+            let connected = match client.take() {
+                Some(client) => client,
                 None => {
                     tokio::select! {
                         _ = self.cancel.cancelled() => return,
                         _ = tokio::time::sleep(RECONNECT_DELAY) => {}
                     }
-                    match dial(&self.path).await {
-                        Ok(sender) => sender,
+                    match ServerClient::connect(&self.path).await {
+                        Ok(client) => client,
                         Err(_) => continue,
                     }
                 }
@@ -319,7 +319,7 @@ impl Poller {
     }
 
     /// Poll on one connection until it fails; `true` if it was cancelled.
-    async fn rounds(&mut self, mut sender: SendRequest<Full<Bytes>>) -> bool {
+    async fn rounds(&mut self, mut client: ServerClient) -> bool {
         // Held here rather than in the frame so a `304` costs a clone of what
         // is already known instead of the lines themselves crossing again.
         let mut held: Option<FrameLog> = None;
@@ -332,7 +332,7 @@ impl Poller {
                 _ = self.shared.moved.notified() => {}
                 _ = ticks.tick() => {}
             }
-            if self.round(&mut sender, &mut held).await.is_err() {
+            if self.round(&mut client, &mut held).await.is_err() {
                 return false;
             }
         }
@@ -344,22 +344,21 @@ impl Poller {
     /// makes "one in flight" structural rather than something to remember.
     async fn round(
         &mut self,
-        sender: &mut SendRequest<Full<Bytes>>,
+        client: &mut ServerClient,
         held: &mut Option<FrameLog>,
     ) -> Result<(), ViewSocketError> {
         while let Ok(outgoing) = self.incoming.try_recv() {
-            let (path, body) = match outgoing {
-                Outgoing::Start(key) => (format!("/units/{key}/start"), None),
-                Outgoing::Stop(key) => (format!("/units/{key}/stop"), None),
-                Outgoing::Dispatch(key, event) => (
-                    format!("/units/{key}/dispatch"),
-                    Some(serde_json::to_vec(&event).unwrap_or_default()),
-                ),
+            // The status is dropped: a command is fire and forget from here,
+            // and a `404` off a row that has since gone is not a reason to
+            // throw the connection away. The `?` is the connection itself.
+            let _ = match outgoing {
+                Outgoing::Start(key) => client.start(&key).await?,
+                Outgoing::Stop(key) => client.stop(&key).await?,
+                Outgoing::Dispatch(key, event) => client.dispatch(&key, event).await?,
             };
-            send(sender, Method::POST, &path, body).await?;
         }
 
-        let units: Vec<ViewUnit> = fetch(sender, Method::GET, "/units", None).await?;
+        let units = client.units().await?;
         let wanted = self.shared.wanted.lock().clone();
 
         let (log, choices_key, choices) = match wanted {
@@ -368,15 +367,8 @@ impl Poller {
                 (None, None, Vec::new())
             }
             Some(wanted) => {
-                let log = self.fetch_log(sender, &wanted, held).await?;
-                let choices = fetch(
-                    sender,
-                    Method::GET,
-                    &format!("/units/{}/choices", wanted.key_path),
-                    None,
-                )
-                .await
-                .unwrap_or_default();
+                let log = self.fetch_log(client, &wanted, held).await?;
+                let choices = client.choices(&wanted.key).await.unwrap_or_default();
                 (log, Some(wanted.unit_key), choices)
             }
         };
@@ -394,11 +386,12 @@ impl Poller {
     ///
     /// The revision goes out as `If-None-Match`, which is the test
     /// [`ViewApp`](crate::view::ViewApp) does against its own reader moved
-    /// onto the wire. A `304` answers with the lines already held rather than
-    /// with a word meaning "keep yours": see [`Frame`].
+    /// onto the wire. [`Unchanged`](ServerLog::Unchanged) answers with the
+    /// lines already held rather than with a word meaning "keep yours": see
+    /// [`Frame`].
     async fn fetch_log(
         &self,
-        sender: &mut SendRequest<Full<Bytes>>,
+        client: &mut ServerClient,
         wanted: &Wanted,
         held: &mut Option<FrameLog>,
     ) -> Result<Option<FrameLog>, ViewSocketError> {
@@ -409,159 +402,23 @@ impl Poller {
             .then(|| held.as_ref().map(|log| log.revision))
             .flatten();
 
-        let region = wanted.region;
-        let path = format!(
-            "/units/{}/log?line_start={}&line_end={}&column_start={}&column_end={}",
-            wanted.key_path,
-            region.line_start,
-            region.line_end,
-            region.column_start,
-            region.column_end
-        );
-        let response = request(sender, Method::GET, &path, None, revision).await?;
-        if response.0 == StatusCode::NOT_MODIFIED {
+        match client.log(&wanted.key, wanted.region, revision).await? {
             // The lines are already here; only the wire was spared.
-            return Ok(held.clone());
+            ServerLog::Unchanged => Ok(held.clone()),
+            ServerLog::Gone => {
+                *held = None;
+                Ok(None)
+            }
+            ServerLog::Body(body) => {
+                let log = FrameLog {
+                    unit_key: wanted.unit_key,
+                    region: body.region,
+                    revision: body.revision,
+                    lines: body.lines,
+                };
+                *held = Some(log.clone());
+                Ok(Some(log))
+            }
         }
-        if response.0 == StatusCode::NOT_FOUND {
-            *held = None;
-            return Ok(None);
-        }
-
-        let body: LogBody = serde_json::from_slice(&response.1)?;
-        let log = FrameLog {
-            unit_key: wanted.unit_key,
-            region: body.region,
-            revision: body.revision,
-            lines: body.lines,
-        };
-        *held = Some(log.clone());
-        Ok(Some(log))
     }
-}
-
-/// What the log route answers with.
-#[derive(serde::Deserialize)]
-struct LogBody {
-    region: LogRegion,
-    revision: u64,
-    lines: Vec<LogLine>,
-}
-
-/// `key` with everything a path segment cannot carry percent-encoded.
-///
-/// Unreserved only (RFC 3986 §2.3), which is the conservative set: a key is
-/// whatever the config file declared it under, and a space in one makes a
-/// request line that does not parse while a `/` makes one that routes
-/// somewhere else. Over-encoding costs nothing, the server decoding the
-/// segment before it looks the key up.
-///
-/// Returned untouched when there is nothing to encode — which is every key
-/// anybody writes — so the common path is the copy it already was.
-pub(super) fn encode_path_segment(key: &SmallStr) -> SmallStr {
-    if key.bytes().all(is_unreserved) {
-        return key.clone();
-    }
-    // Byte at a time, so a multi-byte character becomes one `%XX` per byte
-    // and the server's decoder puts the same UTF-8 back together.
-    let mut encoded = SmallStrBuilder::new();
-    for byte in key.bytes() {
-        if is_unreserved(byte) {
-            encoded.push(byte as char);
-            continue;
-        }
-        encoded.push('%');
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0xf) as usize] as char);
-    }
-    encoded.finish()
-}
-
-/// Upper case, which is the spelling RFC 3986 says to produce.
-const HEX: &[u8; 16] = b"0123456789ABCDEF";
-
-/// The characters a path segment carries as themselves.
-fn is_unreserved(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
-}
-
-/// Open a connection and put its driver on a task of its own.
-///
-/// The driver is what moves bytes; dropping it closes the connection, so it
-/// is spawned and left to end when the socket does.
-pub(super) async fn dial(path: &PathBuf) -> Result<SendRequest<Full<Bytes>>, ViewSocketError> {
-    let stream = UnixStream::connect(path)
-        .await
-        .map_err(ViewSocketError::Connect)?;
-    let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-        .await
-        .map_err(ViewSocketError::Http)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(sender)
-}
-
-/// One request, and the status and bytes it answered with.
-pub(super) async fn request(
-    sender: &mut SendRequest<Full<Bytes>>,
-    method: Method,
-    path: &str,
-    body: Option<Vec<u8>>,
-    revision: Option<u64>,
-) -> Result<(StatusCode, Bytes), ViewSocketError> {
-    let mut builder = Request::builder()
-        .method(method)
-        // Required of every HTTP/1.1 request, and meaningless here: there is
-        // no host, only the socket the connection was opened on.
-        .header(header::HOST, "localhost")
-        .uri(path);
-    if let Some(revision) = revision {
-        builder = builder.header(header::IF_NONE_MATCH, format!("\"{revision}\""));
-    }
-    let body = match body {
-        Some(body) => {
-            builder = builder.header(header::CONTENT_TYPE, "application/json");
-            Full::new(Bytes::from(body))
-        }
-        None => Full::new(Bytes::new()),
-    };
-    let request = builder.body(body).map_err(ViewSocketError::Request)?;
-    let response = sender
-        .send_request(request)
-        .await
-        .map_err(ViewSocketError::Http)?;
-    let status = response.status();
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .map_err(ViewSocketError::Http)?
-        .to_bytes();
-    Ok((status, bytes))
-}
-
-/// A request whose answer is read as `T`.
-pub(super) async fn fetch<T: serde::de::DeserializeOwned>(
-    sender: &mut SendRequest<Full<Bytes>>,
-    method: Method,
-    path: &str,
-    body: Option<Vec<u8>>,
-) -> Result<T, ViewSocketError> {
-    let (status, bytes) = request(sender, method, path, body, None).await?;
-    if !status.is_success() {
-        return Err(ViewSocketError::Status(status.as_u16()));
-    }
-    Ok(serde_json::from_slice(&bytes)?)
-}
-
-/// A request whose answer is only whether it arrived.
-async fn send(
-    sender: &mut SendRequest<Full<Bytes>>,
-    method: Method,
-    path: &str,
-    body: Option<Vec<u8>>,
-) -> Result<(), ViewSocketError> {
-    request(sender, method, path, body, None).await?;
-    Ok(())
 }

@@ -8,6 +8,8 @@
 //! - [`ViewClient`] — the seam itself.
 //! - [`ViewUnit`], [`ViewCommand`], [`ViewLog`] — what goes across it.
 //! - [`ViewApp`] — the client for a session in this process.
+//! - `ServerClient` — the routes a serving session exposes, spelled once, for
+//!   the two clients below to share.
 //! - [`ViewDispatch`] — the client that says one thing and exits, for
 //!   `tush dispatch`.
 //! - [`ViewPrinter`] — the view that is a stream rather than a screen, for
@@ -21,6 +23,7 @@ mod app;
 mod client;
 mod dispatch;
 mod print;
+mod server;
 mod socket;
 
 #[allow(unused_imports)]
