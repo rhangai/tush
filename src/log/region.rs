@@ -13,7 +13,8 @@
 
 use std::ops::Range;
 
-use anstyle_parse::{Parser, Perform};
+use anstyle_parse::{Params, Parser, Perform};
+use enum_bitset::EnumBitset;
 use unicode_width::UnicodeWidthChar;
 
 use crate::log::log::LogWriterId;
@@ -105,10 +106,147 @@ impl LogRegion {
 /// from, and that is the other half of what a pane does with colour.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogLine {
-    /// The clipped text of the line.
+    /// The clipped text of the line, with no escape sequences left in it when
+    /// the region read them — what they said is in
+    /// [`styles`](LogLine::styles) instead.
     pub text: String,
     /// Who wrote it — [`LogWriterId::NOTES`] for the supervisor's own lines.
     pub writer: LogWriterId,
+    /// Where the style changes along [`text`](LogLine::text), in order, and
+    /// empty for a line drawn in one style — which is most of them.
+    ///
+    /// A run list and not a style per character: a colour holds for a word or
+    /// a line, so this is a handful of entries where the other shape would be
+    /// one per byte.
+    pub styles: Vec<LogLineStyle>,
+}
+
+/// Where a run of one style starts: a byte index into
+/// [`LogLine::text`], and what to draw from there until the next entry.
+///
+/// Byte and not column, because what reads it slices the string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LogLineStyle {
+    /// Where the run starts, as a byte index into the line's text.
+    pub index: usize,
+    /// What the sequences up to that point added up to.
+    pub style: LogStyle,
+}
+
+/// What a run of text is drawn in: the SGR parameters, resolved.
+///
+/// The screen's own style type would do, except that this crosses a socket —
+/// so it is spelled out here, in what the sequences actually said, and
+/// whatever draws it translates. `anstyle` would have been the obvious type
+/// to borrow and cannot be: it has no serde support to enable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LogStyle {
+    /// The colour the text is drawn in, or `None` for the terminal's own.
+    pub foreground: Option<LogColor>,
+    /// The colour behind it, on the same terms.
+    pub background: Option<LogColor>,
+    /// Bold, dim and the rest — whichever of them the sequences asked for.
+    pub effects: LogEffectSet,
+}
+
+/// One decoration a sequence can ask for, apart from colour.
+///
+/// A set and not a handful of `bool`s, and generated rather than written: a
+/// caller asks `effects.contains(LogEffect::Bold)` instead of remembering
+/// which bit bold was, and the set still costs one integer.
+#[derive(EnumBitset, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LogEffect {
+    Bold,
+    Dim,
+    Italic,
+    Underline,
+    Reverse,
+    Strike,
+}
+
+impl LogStyle {
+    /// Fold one `m` sequence's parameters in.
+    ///
+    /// Folded rather than replaced, because that is what a terminal does: a
+    /// `\x1b[1m` after a `\x1b[31m` is bold *and* red, and only a `0` clears
+    /// what came before.
+    fn apply(&mut self, params: &Params) {
+        let mut params = params.iter();
+        while let Some(param) = params.next() {
+            let Some(first) = param.first().copied() else {
+                continue;
+            };
+            match first {
+                0 => *self = Self::default(),
+                1 => self.effects.insert(LogEffect::Bold),
+                2 => self.effects.insert(LogEffect::Dim),
+                3 => self.effects.insert(LogEffect::Italic),
+                4 => self.effects.insert(LogEffect::Underline),
+                7 => self.effects.insert(LogEffect::Reverse),
+                9 => self.effects.insert(LogEffect::Strike),
+                // `22` turns off bold and dim together, which is the one
+                // asymmetry in the set: two effects, one code to clear them.
+                22 => self.effects -= LogEffect::Bold | LogEffect::Dim,
+                23 => self.effects.remove(LogEffect::Italic),
+                24 => self.effects.remove(LogEffect::Underline),
+                27 => self.effects.remove(LogEffect::Reverse),
+                29 => self.effects.remove(LogEffect::Strike),
+                30..=37 => self.foreground = Some(LogColor::Indexed(first as u8 - 30)),
+                90..=97 => self.foreground = Some(LogColor::Indexed(first as u8 - 90 + 8)),
+                39 => self.foreground = None,
+                40..=47 => self.background = Some(LogColor::Indexed(first as u8 - 40)),
+                100..=107 => self.background = Some(LogColor::Indexed(first as u8 - 100 + 8)),
+                49 => self.background = None,
+                // A colour the sequence spells out. Left alone when it is
+                // malformed rather than cleared, since half a parameter list
+                // says nothing about what the colour should become.
+                38 => {
+                    if let Some(color) = sgr_color(param, &mut params) {
+                        self.foreground = Some(color);
+                    }
+                }
+                48 => {
+                    if let Some(color) = sgr_color(param, &mut params) {
+                        self.background = Some(color);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A colour a sequence named.
+///
+/// One variant for every palette index rather than one for the sixteen names
+/// and another for the 256 palette: `\x1b[31m` and `\x1b[38;5;1m` mean the same
+/// cell of the same table, and a terminal is handed an index either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LogColor {
+    /// An index into the terminal's palette: 0-7 the plain colours, 8-15 the
+    /// bright ones, up to 255 for the rest.
+    Indexed(u8),
+    /// A colour the sequence gave in full.
+    Rgb(u8, u8, u8),
+}
+
+/// The colour a `38` or `48` introduces: `5;n` for a palette index, `2;r;g;b`
+/// for one spelled out.
+///
+/// Written out here because the numbers may arrive either as subparameters of
+/// the `38` itself (`38:5:1`) or as the parameters after it (`38;5;1`), and
+/// both spellings are in the wild.
+fn sgr_color<'a>(param: &[u16], rest: &mut impl Iterator<Item = &'a [u16]>) -> Option<LogColor> {
+    let mut subs = param[1..].iter().copied();
+    let mut next = move || {
+        subs.next()
+            .or_else(|| rest.next().and_then(|p| p.first().copied()))
+    };
+    match next()? {
+        5 => Some(LogColor::Indexed(next()? as u8)),
+        2 => Some(LogColor::Rgb(next()? as u8, next()? as u8, next()? as u8)),
+        _ => None,
+    }
 }
 
 /// Make sure `out` has an empty line at `line`, reusing the string there.
@@ -118,36 +256,42 @@ pub struct LogLine {
 pub(super) fn open_line(out: &mut Vec<LogLine>, line: usize, writer: LogWriterId) {
     if line < out.len() {
         out[line].text.clear();
+        out[line].styles.clear();
         out[line].writer = writer;
     } else {
         out.push(LogLine {
             text: String::new(),
             writer,
+            styles: Vec::new(),
         });
     }
 }
 
-/// Append the part of `text` that falls inside the region's columns.
+/// Append the part of `text` that falls inside the region's columns, and the
+/// style each run of it is drawn in.
 ///
 /// `column` is how far into the line the pieces before this one already
 /// reached, and is advanced past all of `text` whether or not any of it was
 /// taken — the window is over the line, and a piece entirely to the left of
-/// it still moves the position along.
-pub(super) fn clip_into(out: &mut String, text: &str, clip: &mut LogClip, region: LogRegion) {
+/// it still moves the position along. A sequence left of the window still
+/// counts for the same reason: it is what colours the run that follows.
+pub(super) fn clip_into(line: &mut LogLine, text: &str, clip: &mut LogClip, region: LogRegion) {
     let bytes = text.as_bytes();
     for (index, character) in text.char_indices() {
-        // Unparsed, a sequence is text: every character counts a column and
-        // the window falls where the bytes fall.
+        // Unparsed, a sequence is text: every character counts a column, the
+        // window falls where the bytes fall, and nothing is styled.
         if region.parse_ansi {
-            let mut shown = LogClipShown::default();
+            let mut perform = LogClipPerform {
+                shown: None,
+                style: &mut clip.style,
+            };
             for byte in &bytes[index..index + character.len_utf8()] {
-                clip.parser.advance(&mut shown, *byte);
+                clip.parser.advance(&mut perform, *byte);
             }
-            if shown.0.is_none() {
-                // A sequence's own bytes. They take no columns, and are kept
-                // wherever they fall — including left of the window, since
-                // what colours the visible run is usually set before it.
-                out.push(character);
+            if perform.shown.is_none() {
+                // A sequence's own bytes. They are consumed rather than kept:
+                // what they said is in `clip.style` now, and the text is left
+                // as the text.
                 continue;
             }
         }
@@ -162,7 +306,16 @@ pub(super) fn clip_into(out: &mut String, text: &str, clip: &mut LogClip, region
         // A character straddling an edge is dropped: half of one is not
         // something a terminal can draw.
         if start >= region.column_start && clip.column <= region.column_end {
-            out.push(character);
+            // The run is opened by the first character drawn in it, so a
+            // sequence nothing visible follows costs no entry.
+            if clip.style != clip.written {
+                line.styles.push(LogLineStyle {
+                    index: line.text.len(),
+                    style: clip.style,
+                });
+                clip.written = clip.style;
+            }
+            line.text.push(character);
         }
     }
 }
@@ -185,22 +338,117 @@ pub(super) struct LogClip {
     /// that does not read sequences, which has no grammar to be in.
     ///
     /// Borrowed rather than written here, and from the crate `clap` already
-    /// pulls in: the screen has to walk the same grammar to know which run
-    /// each colour applies to, and two copies of where a sequence ends is a
-    /// second chance for the window and the render to disagree.
+    /// pulls in: writing a second one is writing a second opinion about where
+    /// a sequence ends.
     parser: Parser,
+    /// What the sequences so far add up to, which is what the next visible
+    /// character is drawn in.
+    style: LogStyle,
+    /// The style the last run opened with, so a sequence that changes nothing
+    /// — a colour set twice, a reset of what was already default — does not
+    /// open a run saying the same thing.
+    written: LogStyle,
 }
 
-/// Whether the bytes just fed made a character the screen would show.
+/// What the bytes just fed turned out to be: a character the screen shows, or
+/// a sequence — and if the sequence said something about colour, it is folded
+/// into `style` on the way past.
 ///
 /// Every other callback is left at its default, which is the whole of what
-/// this has to say: anything that is not text is a sequence, and a sequence
-/// takes no columns whatever it turns out to mean.
-#[derive(Default)]
-pub(super) struct LogClipShown(pub(super) Option<char>);
+/// this has to say: anything else is a sequence that takes no columns and
+/// changes nothing about how the text is drawn.
+pub(super) struct LogClipPerform<'a> {
+    shown: Option<char>,
+    style: &'a mut LogStyle,
+}
 
-impl Perform for LogClipShown {
+impl Perform for LogClipPerform<'_> {
     fn print(&mut self, character: char) {
-        self.0 = Some(character);
+        self.shown = Some(character);
+    }
+
+    /// `m` is the only one that matters here: everything else a CSI can be —
+    /// moving the cursor, clearing the screen — is a terminal's business and
+    /// not a copied region's.
+    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: u8) {
+        if action == b'm' {
+            self.style.apply(params);
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Walk `text` the way [`clip_into`] does — one perform per character,
+    /// one style across all of them — and report what it ends in.
+    fn style_of(text: &str) -> LogStyle {
+        let mut parser: Parser = Parser::default();
+        let mut style = LogStyle::default();
+        for byte in text.as_bytes() {
+            let mut perform = LogClipPerform {
+                shown: None,
+                style: &mut style,
+            };
+            parser.advance(&mut perform, *byte);
+        }
+        style
+    }
+
+    /// A terminal accumulates: the second sequence says nothing about the
+    /// colour the first set, so the colour stays.
+    #[test]
+    fn a_sequence_folds_into_what_came_before() {
+        let style = style_of("\u{1b}[31m\u{1b}[1m");
+        assert_eq!(style.foreground, Some(LogColor::Indexed(1)));
+        assert_eq!(style.effects, LogEffect::Bold.into());
+    }
+
+    #[test]
+    fn a_reset_clears_everything_at_once() {
+        assert_eq!(style_of("\u{1b}[1;31;45m\u{1b}[0m"), LogStyle::default());
+    }
+
+    /// `22` is the asymmetry: two flags, one code that clears both.
+    #[test]
+    fn bold_and_dim_go_out_together() {
+        let style = style_of("\u{1b}[1;2;3m\u{1b}[22m");
+        assert_eq!(style.effects, LogEffect::Italic.into());
+    }
+
+    /// The bright codes are the top half of the same palette, not a set of
+    /// their own.
+    #[test]
+    fn a_bright_colour_is_a_palette_index() {
+        assert_eq!(
+            style_of("\u{1b}[91m").foreground,
+            Some(LogColor::Indexed(9))
+        );
+    }
+
+    /// Both spellings are in the wild, and they mean the same colour.
+    #[test]
+    fn a_palette_colour_reads_the_same_either_way() {
+        let semicolons = style_of("\u{1b}[38;5;208m").foreground;
+        let colons = style_of("\u{1b}[38:5:208m").foreground;
+        assert_eq!(semicolons, Some(LogColor::Indexed(208)));
+        assert_eq!(colons, semicolons);
+    }
+
+    #[test]
+    fn a_colour_spelled_out_is_read_in_full() {
+        assert_eq!(
+            style_of("\u{1b}[48;2;10;20;30m").background,
+            Some(LogColor::Rgb(10, 20, 30))
+        );
+    }
+
+    /// Half a parameter list says nothing about what the colour should
+    /// become, so what is already set stays.
+    #[test]
+    fn a_malformed_colour_leaves_the_last_one_alone() {
+        let style = style_of("\u{1b}[31m\u{1b}[38;5m");
+        assert_eq!(style.foreground, Some(LogColor::Indexed(1)));
     }
 }

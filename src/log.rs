@@ -107,4 +107,4 @@ pub use log::{
 };
 
 #[allow(unused_imports)]
-pub use region::{LogLine, LogRegion};
+pub use region::{LogColor, LogEffect, LogEffectSet, LogLine, LogLineStyle, LogRegion, LogStyle};

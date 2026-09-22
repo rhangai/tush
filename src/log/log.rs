@@ -1174,7 +1174,7 @@ impl LogReader {
                 open_line(out, lines, piece.writer());
                 open = true;
             }
-            clip_into(&mut out[lines].text, piece.as_str(), &mut clip, region);
+            clip_into(&mut out[lines], piece.as_str(), &mut clip, region);
             if piece.newline() {
                 lines += 1;
                 clip = LogClip::default();
@@ -1195,12 +1195,7 @@ impl LogReader {
             for partial in &self.partials[held - nearest..held - region.line_start] {
                 open_line(out, lines, partial.writer);
                 let mut clip = LogClip::default();
-                clip_into(
-                    &mut out[lines].text,
-                    partial.text.as_str(),
-                    &mut clip,
-                    region,
-                );
+                clip_into(&mut out[lines], partial.text.as_str(), &mut clip, region);
                 lines += 1;
             }
         }
@@ -1563,8 +1558,10 @@ impl<'a> Iterator for LogReaderIter<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::log::{LogBuffer, chunk::LOG_CHUNK_SIZE, line::LOG_LINE_SIZE, region::LogClipShown};
-    use anstyle_parse::Parser;
+    use crate::log::{
+        LogBuffer, chunk::LOG_CHUNK_SIZE, line::LOG_LINE_SIZE, region::LogColor, region::LogEffect,
+        region::LogLineStyle, region::LogStyle,
+    };
 
     /// A log with `lines` lines already in it.
     ///
@@ -1999,13 +1996,36 @@ mod test {
         out.into_iter().map(|line| line.text).collect()
     }
 
+    /// The whole lines of a region, runs and all.
+    fn region_lines(
+        reader: &LogReader,
+        lines: Range<usize>,
+        columns: Range<usize>,
+    ) -> Vec<LogLine> {
+        let mut out = Vec::new();
+        reader.copy_region(LogRegion::new(lines, columns), &mut out);
+        out
+    }
+
     /// [`columns`] with the escapes left unread, so they count as the text
     /// they are.
     fn raw_columns(reader: &LogReader, lines: Range<usize>, columns: Range<usize>) -> Vec<String> {
+        region_lines_raw(reader, lines, columns)
+            .into_iter()
+            .map(|line| line.text)
+            .collect()
+    }
+
+    /// [`region_lines`] with the escapes left unread.
+    fn region_lines_raw(
+        reader: &LogReader,
+        lines: Range<usize>,
+        columns: Range<usize>,
+    ) -> Vec<LogLine> {
         let mut out = Vec::new();
         let region = LogRegion::new(lines, columns).with_parse_ansi(false);
         reader.copy_region(region, &mut out);
-        out.into_iter().map(|line| line.text).collect()
+        out
     }
 
     /// The lines are counted back from the newest, and come out oldest first
@@ -2070,8 +2090,24 @@ mod test {
         let mut reader = log.reader();
         reader.sync();
 
-        let line = &columns(&reader, 0..1, 0..10)[0];
-        assert_eq!(visible(line), "vermelho n");
+        let line = &region_lines(&reader, 0..1, 0..10)[0];
+        assert_eq!(line.text, "vermelho n");
+        assert_eq!(
+            line.styles,
+            [
+                LogLineStyle {
+                    index: 0,
+                    style: LogStyle {
+                        foreground: Some(LogColor::Indexed(1)),
+                        ..LogStyle::default()
+                    }
+                },
+                LogLineStyle {
+                    index: "vermelho".len(),
+                    style: LogStyle::default()
+                },
+            ]
+        );
     }
 
     /// The same rectangle read the other way: nothing is a command, so the
@@ -2087,7 +2123,9 @@ mod test {
         let mut reader = log.reader();
         reader.sync();
 
-        assert_eq!(raw_columns(&reader, 0..1, 0..10), ["\u{1b}[31mvermel"]);
+        let line = &region_lines_raw(&reader, 0..1, 0..10)[0];
+        assert_eq!(line.text, "\u{1b}[31mvermel");
+        assert!(line.styles.is_empty(), "nothing was read to be styled");
     }
 
     /// And a window may then land inside one, which is the whole of what
@@ -2103,35 +2141,55 @@ mod test {
         assert_eq!(raw_columns(&reader, 0..1, 2..6), ["1mve"]);
     }
 
-    /// Half a sequence is worse than none: a terminal handed one would read
-    /// the parameters of the next as text, or sit in a colour nothing closes.
+    /// A window ending inside the run a sequence opened keeps the run: the
+    /// sequence is not in the text to be cut, and the style says where it
+    /// started.
     #[test]
-    fn a_window_never_cuts_a_sequence_in_half() {
+    fn a_window_may_end_inside_a_run() {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("ab\u{1b}[1;32mcd\n".as_bytes());
         let mut reader = log.reader();
         reader.sync();
 
-        // The window ends inside the run the sequence sits in.
-        let line = &columns(&reader, 0..1, 0..3)[0];
-        assert!(line.contains("\u{1b}[1;32m"), "{line:?}");
-        assert_eq!(visible(line), "abc");
+        let line = &region_lines(&reader, 0..1, 0..3)[0];
+        assert_eq!(line.text, "abc");
+        assert_eq!(
+            line.styles,
+            [LogLineStyle {
+                index: 2,
+                style: LogStyle {
+                    foreground: Some(LogColor::Indexed(2)),
+                    effects: LogEffect::Bold.into(),
+                    ..LogStyle::default()
+                }
+            }]
+        );
     }
 
     /// What colours the window is usually to the left of it, so a sequence
     /// before `column_start` is kept while the text there is dropped —
     /// otherwise scrolling right hands the pane the wrong colour.
     #[test]
-    fn a_sequence_left_of_the_window_is_kept() {
+    fn a_sequence_left_of_the_window_still_colours_it() {
         let log = Log::new(64);
         let mut buffer = LogBuffer::new(log.writer());
         buffer.write("\u{1b}[31mabcdef\n".as_bytes());
         let mut reader = log.reader();
         reader.sync();
 
-        let line = &columns(&reader, 0..1, 3..6)[0];
-        assert_eq!(line, "\u{1b}[31mdef");
+        let line = &region_lines(&reader, 0..1, 3..6)[0];
+        assert_eq!(line.text, "def");
+        assert_eq!(
+            line.styles,
+            [LogLineStyle {
+                index: 0,
+                style: LogStyle {
+                    foreground: Some(LogColor::Indexed(1)),
+                    ..LogStyle::default()
+                }
+            }]
+        );
     }
 
     /// The state that matters most, because a chunk is [`LOG_CHUNK_SIZE`] and
@@ -2148,9 +2206,19 @@ mod test {
         let mut reader = log.reader();
         reader.sync();
 
-        let back = &columns(&reader, 0..1, 0..usize::MAX)[0];
-        assert!(back.contains("\u{1b}[31m"), "the sequence arrived broken");
-        assert_eq!(visible(back).len(), head.len() + 3);
+        let back = &region_lines(&reader, 0..1, 0..usize::MAX)[0];
+        assert_eq!(back.text.len(), head.len() + 3);
+        assert_eq!(
+            back.styles,
+            [LogLineStyle {
+                index: head.len(),
+                style: LogStyle {
+                    foreground: Some(LogColor::Indexed(1)),
+                    ..LogStyle::default()
+                }
+            }],
+            "the sequence arrived broken"
+        );
     }
 
     /// A device control string carries a payload that is not text either —
@@ -2167,7 +2235,9 @@ mod test {
         let mut reader = log.reader();
         reader.sync();
 
-        assert_eq!(visible(&columns(&reader, 0..1, 0..usize::MAX)[0]), "abcd");
+        let line = &region_lines(&reader, 0..1, 0..usize::MAX)[0];
+        assert_eq!(line.text, "abcd");
+        assert!(line.styles.is_empty(), "a sixel said nothing about colour");
     }
 
     /// A sequence nothing closed is the line's own problem and not the next
@@ -2180,24 +2250,11 @@ mod test {
         let mut reader = log.reader();
         reader.sync();
 
-        assert_eq!(columns(&reader, 0..2, 0..4), ["\u{1b}[31maber", "segu"]);
-    }
-
-    /// The text a terminal would actually show, for the assertions above.
-    fn visible(line: &str) -> String {
-        let mut parser: Parser = Parser::default();
-        let mut out = String::new();
-        let bytes = line.as_bytes();
-        for (index, character) in line.char_indices() {
-            let mut shown = LogClipShown::default();
-            for byte in &bytes[index..index + character.len_utf8()] {
-                parser.advance(&mut shown, *byte);
-            }
-            if shown.0.is_some() {
-                out.push(character);
-            }
-        }
-        out
+        let lines = region_lines(&reader, 0..2, 0..4);
+        assert_eq!(lines[0].text, "aber");
+        assert_eq!(lines[1].text, "segu");
+        assert!(!lines[0].styles.is_empty());
+        assert!(lines[1].styles.is_empty(), "the colour crossed the line");
     }
 
     /// A line the chunk size split arrives as several pieces, so the column

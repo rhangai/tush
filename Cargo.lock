@@ -478,6 +478,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "enum-bitset"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abdaff91f545696874328e674f9a80a94b760df34b966d02c295856ba9dad586"
+dependencies = [
+ "enum-bitset-derive",
+ "serde",
+]
+
+[[package]]
+name = "enum-bitset-derive"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8be094039de36b87c447af23de1f44996ac9319e51a072714ea3269362a79f"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "enum_dispatch"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2002,6 +2024,7 @@ dependencies = [
  "axum",
  "clap",
  "crossterm",
+ "enum-bitset",
  "enum_dispatch",
  "figment",
  "http-body-util",

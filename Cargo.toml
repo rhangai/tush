@@ -9,6 +9,7 @@ anyhow = "1.0"
 axum = "0.8.9"
 clap = { version = "4.6.6", features = ["derive", "env"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
+enum-bitset = { version = "0.2.2", features = ["serde"] }
 enum_dispatch = "0.3"
 figment = { version = "0.10.19", features = ["yaml"] }
 http-body-util = "0.1.5"
