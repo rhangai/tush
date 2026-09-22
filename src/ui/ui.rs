@@ -112,10 +112,14 @@ impl<C: ViewClient> Ui<C> {
 
     /// Tell the client which log the pane shows, and which rectangle of it.
     fn request_log(&mut self) {
-        // Cloned to end the borrow on the client before it is handed a `&mut`
-        // of itself.
-        let key = self.selected().map(|unit| unit.unit_key);
-        self.client.set_log(key, self.render.log_region());
+        // Copied out to end the borrow on the client before it is handed a
+        // `&mut` of itself. The flag is the unit's and the rectangle is the
+        // pane's, and this is where the two meet.
+        let unit = self.selected();
+        let key = unit.map(|unit| unit.unit_key);
+        let parse_ansi = unit.is_none_or(|unit| unit.parse_ansi);
+        let region = self.render.log_region().with_parse_ansi(parse_ansi);
+        self.client.set_log(key, region);
     }
 
     /// Pull the log scroll back to what the client actually found.

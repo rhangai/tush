@@ -1268,6 +1268,9 @@ impl LogReader {
 ///
 /// Both pairs are half open, and both are counted from the edge the log grows
 /// from.
+///
+/// It also carries [`parse_ansi`](LogRegion::parse_ansi), because what counts
+/// as a column depends on it and nothing else here could answer that.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LogRegion {
     /// The first line, counted back from the newest: `0` is the last line,
@@ -1289,6 +1292,23 @@ pub struct LogRegion {
     pub column_start: usize,
     /// One column past the last.
     pub column_end: usize,
+    /// Whether an escape sequence is read as one, and so takes no columns.
+    ///
+    /// Off, a `\x1b[31m` is four columns of text like any other and comes back
+    /// in the line for whatever draws it to show — which is what somebody
+    /// looking at what a proc actually writes asked for. It belongs to the
+    /// unit the region is cut from, not to the screen: turning the colour off
+    /// is the screen's business and does not change where a line ends.
+    ///
+    /// Defaults to on when a region arrives without it, so the hand written
+    /// query that [`log`](crate::server) answers still means what it used to.
+    #[serde(default = "parse_ansi_default")]
+    pub parse_ansi: bool,
+}
+
+/// Escape sequences are read unless a region says otherwise.
+fn parse_ansi_default() -> bool {
+    true
 }
 
 impl LogRegion {
@@ -1307,7 +1327,15 @@ impl LogRegion {
             line_end: lines.end,
             column_start: columns.start,
             column_end: columns.end,
+            parse_ansi: parse_ansi_default(),
         }
+    }
+
+    /// The same rectangle, reading escape sequences or not — see
+    /// [`parse_ansi`](LogRegion::parse_ansi).
+    pub fn with_parse_ansi(mut self, parse_ansi: bool) -> Self {
+        self.parse_ansi = parse_ansi;
+        self
     }
 }
 
@@ -1369,16 +1397,20 @@ fn open_line(out: &mut Vec<LogLine>, line: usize, writer: LogWriterId) {
 fn clip_into(out: &mut String, text: &str, clip: &mut LogClip, region: LogRegion) {
     let bytes = text.as_bytes();
     for (index, character) in text.char_indices() {
-        let mut shown = LogClipShown::default();
-        for byte in &bytes[index..index + character.len_utf8()] {
-            clip.parser.advance(&mut shown, *byte);
-        }
-        if shown.0.is_none() {
-            // A sequence's own bytes. They take no columns, and are kept
-            // wherever they fall — including left of the window, since what
-            // colours the visible run is usually set before it.
-            out.push(character);
-            continue;
+        // Unparsed, a sequence is text: every character counts a column and
+        // the window falls where the bytes fall.
+        if region.parse_ansi {
+            let mut shown = LogClipShown::default();
+            for byte in &bytes[index..index + character.len_utf8()] {
+                clip.parser.advance(&mut shown, *byte);
+            }
+            if shown.0.is_none() {
+                // A sequence's own bytes. They take no columns, and are kept
+                // wherever they fall — including left of the window, since
+                // what colours the visible run is usually set before it.
+                out.push(character);
+                continue;
+            }
         }
         let start = clip.column;
         clip.column += character.width().unwrap_or(0);
@@ -1410,7 +1442,8 @@ fn clip_into(out: &mut String, text: &str, clip: &mut LogClip, region: LogRegion
 struct LogClip {
     /// The column the next character lands in. A sequence's bytes take none.
     column: usize,
-    /// Where the walk is in the escape grammar.
+    /// Where the walk is in the escape grammar. Left untouched for a region
+    /// that does not read sequences, which has no grammar to be in.
     ///
     /// Borrowed rather than written here, and from the crate `clap` already
     /// pulls in: the screen has to walk the same grammar to know which run
@@ -2153,6 +2186,15 @@ mod test {
         out.into_iter().map(|line| line.text).collect()
     }
 
+    /// [`columns`] with the escapes left unread, so they count as the text
+    /// they are.
+    fn raw_columns(reader: &LogReader, lines: Range<usize>, columns: Range<usize>) -> Vec<String> {
+        let mut out = Vec::new();
+        let region = LogRegion::new(lines, columns).with_parse_ansi(false);
+        reader.copy_region(region, &mut out);
+        out.into_iter().map(|line| line.text).collect()
+    }
+
     /// The lines are counted back from the newest, and come out oldest first
     /// — the order a pane draws them in.
     #[test]
@@ -2217,6 +2259,35 @@ mod test {
 
         let line = &columns(&reader, 0..1, 0..10)[0];
         assert_eq!(visible(line), "vermelho n");
+    }
+
+    /// The same rectangle read the other way: nothing is a command, so the
+    /// sequence is the text it is and ten columns run out inside the word.
+    ///
+    /// The escape byte itself is zero width either way — it is the `[31m`
+    /// that is counted here — and what draws the line is left to show it.
+    #[test]
+    fn an_unparsed_sequence_takes_the_columns_it_is_written_in() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("\u{1b}[31mvermelho\u{1b}[0m normal\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(raw_columns(&reader, 0..1, 0..10), ["\u{1b}[31mvermel"]);
+    }
+
+    /// And a window may then land inside one, which is the whole of what
+    /// turning the parse off costs: there is no sequence to keep whole.
+    #[test]
+    fn an_unparsed_window_may_land_inside_a_sequence() {
+        let log = Log::new(64);
+        let mut buffer = LogBuffer::new(log.writer());
+        buffer.write("\u{1b}[31mvermelho\n".as_bytes());
+        let mut reader = log.reader();
+        reader.sync();
+
+        assert_eq!(raw_columns(&reader, 0..1, 2..6), ["1mve"]);
     }
 
     /// Half a sequence is worse than none: a terminal handed one would read

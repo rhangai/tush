@@ -430,8 +430,7 @@ impl AppUnitMap {
         while join_set.join_next().await.is_some() {}
     }
 
-    /// Run `f` on the unit under `key`, for a closure that cannot fail —
-    /// [`with_unit`](AppUnitMap::with_unit) is for the closure that can.
+    /// Run `f` on the unit under `key`, or say that the key addresses nothing.
     fn with<T>(&self, key: AppUnitKey, f: impl FnOnce(&Unit) -> T) -> Result<T, AppError> {
         let Some(entry) = self.units.get(&key) else {
             return Err(AppError::NotFound);
