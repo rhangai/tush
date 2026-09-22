@@ -134,6 +134,30 @@ pub enum ViewSocketError {
     Body(#[from] serde_json::Error),
 }
 
+/// What stops one `tush dispatch` from being delivered.
+///
+/// Mostly not the socket. A key or a mode that does not exist is a typo, and
+/// what answers a typo is the list the person could have typed instead — which
+/// is why the modes are carried here rather than left as a status code.
+#[derive(Debug, thiserror::Error)]
+pub enum ViewDispatchError {
+    /// Transparent, and not `"{0}"`: `#[from]` makes the inner error the
+    /// source as well, and `anyhow` prints the chain — so a wrapper with a
+    /// message of its own says the same sentence twice.
+    #[error(transparent)]
+    Socket(#[from] ViewSocketError),
+    #[error("no proc is declared as `{0}`")]
+    UnknownUnit(String),
+    #[error("`{0}` runs one way and has no mode to pick")]
+    NoModes(String),
+    #[error("`{unit}` has no mode `{mode}`; it has {}", helper::Quoted(.modes))]
+    UnknownMode {
+        unit: String,
+        mode: String,
+        modes: Vec<SmallStr>,
+    },
+}
+
 /// What an `#[error]` needs and `std::fmt` does not give it.
 ///
 /// A module so the names can be what they are — `helper::Quoted` reads at the

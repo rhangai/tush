@@ -1,16 +1,13 @@
 //! The command line, parsed.
 //!
-//! Three ways to run, differing in where the session is and where the screen
-//! is:
+//! Four ways in, differing in where the session is and where the screen is:
 //!
 //! ```text
-//! tush run     --config x.yaml  [targets]   both here; quitting takes it down
-//! tush serve   --config x.yaml  [targets]   the session, for something else to attach to
-//! tush attach                               the screen, over a socket
+//! tush run       --config x.yaml  [targets]   both here; quitting takes it down
+//! tush serve     --config x.yaml  [targets]   the session, for something else to attach to
+//! tush attach                                 the screen, over a socket
+//! tush dispatch  start|stop KEY               neither: one command, over the socket
 //! ```
-//!
-//! `attach` only parses, so far — the shape is settled and its flags are
-//! already spelled the way they will be — and then says it is not built.
 
 use std::{path::PathBuf, str::FromStr, time::Duration};
 
@@ -51,7 +48,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// The three ways to run, differing in where the session and the screen are.
+/// The four ways in, differing in where the session and the screen are.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run a session and show it, in one process.
@@ -63,6 +60,8 @@ pub enum Command {
     Serve(ServeArgs),
     /// Show a session that is already running.
     Attach(AttachArgs),
+    /// Tell a session that is already running to do one thing.
+    Dispatch(DispatchArgs),
 }
 
 /// Session and screen both, in this process.
@@ -106,6 +105,47 @@ pub struct AttachArgs {
     /// said. Only a session that had to be moved off that path needs this.
     #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
     pub socket: Option<PathBuf>,
+}
+
+/// One command for a session somewhere else.
+///
+/// No `--config`: the session is the one that read the file, so a key is
+/// checked over there and an unknown one comes back named rather than being
+/// guessed at here.
+#[derive(Args, Debug)]
+pub struct DispatchArgs {
+    /// Which session to tell, as the path to its Unix socket.
+    ///
+    /// The same default and the same variable as `serve` and `attach`, so a
+    /// shell that set one up reaches it with nothing said.
+    #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
+    pub socket: Option<PathBuf>,
+    #[command(subcommand)]
+    pub command: DispatchCommand,
+}
+
+/// What to ask of one proc.
+#[derive(Subcommand, Debug)]
+pub enum DispatchCommand {
+    /// Start a proc, restarting it if it is already up.
+    Start {
+        /// The key the proc is declared under, which is what the config wrote
+        /// and not the display name two procs may share.
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// Which mode to run, as its name or its position in the list.
+        ///
+        /// Nothing given runs whichever mode the proc is already on, which is
+        /// what pressing `r` on the screen does.
+        #[arg(value_name = "MODE")]
+        mode: Option<String>,
+    },
+    /// Stop a proc, without waiting for it to be gone.
+    Stop {
+        /// The key the proc is declared under.
+        #[arg(value_name = "KEY")]
+        key: String,
+    },
 }
 
 /// What makes a session: the file it is declared in, and what to start.

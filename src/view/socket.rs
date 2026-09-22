@@ -458,7 +458,7 @@ struct LogBody {
 ///
 /// Returned untouched when there is nothing to encode — which is every key
 /// anybody writes — so the common path is the copy it already was.
-fn encode_path_segment(key: &SmallStr) -> SmallStr {
+pub(super) fn encode_path_segment(key: &SmallStr) -> SmallStr {
     if key.bytes().all(is_unreserved) {
         return key.clone();
     }
@@ -489,7 +489,7 @@ fn is_unreserved(byte: u8) -> bool {
 ///
 /// The driver is what moves bytes; dropping it closes the connection, so it
 /// is spawned and left to end when the socket does.
-async fn dial(path: &PathBuf) -> Result<SendRequest<Full<Bytes>>, ViewSocketError> {
+pub(super) async fn dial(path: &PathBuf) -> Result<SendRequest<Full<Bytes>>, ViewSocketError> {
     let stream = UnixStream::connect(path)
         .await
         .map_err(ViewSocketError::Connect)?;
@@ -503,7 +503,7 @@ async fn dial(path: &PathBuf) -> Result<SendRequest<Full<Bytes>>, ViewSocketErro
 }
 
 /// One request, and the status and bytes it answered with.
-async fn request(
+pub(super) async fn request(
     sender: &mut SendRequest<Full<Bytes>>,
     method: Method,
     path: &str,
@@ -542,7 +542,7 @@ async fn request(
 }
 
 /// A request whose answer is read as `T`.
-async fn fetch<T: serde::de::DeserializeOwned>(
+pub(super) async fn fetch<T: serde::de::DeserializeOwned>(
     sender: &mut SendRequest<Full<Bytes>>,
     method: Method,
     path: &str,

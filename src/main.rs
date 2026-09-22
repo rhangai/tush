@@ -72,11 +72,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     app::App,
-    cli::{AttachArgs, Cli, Command, RunArgs, ServeArgs},
+    cli::{AttachArgs, Cli, Command, DispatchArgs, DispatchCommand, RunArgs, ServeArgs},
     config::Config,
     server::{Server, default_socket_path},
     ui::{Ui, UiTheme},
-    view::{ViewApp, ViewClient, ViewPrinter, ViewSocket},
+    view::{ViewApp, ViewClient, ViewDispatch, ViewPrinter, ViewSocket},
 };
 
 #[tokio::main]
@@ -85,6 +85,7 @@ async fn main() -> Result<()> {
         Command::Run(args) => run(args).await,
         Command::Serve(args) => serve(args).await,
         Command::Attach(args) => attach(args).await,
+        Command::Dispatch(args) => dispatch(args).await,
     }
 }
 
@@ -160,6 +161,22 @@ async fn attach(args: AttachArgs) -> Result<()> {
     let client = ViewSocket::connect(socket, refresh).await?;
     let theme = theme_for(&client);
     Ok(Ui::run(client, refresh, theme, cancel_on_interrupt()?).await?)
+}
+
+/// Say one thing to a session that is already running, and stop.
+///
+/// The only mode with neither procs nor a screen, so there is nothing to take
+/// down and nothing to restore — which is why it is the one that waits on the
+/// round trip and reports what came back. A command nobody could tell had
+/// failed is worse than a slow one.
+async fn dispatch(args: DispatchArgs) -> Result<()> {
+    let socket = args.socket.unwrap_or_else(default_socket_path);
+    let mut client = ViewDispatch::connect(socket).await?;
+    match args.command {
+        DispatchCommand::Start { key, mode } => client.start(&key, mode.as_deref()).await?,
+        DispatchCommand::Stop { key } => client.stop(&key).await?,
+    }
+    Ok(())
 }
 
 /// The screen a session asked for.
