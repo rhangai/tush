@@ -230,7 +230,7 @@ impl<C: ViewClient> Ui<C> {
 
     /// Move the cursor, bounded by however many units there are.
     fn select(&mut self, movement: Move) {
-        self.render.select(movement, self.client.units());
+        self.render.select(movement, self.client.units().len());
     }
 
     /// Send the command `command` builds for the selected unit's key, if

@@ -152,24 +152,25 @@ impl UiRender {
         self.areas.1
     }
 
-    /// The unit the cursor is on, in whichever of the two lists has the keys.
+    /// The unit the cursor is on.
     pub fn selected_unit<'a, C: ViewClient>(&self, client: &'a C) -> Option<&'a ViewUnit> {
-        let units = client.units();
-        client.units().get(self.units.cursor(minor_start(units)))
+        client.units().get(self.units.cursor())
     }
 
-    /// Move the cursor within the focused list, and put the log pane back at
-    /// the end.
+    /// Move the cursor, and put the log pane back at the end.
     ///
-    /// The slice and not its length, because where one list ends and the
-    /// other begins is read off the rows themselves.
-    pub fn select(&mut self, movement: Move, units: &[ViewUnit]) {
-        self.units.select(movement, minor_start(units), units.len());
+    /// The length and not the split: the arrows cross the divider, so where
+    /// one list ends is not something moving by one has to know.
+    pub fn select(&mut self, movement: Move, units: usize) {
+        self.units.select(movement, units);
         self.log.follow();
     }
 
-    /// Put the keys on the other list, which is a different unit selected —
+    /// Jump to the top of the other list, which is a different unit selected —
     /// so the log pane goes back to the end, as it does for any other move.
+    ///
+    /// The slice and not its length, because this is the one move that has to
+    /// know where the divider is.
     pub fn focus_other(&mut self, units: &[ViewUnit]) {
         self.units.focus_other(minor_start(units), units.len());
         self.log.follow();

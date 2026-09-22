@@ -57,39 +57,39 @@ pub enum Move {
     Previous,
 }
 
-/// Which of the two lists the keys go to.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum UiRenderUnitsFocus {
-    #[default]
-    Main,
-    Minor,
-}
-
-/// One list's place: the row the cursor is on, and where its window starts.
+/// Where the units pane is looking from — the part that survives a frame.
 ///
-/// Two of these rather than one cursor over the whole slice, because the
-/// lists scroll separately and one `offset` cannot serve two windows of
-/// different heights.
+/// One cursor and two offsets, which is the whole of what the split costs:
+/// the lists are drawn from one slice ordered by panel, so a row is one index
+/// into it and which list has the keys is simply where that index fell. What
+/// cannot be shared is the scroll, two windows of different heights having
+/// nothing to say to each other.
 #[derive(Default)]
-struct UiRenderUnitsSection {
+pub struct UiRenderUnitsState {
+    /// The row the cursor is on, as an index into the whole slice.
     cursor: usize,
-    offset: usize,
+    /// Where each list's window starts.
+    main_offset: usize,
+    minor_offset: usize,
 }
 
-impl UiRenderUnitsSection {
-    /// Move the cursor, wrapping at either end of this list alone.
+impl UiRenderUnitsState {
+    /// Which unit the cursor is on.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Move one row, crossing the divider and coming round at the ends.
     ///
-    /// Wrapping, so holding `j` comes round rather than parking on the last
-    /// row. Within the list and not across it, which is what makes the two
-    /// lists two: [`focus_other`](UiRenderUnitsState::focus_other) is the only
-    /// way between them.
-    fn select(&mut self, movement: Move, units: usize) {
+    /// The divider is a division of one list and not a wall: the arrows walk
+    /// every unit on screen in the order they are drawn, so there is never a
+    /// row you can see and cannot reach.
+    pub fn select(&mut self, movement: Move, units: usize) {
         let Some(last) = units.checked_sub(1) else {
-            self.cursor = 0;
             return;
         };
-        // Clamped first: a list that shrank under a cursor leaves it past the
-        // end until the next draw, and wrapping from there lands anywhere.
+        // Clamped: a list that shrank under the cursor leaves it past the end
+        // until the next draw, and stepping from there lands anywhere.
         let cursor = self.cursor.min(last);
         self.cursor = match movement {
             Move::Next if cursor == last => 0,
@@ -99,66 +99,39 @@ impl UiRenderUnitsSection {
         };
     }
 
-    /// Keep the cursor on screen, and the screen on the units.
-    fn scroll_into_view(&mut self, per_page: usize, units: usize) {
-        self.cursor = self.cursor.min(units.saturating_sub(1));
-        if self.cursor < self.offset {
-            self.offset = self.cursor;
-        } else if self.cursor >= self.offset + per_page {
-            self.offset = self.cursor + 1 - per_page;
-        }
-        // Never so far down that rows go begging at the bottom while there
-        // are units above that could have filled them.
-        self.offset = self.offset.min(units.saturating_sub(per_page));
-    }
-}
-
-/// Where the units pane is looking from — the part that survives a frame.
-#[derive(Default)]
-pub struct UiRenderUnitsState {
-    main: UiRenderUnitsSection,
-    minor: UiRenderUnitsSection,
-    /// Which list the keys go to.
+    /// Jump to the top of the other list.
     ///
-    /// Held rather than worked out from the cursor, because each list
-    /// remembers its own row: away and back lands where you were, which one
-    /// index into the whole slice could not say.
-    focused: UiRenderUnitsFocus,
-}
-
-impl UiRenderUnitsState {
-    /// Which unit the cursor is on, as an index into the whole slice.
+    /// The top and not the row last left there: the arrows already walk both
+    /// lists, so this is the shortcut past a long one, and a shortcut that
+    /// lands somewhere you have to look for is not one.
     ///
-    /// `split` is where the minor list starts. Folding the two sections back
-    /// into one index here is what keeps the menu, the log pane and `send`
-    /// addressing one selected unit and knowing nothing about the split.
-    pub fn cursor(&self, split: usize) -> usize {
-        match self.focused {
-            UiRenderUnitsFocus::Main => self.main.cursor,
-            UiRenderUnitsFocus::Minor => split + self.minor.cursor,
-        }
-    }
-
-    /// Move the cursor within whichever list has the keys.
-    pub fn select(&mut self, movement: Move, split: usize, units: usize) {
-        match self.focused {
-            UiRenderUnitsFocus::Main => self.main.select(movement, split),
-            UiRenderUnitsFocus::Minor => self.minor.select(movement, units - split),
-        }
-    }
-
-    /// Put the keys on the other list.
-    ///
-    /// A no-op when the list it would move to is empty, so Tab in a session
+    /// A no-op when the list it would jump to is empty, so Tab in a session
     /// that declared no `panel: minor` does nothing rather than selecting a
     /// row that is not there.
     pub fn focus_other(&mut self, split: usize, units: usize) {
-        self.focused = match self.focused {
-            UiRenderUnitsFocus::Main if units > split => UiRenderUnitsFocus::Minor,
-            UiRenderUnitsFocus::Minor if split > 0 => UiRenderUnitsFocus::Main,
-            focused => focused,
+        self.cursor = match self.cursor < split {
+            true if units > split => split,
+            false if split > 0 => 0,
+            _ => self.cursor,
         };
     }
+}
+
+/// Keep `offset` on a window that holds `cursor`, and on the units.
+///
+/// `None` is the list without the cursor: it still has to be pulled back onto
+/// what there is, or a list that shrank leaves a window past its end.
+fn scroll_into_view(offset: &mut usize, cursor: Option<usize>, per_page: usize, units: usize) {
+    if let Some(cursor) = cursor {
+        if cursor < *offset {
+            *offset = cursor;
+        } else if cursor >= *offset + per_page {
+            *offset = cursor + 1 - per_page;
+        }
+    }
+    // Never so far down that rows go begging at the bottom while there are
+    // units above that could have filled them.
+    *offset = (*offset).min(units.saturating_sub(per_page));
 }
 
 /// Where the minor list starts in the units slice.
@@ -250,38 +223,45 @@ impl StatefulWidget for UiRenderUnits<'_> {
         let inner = self.border.inner(area);
         self.border.render(area, buffer);
 
+        state.cursor = state.cursor.min(self.units.len().saturating_sub(1));
         let split = minor_start(self.units);
         let (main, minor) = self.units.split_at(split);
         let layout = self.layout(inner.height);
 
-        let Some((main_area, rule_y, minor_area)) =
-            self.areas(inner, minor.len(), row_height(layout))
+        // The cursor belongs to exactly one list, which is what says which one
+        // has the keys — there is no second mark to tell apart from it.
+        let main_cursor = (state.cursor < split).then_some(state.cursor);
+        let minor_cursor = (state.cursor >= split).then(|| state.cursor - split);
+
+        // A rule divides two lists, so one of them being empty leaves nothing
+        // to divide — an all-`minor` config is one list, drawn quietly.
+        let divided = !main.is_empty() && !minor.is_empty();
+        let Some((main_area, rule_y, minor_area)) = divided
+            .then(|| self.areas(inner, minor.len(), row_height(layout)))
+            .flatten()
         else {
-            // Nothing below, so nothing can have the keys but the list that is
-            // there — a pane that loses its minor list must not keep pointing
-            // at it.
-            state.focused = UiRenderUnitsFocus::Main;
+            // One list, either because that is all there is or because the
+            // pane cannot afford the rule. Which one falls out of where the
+            // units are — a blank pane is what broken looks like.
+            let (rows, offset, cursor, quiet) = match main.is_empty() {
+                true => (minor, &mut state.minor_offset, minor_cursor, true),
+                false => (main, &mut state.main_offset, main_cursor, false),
+            };
             draw_list(
-                buffer,
-                self.theme,
-                main,
-                inner,
-                layout,
-                &mut state.main,
-                true,
+                buffer, self.theme, rows, inner, layout, offset, cursor, quiet,
             );
             return;
         };
 
-        let focused = state.focused;
         draw_list(
             buffer,
             self.theme,
             main,
             main_area,
             layout,
-            &mut state.main,
-            focused == UiRenderUnitsFocus::Main,
+            &mut state.main_offset,
+            main_cursor,
+            false,
         );
         draw_rule(buffer, self.theme, inner, rule_y);
         // Compact whatever the theme says: this is the list you are not
@@ -293,38 +273,44 @@ impl StatefulWidget for UiRenderUnits<'_> {
             minor,
             minor_area,
             UiThemeMenuLayout::Compact,
-            &mut state.minor,
-            focused == UiRenderUnitsFocus::Minor,
+            &mut state.minor_offset,
+            minor_cursor,
+            true,
         );
     }
 }
 
 /// One list into its own area, at its own scroll.
+///
+/// `cursor` is `None` for the list the keys are not in, which is what makes
+/// the mark appear exactly once on the screen.
+#[allow(clippy::too_many_arguments)]
 fn draw_list(
     buffer: &mut Buffer,
     theme: &UiTheme,
     units: &[ViewUnit],
     area: Rect,
     layout: UiThemeMenuLayout,
-    state: &mut UiRenderUnitsSection,
-    focused: bool,
+    offset: &mut usize,
+    cursor: Option<usize>,
+    quiet: bool,
 ) {
     let height = row_height(layout);
     let per_page = (area.height / height).max(1) as usize;
-    state.scroll_into_view(per_page, units.len());
+    scroll_into_view(offset, cursor, per_page, units.len());
 
-    let last = units.len().min(state.offset + per_page);
-    for (row, index) in (state.offset..last).enumerate() {
+    let last = units.len().min(*offset + per_page);
+    for (row, index) in (*offset..last).enumerate() {
         let y = area.y + row as u16 * height;
         let row_area = Rect::new(area.x, y, area.width, height);
         let unit = &units[index];
-        let selected = index == state.cursor;
+        let selected = cursor == Some(index);
         match layout {
             UiThemeMenuLayout::Compact => {
-                draw_compact(buffer, theme, unit, row_area, selected, focused)
+                draw_compact(buffer, theme, unit, row_area, selected, quiet)
             }
             UiThemeMenuLayout::Comfortable => {
-                draw_comfortable(buffer, theme, unit, row_area, selected, focused)
+                draw_comfortable(buffer, theme, unit, row_area, selected, quiet)
             }
         }
     }
@@ -353,17 +339,11 @@ fn draw_gutter(
     unit: &ViewUnit,
     area: Rect,
     selected: bool,
-    focused: bool,
 ) -> u16 {
     let cursor = &theme.symbols.cursor;
     let x = area.x + PAD_X;
     if selected {
-        // Dim in the list that does not have the keys: the row Tab comes back
-        // to is worth seeing, and worth not mistaking for the live one.
-        let style = match focused {
-            true => Style::new().fg(theme.colors.cursor),
-            false => Style::new().add_modifier(Modifier::DIM),
-        };
+        let style = Style::new().fg(theme.colors.cursor);
         buffer.set_stringn(x, area.y, cursor, cursor.width(), style);
     }
 
@@ -380,11 +360,28 @@ fn draw_gutter(
     x + 1
 }
 
+/// Bold under the live cursor, quiet throughout the minor list, plain
+/// otherwise.
+///
+/// The minor list is written quietly by standing and not by focus: it is the
+/// list you said you would not be watching, and a block of dim names under a
+/// rule reads as subordinate before you have read a word of it. That is what
+/// stops the two lists looking like peers, which is what made a single cursor
+/// carry the whole job of saying which one was live.
+///
+/// Focus itself is the cursor being there or not — never this — so a terminal
+/// that ignores `DIM` still says which list has the keys. And the row under
+/// the cursor goes bold whichever list it is in, so it comes out of the quiet
+/// block rather than being lost in it.
+///
 /// Bold as well as marked, because a cursor two columns wide is a thin thing
 /// to find a row by.
-fn name_style(selected: bool) -> Style {
-    match selected {
-        true => Style::new().add_modifier(Modifier::BOLD),
+fn name_style(live: bool, quiet: bool) -> Style {
+    if live {
+        return Style::new().add_modifier(Modifier::BOLD);
+    }
+    match quiet {
+        true => Style::new().add_modifier(Modifier::DIM),
         false => Style::new(),
     }
 }
@@ -433,9 +430,9 @@ fn draw_compact(
     unit: &ViewUnit,
     area: Rect,
     selected: bool,
-    focused: bool,
+    quiet: bool,
 ) {
-    let left = draw_gutter(buffer, theme, unit, area, selected, focused);
+    let left = draw_gutter(buffer, theme, unit, area, selected);
     let right = area.right().saturating_sub(PAD_X);
 
     let mut digits = [0u8; DIGITS_MAX];
@@ -447,7 +444,7 @@ fn draw_compact(
     let name_right = set_right(buffer, area.y, left, right, label, number, style);
 
     let name = unit.name_short.as_ref().unwrap_or(&unit.name);
-    let style = name_style(selected && focused);
+    let style = name_style(selected, quiet);
     set_clipped(
         buffer,
         theme,
@@ -477,9 +474,9 @@ fn draw_comfortable(
     unit: &ViewUnit,
     area: Rect,
     selected: bool,
-    focused: bool,
+    quiet: bool,
 ) {
-    let left = draw_gutter(buffer, theme, unit, area, selected, focused);
+    let left = draw_gutter(buffer, theme, unit, area, selected);
     let right = area.right().saturating_sub(PAD_X);
     set_clipped(
         buffer,
@@ -488,7 +485,7 @@ fn draw_comfortable(
         area.y,
         &unit.name,
         room(left, right),
-        name_style(selected && focused),
+        name_style(selected, quiet),
     );
 
     // The gutter stays empty on the second line, so the two read as one row.
