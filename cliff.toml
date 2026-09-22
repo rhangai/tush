@@ -38,14 +38,8 @@ commit_parsers = [
   { message = "^refactor", group = "Refactor" },
   { message = "^doc", group = "Documentation" },
   { message = "^test", group = "Testing" },
-  # Release commits are made by the workflow itself; they say nothing.
-  { message = "^chore\\(release\\)", skip = true },
-  # Skills and prompts for the agent are not part of the released binary.
-  { message = "^chore\\(ai\\)", skip = true },
-  { message = "^chore\\(doc\\)", group = "Documentation" },
-  { message = "^chore", group = "Miscellaneous" },
+  { message = "^chore", skip = true },
   { message = "^ci|^build", group = "Build" },
-  { message = ".*", group = "Miscellaneous" },
 ]
 
 [bump]
