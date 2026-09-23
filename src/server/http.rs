@@ -14,7 +14,7 @@ use crate::{
     log::{LogLine, LogRegion},
     server::state::ServerState,
     unit::{UnitChoice, UnitEvent},
-    view::{ViewSettings, ViewUnit},
+    view::ViewSettings,
 };
 
 /// Every route a client speaks, over whatever the caller is listening on.
@@ -64,31 +64,26 @@ async fn settings(State(state): State<Arc<ServerState>>) -> Json<ViewSettings> {
 
 /// Every unit, as a row.
 ///
-/// Built per request rather than kept: the names never change, but a state
-/// does, and a handful of inline strings is cheaper than a copy that has to
-/// be invalidated.
-async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
-    let unit_map = state.app().unit_map();
-    let mut units: Vec<ViewUnit> = unit_map
-        .keys()
-        .filter_map(|unit_key| {
-            let entry = unit_map.entry(unit_key).ok()?;
-            let unit = entry.unit();
-            let settings = entry.settings();
-            Some(ViewUnit {
-                unit_key,
-                key: entry.key().clone(),
-                name: unit.name(),
-                name_short: unit.name_short(),
-                mode: unit.mode(),
-                mode_short: unit.mode_short(),
-                state: unit.state(),
-                panel: settings.panel,
-            })
-        })
-        .collect();
-    units.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));
-    Json(units)
+/// Kept and refreshed rather than built per request — see
+/// [`read_units`](ServerState::read_units) — which is what lets this answer
+/// `If-None-Match` the way the log route does: the rows of a session sitting
+/// still are the same rows poll after poll, and saying so costs sixty six
+/// bytes against eight hundred.
+async fn units(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+    let drawn = drawn_revision(&headers);
+    state.read_units(|body, revision| {
+        if drawn == Some(revision) {
+            return StatusCode::NOT_MODIFIED.into_response();
+        }
+        (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::ETAG, &format!("\"{revision}\"")),
+            ],
+            body.clone(),
+        )
+            .into_response()
+    })
 }
 
 /// A rectangle of one unit's log.
@@ -109,10 +104,7 @@ async fn log(
     let Some(key) = key(&state, &unit) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let drawn = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim_matches('"').parse::<u64>().ok());
+    let drawn = drawn_revision(&headers);
 
     // Everything that touches the reader happens inside here, so there is no
     // guard alive at an `.await` — see `ServerState::read_log`.
@@ -200,4 +192,20 @@ async fn dispatch(
 /// proc was declared with.
 fn key(state: &ServerState, key: &str) -> Option<AppUnitKey> {
     state.app().unit_map().key(key)
+}
+
+/// The revision a client says it already has, out of `If-None-Match`.
+///
+/// One reading of the header for both routes that carry one: two copies of
+/// this is two chances for a quoted number to be parsed one way here and
+/// another way there, and the answer to that mismatch is a client that never
+/// gets a `304`.
+fn drawn_revision(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(header::IF_NONE_MATCH)?
+        .to_str()
+        .ok()?
+        .trim_matches('"')
+        .parse::<u64>()
+        .ok()
 }
