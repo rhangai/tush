@@ -1,6 +1,8 @@
 //! Every error type in the crate, gathered rather than kept beside the code
 //! that returns them.
 
+use hyper::{header::InvalidHeaderValue, http::uri::InvalidUri};
+
 use crate::util::str::SmallStr;
 
 /// What starting or killing a child process can fail with.
@@ -134,6 +136,10 @@ pub enum ViewSocketError {
     Status(u16),
     #[error("could not read what the session said: {0}")]
     Body(#[from] serde_json::Error),
+    #[error("could not build the request path: {0}")]
+    InvalidUri(#[from] InvalidUri),
+    #[error("could not build the request header: {0}")]
+    InvalidHeaderValue(#[from] InvalidHeaderValue),
 }
 
 /// What stops one `tush dispatch` from being delivered.

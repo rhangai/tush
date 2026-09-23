@@ -1,14 +1,19 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use http_body_util::{BodyExt, Full};
 use hyper::{
-    Method, Request, StatusCode,
+    Method, Request, StatusCode, Uri,
     body::{Bytes, Incoming},
     client::conn::http1::SendRequest,
-    header,
+    header::{self, HeaderValue},
 };
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
+use tokio_util::bytes::{BufMut, BytesMut};
 
 use crate::{
     error::ViewSocketError,
@@ -21,6 +26,19 @@ use crate::{
 enum ServerClientAddress {
     UnixSocket(PathBuf),
 }
+
+/// How much room a path or a body buffer starts with, and asks for again
+/// before each piece.
+///
+/// Enough for the longest of either whole — a log path with four numbers in it
+/// — with room to spare, since asking for more than the tail holds is what
+/// puts the buffer back at the start of its own allocation.
+const REQUEST_BUFFER: usize = 1024;
+
+/// The same for [`header_revision`](ServerClient::header_revision), where the
+/// longest piece is a quoted [`u64`]: twenty digits and two quotes, so this is
+/// the length and not a guess at one.
+const REVISION_BUFFER: usize = 32;
 
 /// One connection to a session's socket, with a method per route.
 ///
@@ -41,6 +59,32 @@ pub struct ServerClient {
     /// between requests so that it is refilled rather than built. Empty and
     /// untouched for a body that came whole, which is nearly all of them.
     spill: Vec<u8>,
+    /// Where a request's path is written before it goes out.
+    ///
+    /// The piece is cut off with `split` and frozen, which hands over a
+    /// [`Bytes`] onto this allocation rather than a copy of it — `Uri` and
+    /// `HeaderValue` keep a `Bytes` they are handed, where a `&str` is copied
+    /// into one of their own. Hyper holds that piece until the request is
+    /// done; the [`make_room`] before the next write then walks the buffer
+    /// back to the start of the same allocation, so what went out last is the
+    /// room the next one is written in.
+    ///
+    /// Which is why **every response has to be read to the end**: a piece the
+    /// connection still holds leaves the buffer shared, and a shared one is
+    /// abandoned for a fresh allocation instead of reclaimed. See
+    /// [`read_body`](ServerClient::read_body), which has to do it for the
+    /// connection anyway.
+    path: BytesMut,
+    /// The same, for the JSON body of a `dispatch`.
+    payload: BytesMut,
+    /// The same, for the `If-None-Match` of a log request — the one header
+    /// this speaks that is not a constant.
+    ///
+    /// One buffer per piece, and not one shared between them, because a
+    /// request's pieces are alive at the same moment and a buffer with a piece
+    /// still out is abandoned rather than reclaimed: measured at two
+    /// allocations per poll for one buffer against none for three.
+    header_revision: BytesMut,
 }
 
 /// What the log route answered, and the rectangle it answered with.
@@ -113,6 +157,9 @@ impl ServerClient {
             address: ServerClientAddress::UnixSocket(path.into()),
             sender: None,
             spill: Vec::new(),
+            path: BytesMut::with_capacity(REQUEST_BUFFER),
+            payload: BytesMut::with_capacity(REQUEST_BUFFER),
+            header_revision: BytesMut::with_capacity(REVISION_BUFFER),
         }
     }
     /// Open a connection and put its driver on a task of its own.
@@ -166,12 +213,17 @@ impl ServerClient {
     /// their own — for a caller polling on a clock, which would otherwise
     /// build and drop one every round.
     pub async fn units_in_place(&mut self, out: &mut Vec<ViewUnit>) -> Result<(), ViewSocketError> {
-        self.fetch_in_place(out, Method::GET, "/units", None).await
+        // Static, and not written into the buffer: a constant path needs
+        // neither the room nor the piece, `Uri::from_static` keeping the bytes
+        // it was handed. This is the one request of every poll.
+        self.fetch_in_place(out, Method::GET, Uri::from_static("/units"), None)
+            .await
     }
 
     /// What the session says about how it should be shown.
     pub async fn settings(&mut self) -> Result<ViewSettings, ViewSocketError> {
-        self.fetch(Method::GET, "/settings", None).await
+        self.fetch(Method::GET, Uri::from_static("/settings"), None)
+            .await
     }
 
     /// Everything that can be asked of one unit right now.
@@ -191,20 +243,22 @@ impl ServerClient {
         key: &SmallStr,
     ) -> Result<(), ViewSocketError> {
         let key = key_path(key);
-        self.fetch_in_place(out, Method::GET, &format!("/units/{key}/choices"), None)
-            .await
+        let uri = self.uri(format_args!("/units/{key}/choices"))?;
+        self.fetch_in_place(out, Method::GET, uri, None).await
     }
 
     /// Ask for a unit to run, once what it depends on is up.
     pub async fn start(&mut self, key: &SmallStr) -> Result<StatusCode, ViewSocketError> {
         let key = key_path(key);
-        self.post(&format!("/units/{key}/start"), None).await
+        let uri = self.uri(format_args!("/units/{key}/start"))?;
+        self.post(uri, None).await
     }
 
     /// Stop a unit, without waiting for it to be gone.
     pub async fn stop(&mut self, key: &SmallStr) -> Result<StatusCode, ViewSocketError> {
         let key = key_path(key);
-        self.post(&format!("/units/{key}/stop"), None).await
+        let uri = self.uri(format_args!("/units/{key}/stop"))?;
+        self.post(uri, None).await
     }
 
     /// Hand a unit an event and let its behavior decide.
@@ -214,9 +268,12 @@ impl ServerClient {
         event: UnitEvent,
     ) -> Result<StatusCode, ViewSocketError> {
         let key = key_path(key);
-        let body = serde_json::to_vec(&event)?;
-        self.post(&format!("/units/{key}/dispatch"), Some(body))
-            .await
+        // The body first, so that both pieces come out of the buffer before
+        // either goes anywhere: they are two cuts of the same allocation and
+        // live side by side until the request is done.
+        let body = self.body(&event)?;
+        let uri = self.uri(format_args!("/units/{key}/dispatch"))?;
+        self.post(uri, Some(body)).await
     }
 
     /// A rectangle of one unit's log, or word that nothing changed.
@@ -256,11 +313,11 @@ impl ServerClient {
         revision: Option<u64>,
     ) -> Result<(), ViewSocketError> {
         let key = key_path(key);
-        let path = format!(
+        let uri = self.uri(format_args!(
             "/units/{key}/log?line_start={}&line_end={}&column_start={}&column_end={}",
             region.line_start, region.line_end, region.column_start, region.column_end
-        );
-        let response = self.send(Method::GET, &path, None, revision).await?;
+        ))?;
+        let response = self.send(Method::GET, uri, None, revision).await?;
         let status = response.status();
         let body = response.into_body();
         let kind = match status {
@@ -291,10 +348,10 @@ impl ServerClient {
     async fn fetch<T: serde::de::DeserializeOwned>(
         &mut self,
         method: Method,
-        path: &str,
-        body: Option<Vec<u8>>,
+        uri: Uri,
+        body: Option<Bytes>,
     ) -> Result<T, ViewSocketError> {
-        let response = self.send(method, path, body, None).await?;
+        let response = self.send(method, uri, body, None).await?;
         let status = response.status();
         let body = response.into_body();
         if !status.is_success() {
@@ -319,10 +376,10 @@ impl ServerClient {
         &mut self,
         out: &mut T,
         method: Method,
-        path: &str,
-        body: Option<Vec<u8>>,
+        uri: Uri,
+        body: Option<Bytes>,
     ) -> Result<(), ViewSocketError> {
-        let response = self.send(method, path, body, None).await?;
+        let response = self.send(method, uri, body, None).await?;
         let status = response.status();
         let body = response.into_body();
         if !status.is_success() {
@@ -338,12 +395,8 @@ impl ServerClient {
     /// The status is handed over rather than turned into an error: a session
     /// that refused a command is answering, and only the caller knows whether
     /// that is worth stopping for.
-    async fn post(
-        &mut self,
-        path: &str,
-        body: Option<Vec<u8>>,
-    ) -> Result<StatusCode, ViewSocketError> {
-        let response = self.send(Method::POST, path, body, None).await?;
+    async fn post(&mut self, uri: Uri, body: Option<Bytes>) -> Result<StatusCode, ViewSocketError> {
+        let response = self.send(Method::POST, uri, body, None).await?;
         let status = response.status();
         self.read_body(response.into_body(), |_| Ok(())).await?;
         Ok(status)
@@ -388,24 +441,34 @@ impl ServerClient {
     async fn send(
         &mut self,
         method: Method,
-        path: &str,
-        body: Option<Vec<u8>>,
+        uri: Uri,
+        body: Option<Bytes>,
         revision: Option<u64>,
     ) -> Result<hyper::Response<Incoming>, ViewSocketError> {
+        // Before the sender is borrowed, since writing it is a borrow of the
+        // buffer and the two are one `self`.
+        let revision = match revision {
+            Some(revision) => Some(self.revision(revision)?),
+            None => None,
+        };
+
         let sender = self.sender.as_mut().ok_or(ViewSocketError::NotConnected)?;
         let mut builder = Request::builder()
             .method(method)
             // Required of every HTTP/1.1 request, and meaningless here: there
             // is no host, only the socket the connection was opened on.
-            .header(header::HOST, "localhost")
-            .uri(path);
+            .header(header::HOST, HeaderValue::from_static("localhost"))
+            .uri(uri);
         if let Some(revision) = revision {
-            builder = builder.header(header::IF_NONE_MATCH, format!("\"{revision}\""));
+            builder = builder.header(header::IF_NONE_MATCH, revision);
         }
         let body = match body {
             Some(body) => {
-                builder = builder.header(header::CONTENT_TYPE, "application/json");
-                Full::new(Bytes::from(body))
+                builder = builder.header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                Full::new(body)
             }
             None => Full::new(Bytes::new()),
         };
@@ -415,6 +478,54 @@ impl ServerClient {
             .await
             .map_err(ViewSocketError::Http)
     }
+
+    /// The path of a request, out of [`path`](ServerClient::path).
+    fn uri(&mut self, args: fmt::Arguments<'_>) -> Result<Uri, ViewSocketError> {
+        let path = freeze(&mut self.path, REQUEST_BUFFER, args);
+        Ok(Uri::from_maybe_shared(path)?)
+    }
+
+    /// The revision a log request already drew, out of
+    /// [`header_revision`](ServerClient::header_revision).
+    fn revision(&mut self, revision: u64) -> Result<HeaderValue, ViewSocketError> {
+        let value = freeze(
+            &mut self.header_revision,
+            REVISION_BUFFER,
+            format_args!("\"{revision}\""),
+        );
+        Ok(HeaderValue::from_maybe_shared(value)?)
+    }
+
+    /// One event as the JSON body of a request, out of
+    /// [`payload`](ServerClient::payload).
+    fn body(&mut self, event: &UnitEvent) -> Result<Bytes, ViewSocketError> {
+        make_room(&mut self.payload, REQUEST_BUFFER);
+        serde_json::to_writer((&mut self.payload).writer(), event)?;
+        Ok(self.payload.split().freeze())
+    }
+}
+
+/// Empty `buffer` and ask for `room`, which is where every piece starts.
+///
+/// The clear is what makes a half written piece harmless: the formatted ones
+/// cannot fail, but a body whose serialization did would leave its start
+/// behind and the next piece would go out carrying it.
+///
+/// The `reserve` is what reclaims. Asking for more than the tail holds is what
+/// walks the buffer back to the start of its allocation, and it can only do
+/// that while nothing else holds a piece of it — see
+/// [`path`](ServerClient::path).
+fn make_room(buffer: &mut BytesMut, room: usize) {
+    buffer.clear();
+    buffer.reserve(room);
+}
+
+/// Write `args` into `buffer` and cut off what was written.
+fn freeze(buffer: &mut BytesMut, room: usize, args: fmt::Arguments<'_>) -> Bytes {
+    make_room(buffer, room);
+    // Cannot fail: the writer only extends the buffer.
+    let _ = buffer.writer().write_fmt(args);
+    buffer.split().freeze()
 }
 
 /// The next chunk of body, skipping trailers and empty frames, and `None` at

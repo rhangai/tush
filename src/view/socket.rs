@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{mem, path::PathBuf, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use tokio::{sync::Notify, sync::mpsc, task::JoinHandle};
@@ -7,12 +7,12 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     app::AppUnitKey,
     error::ViewSocketError,
-    log::{LogLine, LogRegion},
+    log::LogRegion,
     unit::{UnitChoice, UnitEvent},
     util::str::SmallStr,
     view::{
         client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
-        server::{ServerClient, ServerLog, ServerLogKind},
+        server::{ServerClient, ServerLog, ServerLogBody, ServerLogKind},
     },
 };
 
@@ -28,145 +28,122 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 ///
 /// The config key rides along so the task never has to turn an [`AppUnitKey`]
 /// back into one: the client addresses a unit by the key it was declared
-/// under, and the row the pane pointed at holds both.
-#[derive(Clone)]
+/// under, and the row the pane pointed at holds both. A [`String`] and not a
+/// [`SmallStr`], because the screen writes it again on every move and only a
+/// [`String`] can be refilled.
 struct Wanted {
-    unit_key: AppUnitKey,
-    key: SmallStr,
+    /// The unit the pane is showing, `None` for a pane showing none.
+    unit_key: Option<AppUnitKey>,
+    /// Its config key, left as it was rather than emptied when there is no
+    /// unit: what it holds is an allocation, and nothing reads it.
+    key: String,
     region: LogRegion,
 }
 
-/// One unit's log, as a frame carries it.
+/// The rows, and the flag that says whose turn it is to hold them.
 ///
-/// The key and the answer, and nothing taken apart from them: the rectangle,
-/// the revision and the lines are all inside the [`ServerLog`], which is the
-/// buffer [`log_in_place`](ServerClient::log_in_place) writes into. Read
-/// through methods so that reading cannot take it apart — a caller that only
-/// wanted to look at the region has no business owning the lines.
-#[derive(Clone)]
-struct FrameLog {
-    /// Which unit the answer is about, and `None` for a buffer nothing has
-    /// been read into yet: an [`AppUnitKey`] has no empty value, every one of
-    /// them having come from the interner.
-    unit_key: Option<AppUnitKey>,
-    log: ServerLog,
+/// Read every poll and not once at connect: the set of units is fixed, but the
+/// state and the mode in each row are what the pane draws, and those change
+/// under a running session. The fixed half costs nothing, the answer decoding
+/// over the same slots.
+struct DataUnits {
+    rows: Vec<ViewUnit>,
+    /// Set by the task when it swaps a buffer in, cleared by the screen when
+    /// it takes one. Only means anything in [`Shared`]: the screen's own copy
+    /// and the task's scratch both ignore theirs.
+    fresh: bool,
 }
 
-impl FrameLog {
-    /// An empty buffer, naming no unit.
+impl DataUnits {
+    fn new(rows: Vec<ViewUnit>) -> Self {
+        Self { rows, fresh: false }
+    }
+}
+
+/// One window of one log, as it is handed over.
+struct DataLog {
+    /// Which unit the lines are of: `None` both for a unit the session has no
+    /// log under and for a buffer nothing has been read into yet.
+    unit_key: Option<AppUnitKey>,
+    /// The rectangle, the revision and the lines. Stale whenever `unit_key` is
+    /// `None`, which is the point of it — the allocation outlives what it
+    /// held, and the next answer is decoded over it.
+    body: ServerLogBody,
+    /// See [`DataUnits::fresh`]. Set only for an answer that carries lines: a
+    /// `304` says the screen's copy stands, and a swap has no way to say that.
+    fresh: bool,
+}
+
+impl DataLog {
+    /// A buffer nothing has been read into yet.
+    ///
+    /// The body comes from [`ServerLog`]'s default, which is where "not asked
+    /// yet" is spelled — an empty rectangle at revision zero.
     fn new() -> Self {
         Self {
             unit_key: None,
-            log: ServerLog::default(),
+            body: ServerLog::default().body,
+            fresh: false,
         }
     }
-
-    /// Which unit the answer inside is about.
-    fn unit_key(&self) -> Option<AppUnitKey> {
-        self.unit_key
-    }
-
-    /// Say which unit the next answer is about.
-    ///
-    /// Apart from [`server_log_mut`](FrameLog::server_log_mut) because the two
-    /// are written at different moments: the key is known before the request
-    /// goes out, the answer only after it comes back.
-    fn set_unit_key(&mut self, unit_key: AppUnitKey) {
-        self.unit_key = Some(unit_key);
-    }
-
-    /// The buffer to read the next answer into.
-    fn server_log_mut(&mut self) -> &mut ServerLog {
-        &mut self.log
-    }
-
-    /// Which of the three things the session last said.
-    fn kind(&self) -> ServerLogKind {
-        self.log.kind
-    }
-
-    /// The lines as they stand. What they are worth depends on
-    /// [`kind`](FrameLog::kind) — see [`ServerLog`].
-    fn lines(&self) -> &Vec<LogLine> {
-        &self.log.body.lines
-    }
-
-    /// The rectangle those lines actually came out as, which can be smaller
-    /// than the one asked for.
-    fn region(&self) -> LogRegion {
-        self.log.body.region
-    }
-
-    /// The revision they were read at, for the next `If-None-Match`.
-    fn revision(&self) -> u64 {
-        self.log.body.revision
-    }
 }
 
-/// One poll's worth of session, published whole.
-///
-/// Whole is the point, and it is load bearing twice over. A pane reads the
-/// units and the log in one frame, so a half written snapshot is the tear the
-/// trait's `sync` exists to prevent. And the slot a frame goes into replaces
-/// rather than queues — a frame nobody took is dropped — so a frame may never
-/// say "keep what you have": there is no knowing what the screen has, and an
-/// instruction that depends on the one before it having arrived freezes the
-/// pane the first time one does not.
-///
-/// Which is why a `304` costs a clone of the lines here rather than a word:
-/// the saving it buys is on the wire, and paying for it in the frame is what
-/// went wrong.
-struct Frame {
-    units: Vec<ViewUnit>,
-    log: Option<FrameLog>,
-    choices_key: Option<AppUnitKey>,
-    choices: Vec<UnitChoice>,
-}
-
-/// A command on its way out, with the encoded key its URL needs.
-enum Outgoing {
-    Start(SmallStr),
-    Stop(SmallStr),
-    Dispatch(SmallStr, UnitEvent),
+/// The verbs of one unit, replaced whole every round.
+struct DataChoices {
+    /// Which unit they are for, so a menu opened over another one shows
+    /// nothing rather than the wrong verbs.
+    unit_key: Option<AppUnitKey>,
+    list: Vec<UnitChoice>,
 }
 
 /// What the screen and the task share, and the only thing they share.
+///
+/// Every slot here is a handoff and not a copy: the task fills a buffer of its
+/// own, swaps it in, and carries away the one the screen left to fill next
+/// round. The same few buffers circulate for as long as the screen is up: a
+/// sync is two swaps, and what the task reads next round it decodes over what
+/// it was handed. What this replaced built a whole frame per poll and dropped
+/// it on the next one.
 struct Shared {
-    /// The newest finished frame, waiting to be taken. Replaced and not
-    /// queued: a screen that stalled wants the latest, never a backlog of
-    /// frames it would draw one per tick to catch up.
-    frame: Mutex<Option<Frame>>,
-    /// The rectangle the pane wants, latest wins. `None` is a pane showing no
-    /// unit, which is the client holding nothing for it.
-    wanted: Mutex<Option<Wanted>>,
+    /// The rows, as the last poll found them.
+    units: Mutex<DataUnits>,
+    /// The window of the unit the pane is on.
+    log: Mutex<DataLog>,
+    /// Its verbs, read out of here directly: a menu opens on a keypress, so it
+    /// can pay for a copy and needs no buffer of its own.
+    choices: Mutex<DataChoices>,
+    /// The rectangle the pane wants, latest wins.
+    wanted: Mutex<Wanted>,
     /// Woken when the pane moves to another unit.
     ///
-    /// Without it a move waits for the next tick and then for the frame after
+    /// Without it a move waits for the next tick and then for the round after
     /// it, so the pane sits empty for up to two polls over what is one round
     /// trip on a local socket. `notify_one` and not `notify_waiters`, because
     /// a move between ticks has to keep its wakeup rather than lose it.
-    moved: Notify,
+    wanted_notify: Notify,
 }
 
 /// A [`ViewClient`] over a session in another process.
 ///
-/// **Nothing here waits.** The task polls on its own, publishes a whole frame
-/// into [`Shared`], and [`sync`](ViewClient::sync) takes whatever is there —
-/// so a slow or dead server is a screen showing its last frame, never a
-/// screen that stops redrawing.
+/// **Nothing here waits.** The task polls on its own and swaps what it read
+/// into [`Shared`]; [`sync`](ViewClient::sync) swaps it back out — so a slow or
+/// dead server is a screen showing what it last took, never a screen that
+/// stops redrawing.
 ///
 /// The one round trip a caller does wait on is
 /// [`connect`](ViewSocket::connect): the trait promises that the set of units
 /// does not change, and the only way to keep that promise is to know them
 /// before the first frame.
 pub struct ViewSocket {
-    /// The last frame taken, which is what every read answers from.
-    units: Vec<ViewUnit>,
+    /// The rows the pane draws, traded for the task's at each sync.
+    units: DataUnits,
     /// What the session said about the screen when this one attached.
     settings: ViewSettings,
-    log: Option<FrameLog>,
-    choices_key: Option<AppUnitKey>,
-    choices: Vec<UnitChoice>,
+    /// The window the pane draws, on the same terms.
+    log: DataLog,
+    /// The unit last asked for, which is what says whether
+    /// [`log`](ViewClient::log) is about the one on screen.
+    wanted_key: Option<AppUnitKey>,
     shared: Arc<Shared>,
     commands: mpsc::UnboundedSender<Outgoing>,
     /// Ends the task; see [`Drop`](ViewSocket::drop).
@@ -182,15 +159,24 @@ impl ViewSocket {
     /// the other end fails here, where there is still a terminal to print to.
     pub async fn connect(path: PathBuf, poll: Duration) -> Result<Self, ViewSocketError> {
         let mut client = ServerClient::connect(&path).await?;
-        let units = client.units().await?;
+        let rows = client.units().await?;
         // Asked for once, here: they come from a config the session read
         // before it existed, so no later poll would ever find them changed.
         let settings = client.settings().await?;
 
         let shared = Arc::new(Shared {
-            frame: Mutex::new(None),
-            wanted: Mutex::new(None),
-            moved: Notify::new(),
+            units: Mutex::new(DataUnits::new(Vec::new())),
+            log: Mutex::new(DataLog::new()),
+            choices: Mutex::new(DataChoices {
+                unit_key: None,
+                list: Vec::new(),
+            }),
+            wanted: Mutex::new(Wanted {
+                unit_key: None,
+                key: String::new(),
+                region: LogRegion::new(0..0, 0..0),
+            }),
+            wanted_notify: Notify::new(),
         });
         let (commands, incoming) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
@@ -201,17 +187,21 @@ impl ViewSocket {
                 incoming,
                 cancel: cancel.clone(),
                 client,
-                held: FrameLog::new(),
+                units: DataUnits::new(Vec::new()),
+                choices: Vec::new(),
+                log: ServerLog::default(),
+                unit_key: None,
+                key: SmallStr::default(),
+                sent: None,
             }
             .run(),
         );
 
         Ok(Self {
-            units,
+            units: DataUnits::new(rows),
             settings,
-            log: None,
-            choices_key: None,
-            choices: Vec::new(),
+            log: DataLog::new(),
+            wanted_key: None,
             shared,
             commands,
             cancel,
@@ -229,9 +219,9 @@ impl ViewSocket {
     ///
     /// A scan and not a map: the rows are a session's worth of units, in
     /// name order, and this happens on a keypress rather than on a frame.
-    fn config_key(&self, key: AppUnitKey) -> Option<SmallStr> {
-        let unit = self.units.iter().find(|unit| unit.unit_key == key)?;
-        Some(unit.key.clone())
+    fn config_key(&self, key: AppUnitKey) -> Option<&SmallStr> {
+        let unit = self.units.rows.iter().find(|unit| unit.unit_key == key)?;
+        Some(&unit.key)
     }
 }
 
@@ -249,23 +239,28 @@ impl Drop for ViewSocket {
 }
 
 impl ViewClient for ViewSocket {
-    /// Take the newest frame, if the task has finished one since the last.
+    /// Trade buffers with the task, for whichever of them it has finished.
     ///
-    /// Nothing there is the normal case at any rate faster than the poll, and
-    /// the answer is to keep the frame already held — which is why this
-    /// cannot fail and never blanks a pane.
+    /// Two locks, two flags and at most two swaps — and nothing at all when
+    /// the task has not been round since, which at any frame rate above the
+    /// poll is most of them.
     fn sync(&mut self) {
-        let Some(frame) = self.shared.frame.lock().take() else {
-            return;
-        };
-        self.units = frame.units;
-        self.log = frame.log;
-        self.choices_key = frame.choices_key;
-        self.choices = frame.choices;
+        let mut units = self.shared.units.lock();
+        if units.fresh {
+            mem::swap(&mut *units, &mut self.units);
+            units.fresh = false;
+        }
+        drop(units);
+
+        let mut log = self.shared.log.lock();
+        if log.fresh {
+            mem::swap(&mut *log, &mut self.log);
+            log.fresh = false;
+        }
     }
 
     fn units(&self) -> &[ViewUnit] {
-        &self.units
+        &self.units.rows
     }
 
     /// What the session said when this one attached — see
@@ -277,13 +272,14 @@ impl ViewClient for ViewSocket {
     /// Whatever the last poll fetched for this unit, and nothing for any
     /// other.
     ///
-    /// Empty rather than stale when the menu opens on a unit the task has not
-    /// asked about yet: the trait allows filling nothing, and a menu of
-    /// another unit's verbs would act on the wrong proc.
+    /// Read out of the shared slot rather than from a copy of it, and the
+    /// clone is what that costs: a menu opens on a keypress, so there is
+    /// nothing here worth a buffer of its own.
     fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
         out.clear();
-        if self.choices_key == Some(key) {
-            out.extend(self.choices.iter().cloned());
+        let choices = self.shared.choices.lock();
+        if choices.unit_key == Some(key) {
+            out.extend(choices.list.iter().cloned());
         }
     }
 
@@ -294,10 +290,11 @@ impl ViewClient for ViewSocket {
     /// command with, and the same gap.
     fn send(&self, command: ViewCommand) {
         let outgoing = match command {
-            ViewCommand::Start { key } => self.config_key(key).map(Outgoing::Start),
-            ViewCommand::Stop { key } => self.config_key(key).map(Outgoing::Stop),
+            ViewCommand::Start { key } => self.config_key(key).cloned().map(Outgoing::Start),
+            ViewCommand::Stop { key } => self.config_key(key).cloned().map(Outgoing::Stop),
             ViewCommand::Dispatch { key, event } => self
                 .config_key(key)
+                .cloned()
                 .map(|key| Outgoing::Dispatch(key, event)),
         };
         if let Some(outgoing) = outgoing {
@@ -307,37 +304,68 @@ impl ViewClient for ViewSocket {
 
     /// Say what the pane wants; the task is what goes and gets it.
     ///
-    /// **A move drops what is held.** The lines are the unit the pane just
-    /// left, and there is no frame for the new one yet — drawn under the new
-    /// name they are not late, they are wrong. Empty until the task answers
-    /// is what [`ViewApp`](crate::view::ViewApp) does for the same reason,
-    /// and the wakeup below is what keeps that gap to a round trip.
+    /// Written into the slot the task reads, refilling the key in place: this
+    /// is said again on every move and every resize.
+    ///
+    /// **A move blanks nothing.** What is held stays held and
+    /// [`log`](ViewClient::log) answers `None` until the new unit's window
+    /// turns up — the lines are the unit the pane just left, and drawn under
+    /// the new name they are not late, they are wrong. Empty until the task
+    /// answers is what [`ViewApp`](crate::view::ViewApp) does for the same
+    /// reason, and the wakeup below is what keeps that gap to a round trip.
     fn set_log(&mut self, key: Option<AppUnitKey>, region: LogRegion) {
-        let moved = self.log.as_ref().and_then(FrameLog::unit_key) != key;
+        let mut wanted = self.shared.wanted.lock();
+        let moved = wanted.unit_key != key;
         if moved {
-            self.log = None;
+            wanted.unit_key = key;
+            wanted.key.clear();
+            if let Some(config_key) = key.and_then(|key| self.config_key(key)) {
+                wanted.key.push_str(config_key);
+            }
         }
-        let wanted = key.and_then(|unit_key| {
-            Some(Wanted {
-                unit_key,
-                key: self.config_key(unit_key)?,
-                region,
-            })
-        });
-        *self.shared.wanted.lock() = wanted;
+        wanted.region = region;
+        drop(wanted);
+
+        self.wanted_key = key;
         if moved {
-            self.shared.moved.notify_one();
+            self.shared.wanted_notify.notify_one();
         }
     }
 
+    /// The lines, when they are the ones the pane is showing.
+    ///
+    /// The comparison is what trading buffers costs: a sync takes whatever is
+    /// in the slot so that the task gets one back, and what the task published
+    /// may be the unit the pane has just left.
     fn log(&self) -> Option<ViewLog<'_>> {
-        let log = self.log.as_ref()?;
+        let unit_key = self.log.unit_key?;
+        if Some(unit_key) != self.wanted_key {
+            return None;
+        }
         Some(ViewLog {
-            region: log.region(),
-            revision: log.revision(),
-            lines: log.lines(),
+            region: self.log.body.region,
+            revision: self.log.body.revision,
+            lines: &self.log.body.lines,
         })
     }
+}
+
+/// A command on its way out, with the encoded key its URL needs.
+enum Outgoing {
+    Start(SmallStr),
+    Stop(SmallStr),
+    Dispatch(SmallStr, UnitEvent),
+}
+
+/// The window last handed over: what a `304` would be answering about.
+#[derive(Clone, Copy)]
+struct Sent {
+    unit_key: AppUnitKey,
+    /// The rectangle asked for, and not the one that came back — a log with
+    /// fewer lines than the pane answers with fewer, and it is the question a
+    /// revision is compared against.
+    region: LogRegion,
+    revision: u64,
 }
 
 /// The half that talks, on a task of its own.
@@ -347,17 +375,30 @@ struct Poller {
     incoming: mpsc::UnboundedReceiver<Outgoing>,
     cancel: CancellationToken,
     client: ServerClient,
-    /// The window last read, and the buffer the next one is read into.
+    /// The rows to fill next, which is the buffer the screen left behind.
+    units: DataUnits,
+    /// The verbs to fill next, on the same terms.
+    choices: Vec<UnitChoice>,
+    /// The window to read into.
     ///
-    /// A field and not a local, because it is what a `304` is answered from:
-    /// it has to outlive the round that filled it, and outliving the round is
-    /// also what lets its lines outlive their allocation.
+    /// Scratch and not a record: after a handover it holds whatever the screen
+    /// left, so nothing may be read back out of it — what was published is in
+    /// [`sent`](Poller::sent). Being written over is the whole reason it is
+    /// kept between rounds.
+    log: ServerLog,
+    /// The unit being followed, and the key its routes take.
     ///
-    /// Not an `Option`, because [`Gone`](ServerLogKind::Gone) already says
-    /// there is nothing to show. A second way to say it is a second thing to
-    /// keep in step, and this one threw the buffer away every time it was
-    /// said — which is the allocation it was supposed to be saving.
-    held: FrameLog,
+    /// Copied out of [`Wanted`] on a move rather than per round: the screen
+    /// writes the key as a [`String`] so it can refill one, and the routes
+    /// take the crate's own string.
+    unit_key: Option<AppUnitKey>,
+    key: SmallStr,
+    /// The window the screen holds, or will hold at its next sync.
+    ///
+    /// Here and not in the buffer, because `If-None-Match` has to name what is
+    /// on screen: the buffer that answer came in belongs to the screen from
+    /// the moment it is swapped in.
+    sent: Option<Sent>,
 }
 
 impl Poller {
@@ -365,7 +406,7 @@ impl Poller {
     ///
     /// A connection that fails ends that round and not the task: the session
     /// is a separate process and may be restarted under a screen that is
-    /// still up. What the screen shows meanwhile is its last frame.
+    /// still up. What the screen shows meanwhile is what it last took.
     async fn run(mut self) {
         loop {
             let is_connected = self.client.ensure_connected().await.is_ok();
@@ -388,7 +429,7 @@ impl Poller {
                 _ = self.cancel.cancelled() => return true,
                 // Same round either way: the tick is the steady rate, and the
                 // move is what stops a keypress waiting for it.
-                _ = self.shared.moved.notified() => {}
+                _ = self.shared.wanted_notify.notified() => {}
                 _ = ticks.tick() => {}
             }
             if self.round().await.is_err() {
@@ -397,7 +438,7 @@ impl Poller {
         }
     }
 
-    /// One poll: everything asked for, then one frame published.
+    /// One poll: everything asked for, each handed over as it arrives.
     ///
     /// The requests go one after another on the one connection, which is what
     /// makes "one in flight" structural rather than something to remember.
@@ -413,56 +454,112 @@ impl Poller {
             };
         }
 
-        let units = self.client.units().await?;
-        let wanted = self.shared.wanted.lock().clone();
+        self.client.units_in_place(&mut self.units.rows).await?;
+        // Scoped, and not dropped by hand: a guard whose scope reaches an
+        // await makes the whole task's future non-`Send`, whether or not it is
+        // alive by then.
+        {
+            let mut slot = self.shared.units.lock();
+            mem::swap(&mut *slot, &mut self.units);
+            slot.fresh = true;
+        }
 
-        let (log, choices_key, choices) = match wanted {
-            // The pane is showing nothing. `held` is left as it is rather than
-            // emptied: what is in it is the last window read, and a pane coming
-            // back to that unit finds the buffer, and its revision, still here.
-            None => (None, None, Vec::new()),
-            Some(wanted) => {
-                self.fetch_log(&wanted).await?;
-                let choices = self.client.choices(&wanted.key).await.unwrap_or_default();
-                let log = match self.held.kind() {
-                    ServerLogKind::Gone => None,
-                    _ => Some(self.held.clone()),
-                };
-                (log, Some(wanted.unit_key), choices)
-            }
+        // A pane showing nothing leaves both of the unit's slots alone: what
+        // is in them is a buffer each, and nothing reads either until the pane
+        // asks again.
+        let Some((unit_key, region)) = self.follow() else {
+            return Ok(());
         };
-
-        *self.shared.frame.lock() = Some(Frame {
-            units,
-            log,
-            choices_key,
-            choices,
-        });
+        self.fetch_log(unit_key, region).await?;
+        self.fetch_choices(unit_key).await;
         Ok(())
     }
 
-    /// Read the wanted rectangle into [`held`](Poller::held).
+    /// What the pane wants now, and the key to ask for it with.
     ///
-    /// The revision goes out as `If-None-Match`, which is the test
-    /// [`ViewApp`](crate::view::ViewApp) does against its own reader moved
-    /// onto the wire — and only when what is held is the same window of the
-    /// same unit, since that is what a revision counts against.
+    /// Under the lock for three fields and no longer; the key is copied out of
+    /// it only when the unit changed.
+    fn follow(&mut self) -> Option<(AppUnitKey, LogRegion)> {
+        let wanted = self.shared.wanted.lock();
+        let unit_key = wanted.unit_key?;
+        if self.unit_key != Some(unit_key) {
+            self.unit_key = Some(unit_key);
+            self.key = SmallStr::new(&wanted.key);
+        }
+        Some((unit_key, wanted.region))
+    }
+
+    /// Read the wanted rectangle, and hand it over if it changed.
     ///
-    /// Written in place, into the buffer that is already there: a
-    /// [`Changed`](ServerLogKind::Changed) refills it and the other two leave
-    /// it alone, so the lines are allocated once and then written over.
-    async fn fetch_log(&mut self, wanted: &Wanted) -> Result<(), ViewSocketError> {
-        let same = self.held.kind() != ServerLogKind::Gone
-            && self.held.unit_key() == Some(wanted.unit_key)
-            && self.held.region() == wanted.region;
-        let revision = same.then(|| self.held.revision());
+    /// The revision goes out as `If-None-Match` only when the question is the
+    /// one the last answer came back to: the server compares it against the
+    /// log's version, so it means "still the same lines" and nothing about
+    /// which lines were asked for.
+    ///
+    /// The three answers are three different handovers — lines swapped in,
+    /// nothing said, and the window dropped — and only the first may touch the
+    /// buffers.
+    async fn fetch_log(
+        &mut self,
+        unit_key: AppUnitKey,
+        region: LogRegion,
+    ) -> Result<(), ViewSocketError> {
+        let revision = match self.sent {
+            Some(sent) if sent.unit_key == unit_key && sent.region == region => Some(sent.revision),
+            _ => None,
+        };
 
         // Split, so that the client and the buffer are two borrows of `self`
         // and not one.
-        let Self { client, held, .. } = self;
-        held.set_unit_key(wanted.unit_key);
-        client
-            .log_in_place(held.server_log_mut(), &wanted.key, wanted.region, revision)
-            .await
+        let Self {
+            client, log, key, ..
+        } = self;
+        client.log_in_place(log, key, region, revision).await?;
+
+        match self.log.kind {
+            // What the screen has is current, and a swap cannot say so.
+            ServerLogKind::Unchanged => {}
+            ServerLogKind::Changed => {
+                self.sent = Some(Sent {
+                    unit_key,
+                    region,
+                    revision: self.log.body.revision,
+                });
+                let mut slot = self.shared.log.lock();
+                mem::swap(&mut slot.body, &mut self.log.body);
+                slot.unit_key = Some(unit_key);
+                slot.fresh = true;
+            }
+            // Nothing to show, and nothing left to answer a `304` from. The
+            // body goes over as it stands: with no unit named, it is an
+            // allocation and not a window.
+            ServerLogKind::Gone => {
+                self.sent = None;
+                let mut slot = self.shared.log.lock();
+                slot.unit_key = None;
+                slot.fresh = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the unit's verbs and hand them over.
+    ///
+    /// A failure leaves the menu empty rather than ending the round: what it
+    /// usually means is a row that has gone, and if it was the connection then
+    /// the next round's first request is where that is found out.
+    async fn fetch_choices(&mut self, unit_key: AppUnitKey) {
+        let Self {
+            client,
+            choices,
+            key,
+            ..
+        } = self;
+        if client.choices_in_place(choices, key).await.is_err() {
+            choices.clear();
+        }
+        let mut slot = self.shared.choices.lock();
+        mem::swap(&mut slot.list, &mut self.choices);
+        slot.unit_key = Some(unit_key);
     }
 }
