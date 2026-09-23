@@ -1,6 +1,5 @@
 use std::{
     fmt,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -13,13 +12,15 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
-use tokio_util::bytes::{BufMut, BytesMut};
 
 use crate::{
     error::ViewSocketError,
     log::{LogLine, LogRegion},
     unit::{UnitChoice, UnitEvent},
-    util::str::{SmallStr, SmallStrBuilder},
+    util::{
+        bytes::BytesMutPool,
+        str::{SmallStr, SmallStrBuilder},
+    },
     view::client::{ViewSettings, ViewUnit},
 };
 
@@ -27,18 +28,13 @@ enum ServerClientAddress {
     UnixSocket(PathBuf),
 }
 
-/// How much room a path or a body buffer starts with, and asks for again
+/// How much room a path, header, or a body buffer starts with, and asks for again
 /// before each piece.
 ///
 /// Enough for the longest of either whole — a log path with four numbers in it
 /// — with room to spare, since asking for more than the tail holds is what
 /// puts the buffer back at the start of its own allocation.
-const REQUEST_BUFFER: usize = 1024;
-
-/// The same for [`header_revision`](ServerClient::header_revision), where the
-/// longest piece is a quoted [`u64`]: twenty digits and two quotes, so this is
-/// the length and not a guess at one.
-const REVISION_BUFFER: usize = 32;
+const BYTES_POOL_BUFFER: usize = 1024;
 
 /// One connection to a session's socket, with a method per route.
 ///
@@ -59,32 +55,8 @@ pub struct ServerClient {
     /// between requests so that it is refilled rather than built. Empty and
     /// untouched for a body that came whole, which is nearly all of them.
     spill: Vec<u8>,
-    /// Where a request's path is written before it goes out.
-    ///
-    /// The piece is cut off with `split` and frozen, which hands over a
-    /// [`Bytes`] onto this allocation rather than a copy of it — `Uri` and
-    /// `HeaderValue` keep a `Bytes` they are handed, where a `&str` is copied
-    /// into one of their own. Hyper holds that piece until the request is
-    /// done; the [`make_room`] before the next write then walks the buffer
-    /// back to the start of the same allocation, so what went out last is the
-    /// room the next one is written in.
-    ///
-    /// Which is why **every response has to be read to the end**: a piece the
-    /// connection still holds leaves the buffer shared, and a shared one is
-    /// abandoned for a fresh allocation instead of reclaimed. See
-    /// [`read_body`](ServerClient::read_body), which has to do it for the
-    /// connection anyway.
-    path: BytesMut,
-    /// The same, for the JSON body of a `dispatch`.
-    payload: BytesMut,
-    /// The same, for the `If-None-Match` of a log request — the one header
-    /// this speaks that is not a constant.
-    ///
-    /// One buffer per piece, and not one shared between them, because a
-    /// request's pieces are alive at the same moment and a buffer with a piece
-    /// still out is abandoned rather than reclaimed: measured at two
-    /// allocations per poll for one buffer against none for three.
-    header_revision: BytesMut,
+    /// Where some of the data is written
+    bytes_pool: BytesMutPool<8>,
 }
 
 /// What the log route answered, and the rectangle it answered with.
@@ -157,9 +129,7 @@ impl ServerClient {
             address: ServerClientAddress::UnixSocket(path.into()),
             sender: None,
             spill: Vec::new(),
-            path: BytesMut::with_capacity(REQUEST_BUFFER),
-            payload: BytesMut::with_capacity(REQUEST_BUFFER),
-            header_revision: BytesMut::with_capacity(REVISION_BUFFER),
+            bytes_pool: BytesMutPool::with_capacity(BYTES_POOL_BUFFER),
         }
     }
     /// Open a connection and put its driver on a task of its own.
@@ -481,51 +451,23 @@ impl ServerClient {
 
     /// The path of a request, out of [`path`](ServerClient::path).
     fn uri(&mut self, args: fmt::Arguments<'_>) -> Result<Uri, ViewSocketError> {
-        let path = freeze(&mut self.path, REQUEST_BUFFER, args);
+        let path = self.bytes_pool.write(args);
         Ok(Uri::from_maybe_shared(path)?)
     }
 
     /// The revision a log request already drew, out of
     /// [`header_revision`](ServerClient::header_revision).
     fn revision(&mut self, revision: u64) -> Result<HeaderValue, ViewSocketError> {
-        let value = freeze(
-            &mut self.header_revision,
-            REVISION_BUFFER,
-            format_args!("\"{revision}\""),
-        );
+        let value = self.bytes_pool.write(format_args!("\"{revision}\""));
         Ok(HeaderValue::from_maybe_shared(value)?)
     }
 
     /// One event as the JSON body of a request, out of
     /// [`payload`](ServerClient::payload).
     fn body(&mut self, event: &UnitEvent) -> Result<Bytes, ViewSocketError> {
-        make_room(&mut self.payload, REQUEST_BUFFER);
-        serde_json::to_writer((&mut self.payload).writer(), event)?;
-        Ok(self.payload.split().freeze())
+        let buf = self.bytes_pool.json(event)?;
+        Ok(buf)
     }
-}
-
-/// Empty `buffer` and ask for `room`, which is where every piece starts.
-///
-/// The clear is what makes a half written piece harmless: the formatted ones
-/// cannot fail, but a body whose serialization did would leave its start
-/// behind and the next piece would go out carrying it.
-///
-/// The `reserve` is what reclaims. Asking for more than the tail holds is what
-/// walks the buffer back to the start of its allocation, and it can only do
-/// that while nothing else holds a piece of it — see
-/// [`path`](ServerClient::path).
-fn make_room(buffer: &mut BytesMut, room: usize) {
-    buffer.clear();
-    buffer.reserve(room);
-}
-
-/// Write `args` into `buffer` and cut off what was written.
-fn freeze(buffer: &mut BytesMut, room: usize, args: fmt::Arguments<'_>) -> Bytes {
-    make_room(buffer, room);
-    // Cannot fail: the writer only extends the buffer.
-    let _ = buffer.writer().write_fmt(args);
-    buffer.split().freeze()
 }
 
 /// The next chunk of body, skipping trailers and empty frames, and `None` at
