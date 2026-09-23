@@ -68,6 +68,12 @@ instead of rebuilt" and "fewer bytes on the wire" are three different jobs
 with three different answers. Building the wrong one costs a round of
 measurements and a rewrite, and the sentence costs one line.
 
+**A request for a number gets the number.** A second scenario, an attribution,
+a breakdown per call site — offer those in one line, do not produce them. Asked
+for the allocations before against the allocations now, this went off and built
+a worktree of the baseline, two instrumented binaries and five runs. The pair
+of numbers was the answer.
+
 ## Cleverness
 
 **Each of these needs permission, every time it is reached for:** a type
@@ -97,6 +103,13 @@ needed permission before it was written.
 **Measure before asserting.** "This does not allocate", "this is not a hole",
 "this is cheap" — if it is worth writing down, it is worth checking. Claims
 made from reading the code have been wrong in this repo more than once.
+
+**A recommendation is a claim.** The number comes before the proposal, not
+after the implementation. "One buffer, cleared and reserved before each piece,
+allocates nothing" was recommended, written, and then measured at two
+allocations per poll — a piece still out is what stops the buffer being
+reclaimed, which reading the source of `bytes` had made look impossible. The
+counting allocator that settled it took two minutes to write.
 
 **Report what happened, not what should have happened.** If a test fails, say
 so with the output. If a revert lost work, say which. If an earlier statement
