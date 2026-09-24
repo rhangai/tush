@@ -2,17 +2,19 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, HeaderValue, StatusCode, header, response::Builder},
+    response::Response,
     routing::{get, post},
 };
 use serde::Serialize;
+use tokio_util::bytes::Bytes;
 
 use crate::{
     app::AppUnitKey,
     log::{LogLine, LogRegion},
-    server::state::ServerState,
+    server::state::{ServerLogResult, ServerState, ServerUnitResult},
     unit::{UnitChoice, UnitEvent},
     view::ViewSettings,
 };
@@ -69,21 +71,16 @@ async fn settings(State(state): State<Arc<ServerState>>) -> Json<ViewSettings> {
 /// `If-None-Match` the way the log route does: the rows of a session sitting
 /// still are the same rows poll after poll, and saying so costs sixty six
 /// bytes against eight hundred.
-async fn units(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+async fn units(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     let drawn = drawn_revision(&headers);
-    state.read_units(|body, revision| {
-        if drawn == Some(revision) {
-            return StatusCode::NOT_MODIFIED.into_response();
-        }
-        (
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::ETAG, &format!("\"{revision}\"")),
-            ],
-            body.clone(),
-        )
-            .into_response()
-    })
+    let result = state.read_units(drawn);
+    match result {
+        ServerUnitResult::NotModified => Err(StatusCode::NOT_MODIFIED),
+        ServerUnitResult::Read(bytes, revision) => json_response(&state, Some(revision), bytes),
+    }
 }
 
 /// A rectangle of one unit's log.
@@ -100,40 +97,24 @@ async fn log(
     Path(unit): Path<String>,
     Query(region): Query<LogRegion>,
     headers: HeaderMap,
-) -> Response {
+) -> Result<Response, StatusCode> {
     let Some(key) = key(&state, &unit) else {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(StatusCode::NOT_FOUND);
     };
     let drawn = drawn_revision(&headers);
-
-    // Everything that touches the reader happens inside here, so there is no
-    // guard alive at an `.await` — see `ServerState::read_log`.
-    let answer = state.read_log(key, region, |lines, revision| {
-        if drawn == Some(revision) {
-            return None;
-        }
-        Some((
+    let answer = state.read_log(key, drawn, region, |lines, revision| {
+        state.json(&LogBody {
+            region,
+            lines,
             revision,
-            serde_json::to_string(&LogBody {
-                region,
-                revision,
-                lines,
-            }),
-        ))
+        })
     });
 
     match answer {
-        None => StatusCode::NOT_FOUND.into_response(),
-        Some(None) => StatusCode::NOT_MODIFIED.into_response(),
-        Some(Some((_, Err(_)))) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        Some(Some((revision, Ok(body)))) => (
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::ETAG, &format!("\"{revision}\"")),
-            ],
-            body,
-        )
-            .into_response(),
+        ServerLogResult::NotFound => Err(StatusCode::NOT_FOUND),
+        ServerLogResult::NotModified => Err(StatusCode::NOT_MODIFIED),
+        ServerLogResult::Error(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        ServerLogResult::Read(bytes, revision) => json_response(&state, Some(revision), bytes),
     }
 }
 
@@ -208,4 +189,26 @@ fn drawn_revision(headers: &HeaderMap) -> Option<u64> {
         .trim_matches('"')
         .parse::<u64>()
         .ok()
+}
+
+fn json_response(
+    state: &Arc<ServerState>,
+    revision: Option<u64>,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let mut builder = Builder::new();
+    builder = builder.header(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    if let Some(revision) = revision {
+        builder = builder.header(
+            header::ETAG,
+            HeaderValue::from_maybe_shared(state.write(format_args!("\"{revision}\"")))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+    }
+    builder
+        .body(Body::from(body))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

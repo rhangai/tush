@@ -1,12 +1,14 @@
 use std::{collections::HashMap, sync::Arc};
 
-use hyper::body::Bytes;
 use parking_lot::Mutex;
+use serde::Serialize;
+use tokio_util::bytes::Bytes;
 
 use crate::{
     app::{App, AppUnitKey},
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
+    util::bytes::{BytesMutSyncPool, BytesReusable},
     view::ViewUnit,
 };
 
@@ -40,7 +42,7 @@ struct ServerUnits {
     revision: u64,
     /// The rows as JSON, rebuilt when the revision moves and cloned per
     /// answer — a [`Bytes`] clone being a refcount rather than a copy.
-    body: Bytes,
+    body: BytesReusable,
 }
 
 /// What a connection reads the session through.
@@ -62,6 +64,20 @@ pub struct ServerState {
     /// reader between units has to build it at the largest of them, and
     /// `log_size` is per proc.
     logs: HashMap<AppUnitKey, Mutex<ServerLog>>,
+    bytes_pool: BytesMutSyncPool,
+    bytes_json_pool: BytesMutSyncPool,
+}
+
+pub enum ServerLogResult<E> {
+    NotModified,
+    NotFound,
+    Read(Bytes, u64),
+    Error(E),
+}
+
+pub enum ServerUnitResult {
+    NotModified,
+    Read(Bytes, u64),
 }
 
 impl ServerState {
@@ -112,9 +128,11 @@ impl ServerState {
                 // reaches one by having been answered with, and the first
                 // refresh moves it before anything is sent.
                 revision: 0,
-                body: Bytes::new(),
+                body: BytesReusable::new(),
             }),
             logs,
+            bytes_pool: BytesMutSyncPool::with_capacity(8, 256),
+            bytes_json_pool: BytesMutSyncPool::with_capacity(4, 8192),
         }
     }
 
@@ -129,7 +147,7 @@ impl ServerState {
     /// Lent through a closure and not returned, for the reason
     /// [`read_log`](ServerState::read_log) is — except that here what would
     /// escape is the guard on the rows every client shares.
-    pub fn read_units<T>(&self, read: impl FnOnce(&Bytes, u64) -> T) -> T {
+    pub fn read_units(&self, last_revision: Option<u64>) -> ServerUnitResult {
         let unit_map = self.app.unit_map();
         let mut slot = self.units.lock();
 
@@ -153,16 +171,14 @@ impl ServerState {
         // been answered with yet.
         if changed || slot.body.is_empty() {
             slot.revision += 1;
-            slot.body = match serde_json::to_vec(&slot.rows) {
-                Ok(body) => Bytes::from(body),
-                // Rows of interned keys and short strings: there is nothing
-                // here serde can refuse. Leaving the last body is what keeps
-                // that from being a reason to fail the request.
-                Err(_) => slot.body.clone(),
-            };
+            let ServerUnits { rows, body, .. } = &mut *slot;
+            body.json(rows);
+            return ServerUnitResult::Read(slot.body.bytes().clone(), slot.revision);
         }
-
-        read(&slot.body, slot.revision)
+        if Some(slot.revision) == last_revision {
+            return ServerUnitResult::NotModified;
+        }
+        ServerUnitResult::Read(slot.body.bytes().clone(), slot.revision)
     }
 
     /// The session itself, for everything that is not a log.
@@ -183,17 +199,35 @@ impl ServerState {
     /// guard out of an `async fn`: a handler holding one across an `.await`
     /// would block every other request for that unit behind whatever it was
     /// waiting on, and this way there is no guard for it to hold.
-    pub fn read_log<T>(
+    pub fn read_log<E>(
         &self,
         key: AppUnitKey,
+        last_revision: Option<u64>,
         region: LogRegion,
-        read: impl FnOnce(&[LogLine], u64) -> T,
-    ) -> Option<T> {
-        let mut slot = self.logs.get(&key)?.lock();
+        read: impl FnOnce(&[LogLine], u64) -> Result<Bytes, E>,
+    ) -> ServerLogResult<E> {
+        let Some(entry) = self.logs.get(&key) else {
+            return ServerLogResult::NotFound;
+        };
+        let mut slot = entry.lock();
         let ServerLog { reader, lines } = &mut *slot;
         reader.sync();
         let revision = reader.version();
+        if Some(revision) == last_revision {
+            return ServerLogResult::NotModified;
+        }
         reader.copy_region(region, lines);
-        Some(read(lines, revision))
+        match read(lines, revision) {
+            Err(err) => ServerLogResult::Error(err),
+            Ok(data) => ServerLogResult::Read(data, revision),
+        }
+    }
+
+    pub fn write(&self, args: std::fmt::Arguments<'_>) -> Bytes {
+        self.bytes_pool.write(args)
+    }
+
+    pub fn json<T: ?Sized + Serialize>(&self, data: &T) -> Result<Bytes, serde_json::Error> {
+        self.bytes_json_pool.json(data)
     }
 }
