@@ -31,7 +31,7 @@
 //!   ring the logs keep their chunks in, the dependency graph the config is
 //!   checked with.
 //! - [`mod@view`] — a session as something outside it sees and drives it: the
-//!   [`ViewClient`](view::ViewClient) the screen and, later, a socket read it
+//!   [`ViewClient`] the screen, a socket and a one-shot command read it
 //!   through.
 //!
 //! # Layering
@@ -72,11 +72,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     app::App,
-    cli::{AttachArgs, Cli, Command, RunArgs, ServeArgs},
+    cli::{AttachArgs, Cli, Command, DispatchArgs, DispatchCommand, RunArgs, ServeArgs},
     config::Config,
     server::{Server, default_socket_path},
     ui::{Ui, UiTheme},
-    view::{ViewApp, ViewClient, ViewPrinter, ViewSocket},
+    view::{ViewApp, ViewClient, ViewDispatch, ViewPrinter, ViewSocket},
 };
 
 #[tokio::main]
@@ -85,14 +85,15 @@ async fn main() -> Result<()> {
         Command::Run(args) => run(args).await,
         Command::Serve(args) => serve(args).await,
         Command::Attach(args) => attach(args).await,
+        Command::Dispatch(args) => dispatch(args).await,
     }
 }
 
 /// Build a session and show it.
 ///
 /// This is the mode that owns what it runs, so what gives the session back
-/// has to take the processes with it — quitting the screen, or the signal
-/// that stands in for it when there is no screen.
+/// has to take the processes with it — quitting the screen, or the signal,
+/// which ends the screen by the same door rather than killing us through it.
 /// [`shutdown`](crate::app::AppUnitMap::shutdown) is what makes the children
 /// actually gone, and it is deliberately awaited rather than left to `Drop`,
 /// which cannot.
@@ -123,7 +124,7 @@ async fn run(args: RunArgs) -> Result<()> {
     let refresh = args.screen.refresh()?;
     let client = ViewApp::new(app.clone());
     let theme = theme_for(&client);
-    let result = Ui::run(client, refresh, theme).await;
+    let result = Ui::run(client, refresh, theme, cancel_on_interrupt()?).await;
     app.shutdown().await;
     Ok(result?)
 }
@@ -148,6 +149,9 @@ async fn shutdown_printing(app: &App, printing: CancellationToken, printer: Join
 /// quitting takes nothing down and the session carries on without it — the
 /// opposite of [`run`], and the reason the two are separate commands.
 ///
+/// A signal is still worth catching with nothing to stop: it is the terminal
+/// that has to come back, and only the screen's own exit gives it back.
+///
 /// The poll rate is the refresh rate. They are free to differ — the task
 /// fetches on its own clock and the screen draws on its — and one number is
 /// what a person asked for until there is a reason for two.
@@ -156,7 +160,23 @@ async fn attach(args: AttachArgs) -> Result<()> {
     let socket = args.socket.unwrap_or_else(default_socket_path);
     let client = ViewSocket::connect(socket, refresh).await?;
     let theme = theme_for(&client);
-    Ok(Ui::run(client, refresh, theme).await?)
+    Ok(Ui::run(client, refresh, theme, cancel_on_interrupt()?).await?)
+}
+
+/// Say one thing to a session that is already running, and stop.
+///
+/// The only mode with neither procs nor a screen, so there is nothing to take
+/// down and nothing to restore — which is why it is the one that waits on the
+/// round trip and reports what came back. A command nobody could tell had
+/// failed is worse than a slow one.
+async fn dispatch(args: DispatchArgs) -> Result<()> {
+    let socket = args.socket.unwrap_or_else(default_socket_path);
+    let mut client = ViewDispatch::connect(socket).await?;
+    match args.command {
+        DispatchCommand::Start { key, mode } => client.start(&key, mode.as_deref()).await?,
+        DispatchCommand::Stop { key } => client.stop(&key).await?,
+    }
+    Ok(())
 }
 
 /// The screen a session asked for.
@@ -225,10 +245,11 @@ fn schedule_targets(app: &App, targets: Vec<app::Target>) {
 
 /// A token the signal that means "stop" cancels.
 ///
-/// Both of them: `SIGINT` is the terminal a server was started in, `SIGTERM`
-/// is everything else — a supervisor, a container stopping, `kill`. Ignoring
-/// the second would leave the children for the system to kill rather than
-/// shut down, which is the case the orderly path exists for.
+/// All three of them: `SIGINT` is the terminal a server was started in,
+/// `SIGTERM` is everything else — a supervisor, a container stopping, `kill`
+/// — and `SIGHUP` is that terminal going away while the session is still in
+/// it. Ignoring any of them would leave the children for the system to kill
+/// rather than shut down, which is the case the orderly path exists for.
 ///
 /// The handlers are installed here, so failing to install one is a startup
 /// failure and not a server that quietly cannot be stopped. The task that
@@ -238,12 +259,14 @@ fn schedule_targets(app: &App, targets: Vec<app::Target>) {
 fn cancel_on_interrupt() -> Result<CancellationToken> {
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut hangup = signal(SignalKind::hangup())?;
     let token = CancellationToken::new();
     let cancel = token.clone();
     tokio::spawn(async move {
         tokio::select! {
             _ = terminate.recv() => {}
             _ = interrupt.recv() => {}
+            _ = hangup.recv() => {}
         }
         cancel.cancel();
     });

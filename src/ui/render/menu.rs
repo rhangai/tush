@@ -6,7 +6,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{app::AppUnitKey, util::str::SmallStr};
+use crate::{app::AppUnitKey, unit::UnitChoices, util::str::SmallStr};
 use crate::{
     ui::{
         render::{Move, room, set_clipped},
@@ -49,7 +49,7 @@ pub struct UiRenderMenuState {
     /// What that unit is called, for the title.
     title: SmallStr,
     /// The entries, kept across a close so the next open refills them.
-    items: Vec<UnitChoice>,
+    items: UnitChoices,
     /// Which row: an entry, or the way out at `items.len()`. Only ever one
     /// that can be chosen.
     cursor: usize,
@@ -66,7 +66,7 @@ impl UiRenderMenuState {
     /// By value and not through a `&mut`, because the caller hands it to the
     /// client — a borrow of the screen held across a read of the session is
     /// the one shape the borrow checker will not have.
-    pub fn take_items(&mut self) -> Vec<UnitChoice> {
+    pub fn take_items(&mut self) -> UnitChoices {
         std::mem::take(&mut self.items)
     }
 
@@ -76,7 +76,7 @@ impl UiRenderMenuState {
     /// run what the row was offering; failing that the first enabled entry,
     /// failing that the way out. Between them it never lands on a disabled
     /// row, so <kbd>Enter</kbd> is never a press that does nothing.
-    pub fn open(&mut self, key: AppUnitKey, title: SmallStr, items: Vec<UnitChoice>) {
+    pub fn open(&mut self, key: AppUnitKey, title: SmallStr, items: UnitChoices) {
         self.cursor = items
             .iter()
             .position(|item| item.current && item.enabled)
@@ -102,7 +102,7 @@ impl UiRenderMenuState {
     /// number of rows for a different state. None does — which is the whole
     /// reason this may be called per frame — and `items.len()` is the way
     /// out's own row, so that is where a cursor past the end lands.
-    pub fn refresh(&mut self, items: Vec<UnitChoice>) {
+    pub fn refresh(&mut self, items: UnitChoices) {
         self.items = items;
         self.cursor = self.cursor.min(self.items.len());
     }
@@ -123,7 +123,7 @@ impl UiRenderMenuState {
                 Move::Previous if at > 0 => at - 1,
                 _ => return,
             };
-            if at == cancel || self.items[at].enabled {
+            if at == cancel || self.items.at(at).enabled {
                 self.cursor = at;
                 return;
             }

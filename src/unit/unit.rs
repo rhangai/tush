@@ -6,12 +6,13 @@ use parking_lot::Mutex;
 
 use crate::error::UnitError;
 use crate::unit::behavior::UnitBehaviorContext;
+use crate::unit::dispatch::UnitChoices;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
     log::{Log, LogReader, LogReaderSettings},
     runner::{RunnerHandle, RunnerState},
-    unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior},
+    unit::{UnitAction, UnitEvent, behavior::UnitBehavior},
 };
 
 /// A named, restartable entry: one log, one behavior, one current run.
@@ -22,7 +23,7 @@ use crate::{
 /// have to re-subscribe.
 ///
 /// The current handle shares one lock with the flag saying whether a run has
-/// ever finished, because a restart changes both — see [`UnitCurrentHandle`].
+/// ever finished, because a restart changes both — see [`UnitHandleManager`].
 /// Nothing is awaited while it is held, so [`state`](Unit::state) and
 /// [`stop`](Unit::stop) can be called from any task, a restart in flight
 /// included.
@@ -36,7 +37,7 @@ pub struct Unit {
     /// the only thing that has a dispatcher to give.
     event_dispatcher: Option<EventDispatcher>,
     /// The current run and whether one has ever finished — see
-    /// [`UnitCurrentHandle`]. Behind an [`Arc`] because the task that waits
+    /// [`UnitHandleManager`]. Behind an [`Arc`] because the task that waits
     /// on a run holds a [`Weak`] to it and must not keep the unit alive.
     handle_manager: Arc<Mutex<UnitHandleManager>>,
 }
@@ -105,7 +106,7 @@ impl Unit {
     ///
     /// The state is read here rather than passed in, so the list and the
     /// state it was built from are the same moment.
-    pub fn choices(&self, out: &mut Vec<UnitChoice>) {
+    pub fn choices(&self, out: &mut UnitChoices) {
         let state = self.state();
         self.behavior.lock().choices(state, out);
     }

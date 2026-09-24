@@ -23,7 +23,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::AppUnitKey, log::LogRegion, ui::theme::UiTheme, unit::UnitChoice, util::str::SmallStr,
+    app::AppUnitKey, log::LogRegion, ui::theme::UiTheme, unit::UnitChoices, util::str::SmallStr,
     view::ViewClient,
 };
 
@@ -210,17 +210,17 @@ impl UiRender {
 
     /// Put the menu's entries back, re-read — see
     /// [`refresh`](UiRenderMenuState::refresh).
-    pub fn refresh_menu(&mut self, items: Vec<UnitChoice>) {
+    pub fn refresh_menu(&mut self, items: UnitChoices) {
         self.menu.refresh(items);
     }
 
     /// Lend out the menu's entry buffer to be refilled.
-    pub fn take_menu_items(&mut self) -> Vec<UnitChoice> {
+    pub fn take_menu_items(&mut self) -> UnitChoices {
         self.menu.take_items()
     }
 
     /// Open the menu over `key`, titled `title`, listing `items`.
-    pub fn open_menu(&mut self, key: AppUnitKey, title: SmallStr, items: Vec<UnitChoice>) {
+    pub fn open_menu(&mut self, key: AppUnitKey, title: SmallStr, items: UnitChoices) {
         self.menu.open(key, title, items);
     }
 

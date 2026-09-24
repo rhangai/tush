@@ -1,6 +1,8 @@
 //! Every error type in the crate, gathered rather than kept beside the code
 //! that returns them.
 
+use hyper::{header::InvalidHeaderValue, http::uri::InvalidUri};
+
 use crate::util::str::SmallStr;
 
 /// What starting or killing a child process can fail with.
@@ -92,10 +94,11 @@ pub enum AppError {
     /// and not a state a unit can be in.
     #[error("unit not found")]
     NotFound,
-    /// The unit was found and would not start.
+    /// The unit was found and would not start. Nothing constructs it today:
+    /// a start that fails arrives as [`UnitError`](AppError::UnitError).
     #[error("could not start the unit: {0}")]
     UnitStart(UnitError),
-    /// The unit was found and would not start.
+    /// The unit was found and the unit itself objected — see [`UnitError`].
     #[error("error with the unit: {0}")]
     UnitError(#[from] UnitError),
 }
@@ -122,6 +125,8 @@ pub enum ServerError {
 /// which neither waits nor fails.
 #[derive(Debug, thiserror::Error)]
 pub enum ViewSocketError {
+    #[error("socket not connected")]
+    NotConnected,
     #[error("could not reach the session: {0}")]
     Connect(std::io::Error),
     #[error("the session answered badly: {0}")]
@@ -132,6 +137,34 @@ pub enum ViewSocketError {
     Status(u16),
     #[error("could not read what the session said: {0}")]
     Body(#[from] serde_json::Error),
+    #[error("could not build the request path: {0}")]
+    InvalidUri(#[from] InvalidUri),
+    #[error("could not build the request header: {0}")]
+    InvalidHeaderValue(#[from] InvalidHeaderValue),
+}
+
+/// What stops one `tush dispatch` from being delivered.
+///
+/// Mostly not the socket. A key or a mode that does not exist is a typo, and
+/// what answers a typo is the list the person could have typed instead — which
+/// is why the modes are carried here rather than left as a status code.
+#[derive(Debug, thiserror::Error)]
+pub enum ViewDispatchError {
+    /// Transparent, and not `"{0}"`: `#[from]` makes the inner error the
+    /// source as well, and `anyhow` prints the chain — so a wrapper with a
+    /// message of its own says the same sentence twice.
+    #[error(transparent)]
+    Socket(#[from] ViewSocketError),
+    #[error("no proc is declared as `{0}`")]
+    UnknownUnit(String),
+    #[error("`{0}` runs one way and has no mode to pick")]
+    NoModes(String),
+    #[error("`{unit}` has no mode `{mode}`; it has {}", helper::Quoted(.modes))]
+    UnknownMode {
+        unit: String,
+        mode: String,
+        modes: Vec<SmallStr>,
+    },
 }
 
 /// What an `#[error]` needs and `std::fmt` does not give it.

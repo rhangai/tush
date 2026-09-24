@@ -419,7 +419,7 @@ worker:
 | The same proc name twice | The last one silently wins. YAML allows it; nothing warns you. |
 | `group: setup` | Error — it has to be a list: `group: [setup]`. |
 | `run: bash` | Error — it has to be a list: `run: [bash]`. |
-| Both `run` and `modes` | Accepted, but nothing decides which one a plain start means. Pick one. |
+| Both `run` and `modes` | Error — ``a` declares both `run` and `modes``. Pick one. |
 
 ---
 

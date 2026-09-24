@@ -4,7 +4,7 @@ use crate::{
     app::{App, AppUnitKey},
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
-    unit::UnitChoice,
+    unit::UnitChoices,
     view::client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
 };
 
@@ -180,7 +180,7 @@ impl ViewClient for ViewApp {
     ///
     /// The `Err` arm is a key the map does not hold, and the keys came out of
     /// the map — so it leaves `out` empty rather than failing.
-    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, key: AppUnitKey, out: &mut UnitChoices) {
         let Ok(entry) = self.app.unit_map().entry(key) else {
             out.clear();
             return;

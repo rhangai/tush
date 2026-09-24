@@ -9,7 +9,7 @@
 
 use smallvec::SmallVec;
 
-use crate::util::vec::JaggedVec;
+use crate::util::jagged_vec::JaggedVec;
 
 use super::str::SmallStr;
 

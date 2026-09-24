@@ -2,19 +2,21 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, HeaderValue, StatusCode, header, response::Builder},
+    response::Response,
     routing::{get, post},
 };
 use serde::Serialize;
+use tokio_util::bytes::Bytes;
 
 use crate::{
     app::AppUnitKey,
     log::{LogLine, LogRegion},
-    server::state::ServerState,
-    unit::{UnitChoice, UnitEvent},
-    view::{ViewSettings, ViewUnit},
+    server::state::{ServerLogResult, ServerState, ServerUnitResult},
+    unit::UnitEvent,
+    view::ViewSettings,
 };
 
 /// Every route a client speaks, over whatever the caller is listening on.
@@ -64,31 +66,21 @@ async fn settings(State(state): State<Arc<ServerState>>) -> Json<ViewSettings> {
 
 /// Every unit, as a row.
 ///
-/// Built per request rather than kept: the names never change, but a state
-/// does, and a handful of inline strings is cheaper than a copy that has to
-/// be invalidated.
-async fn units(State(state): State<Arc<ServerState>>) -> Json<Vec<ViewUnit>> {
-    let unit_map = state.app().unit_map();
-    let mut units: Vec<ViewUnit> = unit_map
-        .keys()
-        .filter_map(|unit_key| {
-            let entry = unit_map.entry(unit_key).ok()?;
-            let unit = entry.unit();
-            let settings = entry.settings();
-            Some(ViewUnit {
-                unit_key,
-                key: entry.key().clone(),
-                name: unit.name(),
-                name_short: unit.name_short(),
-                mode: unit.mode(),
-                mode_short: unit.mode_short(),
-                state: unit.state(),
-                panel: settings.panel,
-            })
-        })
-        .collect();
-    units.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));
-    Json(units)
+/// Kept and refreshed rather than built per request — see
+/// [`read_units`](ServerState::read_units) — which is what lets this answer
+/// `If-None-Match` the way the log route does: the rows of a session sitting
+/// still are the same rows poll after poll, and saying so costs sixty six
+/// bytes against eight hundred.
+async fn units(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let drawn = drawn_revision(&headers);
+    let result = state.read_units(drawn);
+    match result {
+        ServerUnitResult::NotModified => Err(StatusCode::NOT_MODIFIED),
+        ServerUnitResult::Read(bytes, revision) => json_response(&state, Some(revision), bytes),
+    }
 }
 
 /// A rectangle of one unit's log.
@@ -105,43 +97,24 @@ async fn log(
     Path(unit): Path<String>,
     Query(region): Query<LogRegion>,
     headers: HeaderMap,
-) -> Response {
+) -> Result<Response, StatusCode> {
     let Some(key) = key(&state, &unit) else {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(StatusCode::NOT_FOUND);
     };
-    let drawn = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim_matches('"').parse::<u64>().ok());
-
-    // Everything that touches the reader happens inside here, so there is no
-    // guard alive at an `.await` — see `ServerState::read_log`.
-    let answer = state.read_log(key, region, |lines, revision| {
-        if drawn == Some(revision) {
-            return None;
-        }
-        Some((
+    let drawn = drawn_revision(&headers);
+    let answer = state.read_log(key, drawn, region, |lines, revision| {
+        state.json(&LogBody {
+            region,
+            lines,
             revision,
-            serde_json::to_string(&LogBody {
-                region,
-                revision,
-                lines,
-            }),
-        ))
+        })
     });
 
     match answer {
-        None => StatusCode::NOT_FOUND.into_response(),
-        Some(None) => StatusCode::NOT_MODIFIED.into_response(),
-        Some(Some((_, Err(_)))) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        Some(Some((revision, Ok(body)))) => (
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::ETAG, &format!("\"{revision}\"")),
-            ],
-            body,
-        )
-            .into_response(),
+        ServerLogResult::NotFound => Err(StatusCode::NOT_FOUND),
+        ServerLogResult::NotModified => Err(StatusCode::NOT_MODIFIED),
+        ServerLogResult::Error(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        ServerLogResult::Read(bytes, revision) => json_response(&state, Some(revision), bytes),
     }
 }
 
@@ -149,13 +122,12 @@ async fn log(
 async fn choices(
     State(state): State<Arc<ServerState>>,
     Path(unit): Path<String>,
-) -> Result<Json<Vec<UnitChoice>>, StatusCode> {
-    let key = key(&state, &unit).ok_or(StatusCode::NOT_FOUND)?;
-    let mut out = Vec::new();
-    let unit_map = state.app().unit_map();
-    let entry = unit_map.entry(key).map_err(|_| StatusCode::NOT_FOUND)?;
-    entry.unit().choices(&mut out);
-    Ok(Json(out))
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let key = state.key(&unit).ok_or(StatusCode::NOT_FOUND)?;
+    let drawn = drawn_revision(&headers);
+    let res = state.choices(key, drawn)?;
+    json_response(&state, None, res)
 }
 
 /// Ask for a unit to run, once what it depends on is up.
@@ -200,4 +172,47 @@ async fn dispatch(
 /// proc was declared with.
 fn key(state: &ServerState, key: &str) -> Option<AppUnitKey> {
     state.app().unit_map().key(key)
+}
+
+/// The revision a client says it already has, out of `If-None-Match`.
+///
+/// One reading of the header for both routes that carry one: two copies of
+/// this is two chances for a quoted number to be parsed one way here and
+/// another way there, and the answer to that mismatch is a client that never
+/// gets a `304`.
+fn drawn_revision(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(header::IF_NONE_MATCH)?
+        .to_str()
+        .ok()?
+        .trim_matches('"')
+        .parse::<u64>()
+        .ok()
+}
+
+/// One answer: a JSON body, and the revision it was taken at.
+///
+/// The `ETag` is written here and by no route, for the reason
+/// [`drawn_revision`] is read in one place — a number quoted one way going
+/// out and read another way coming back is a client that never gets a `304`.
+fn json_response(
+    state: &Arc<ServerState>,
+    revision: Option<u64>,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let mut builder = Builder::new();
+    builder = builder.header(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    if let Some(revision) = revision {
+        builder = builder.header(
+            header::ETAG,
+            HeaderValue::from_maybe_shared(state.write(format_args!("\"{revision}\"")))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+    }
+    builder
+        .body(Body::from(body))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

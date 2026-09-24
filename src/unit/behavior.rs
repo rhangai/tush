@@ -4,6 +4,7 @@ use enum_dispatch::enum_dispatch;
 use tokio::process::Command;
 
 use crate::error::UnitError;
+use crate::unit::dispatch::UnitChoices;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
@@ -212,21 +213,15 @@ impl UnitBehavior {
 
     /// Everything that can be asked of this behavior right now.
     ///
-    /// Into a `Vec` the caller owns and reuses, so a menu that opens over and
+    /// Into a list the caller owns and reuses, so a menu that opens over and
     /// over refills that capacity rather than asking for it again.
     ///
-    /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, which is
-    /// also what makes it the last entry of every menu.
-    pub fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+    /// The list is the kind's entire answer, the closing
+    /// [`Stop`](UnitEvent::Stop) included, so a kind with no way to run
+    /// offers nothing at all.
+    pub fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
         out.clear();
         self.inner.choices(state, out);
-        out.push(UnitChoice {
-            verb: STOP,
-            mode: None,
-            event: UnitEvent::Stop,
-            enabled: !state.is_stopped(),
-            current: false,
-        });
     }
 
     /// Build the runner and hand back a paused handle for it.
@@ -268,11 +263,21 @@ trait UnitBehaviorKind {
         None
     }
 
-    /// The ways this behavior offers to be run, in the order to list them.
+    /// The ways this behavior offers to be run, in the order to list them,
+    /// and the [`Stop`](UnitEvent::Stop) that closes a list that has any.
     ///
-    /// Nothing by default: a proc with no way to run has nothing to offer,
-    /// and a menu of one dim `Stop` is the honest picture of it.
-    fn choices(&self, _state: RunnerState, _out: &mut Vec<UnitChoice>) {}
+    /// Nothing by default, that `Stop` included: a proc that declared no way
+    /// to run has nothing an entry could ask of it.
+    fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
+        out.push(UnitChoice {
+            verb: STOP,
+            mode: None,
+            mode_short: None,
+            event: UnitEvent::Stop,
+            enabled: !state.is_stopped(),
+            current: false,
+        });
+    }
 
     /// Which of its modes is current, for the kinds that have any.
     fn mode(&self) -> Option<SmallStr> {
@@ -316,13 +321,22 @@ impl UnitBehaviorKind for BehaviorRun {
     /// One way to run, so one entry, always available: a run that is up
     /// restarts. Blind <kbd>Enter</kbd> used to refuse that; off a menu the
     /// entry says `Restart` and the cursor was put on it.
-    fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
         out.push(UnitChoice {
             verb: verb(state),
             mode: None,
+            mode_short: None,
             event: UnitEvent::Start,
             enabled: true,
             current: true,
+        });
+        out.push(UnitChoice {
+            verb: STOP,
+            mode: None,
+            mode_short: None,
+            event: UnitEvent::Stop,
+            enabled: !state.is_stopped(),
+            current: false,
         });
     }
 
@@ -392,12 +406,12 @@ fn command(argv: &[SmallStr], working_dir: Option<&SmallStr>) -> Result<Command,
 
 /// Several behaviors, one of which is the one that runs.
 ///
-/// The first of them, for now. What makes this a kind of its own rather than
-/// a `Vec` on the unit is that choosing is going to be its own behavior: the
-/// `dispatch` that switches modes belongs here, next to the list it switches
-/// within.
+/// A kind of its own rather than a `Vec` on the unit because choosing is
+/// itself a behavior: the [`dispatch`](UnitBehaviorKind::dispatch) that moves
+/// between modes lives here, next to the list it moves within.
 struct BehaviorModes {
     index: usize,
+    /// In the order the config wrote them, which is what an index means.
     modes: Vec<UnitBehavior>,
 }
 
@@ -415,17 +429,26 @@ impl UnitBehaviorKind for BehaviorModes {
     /// The mode it is on reads `Restart` while a run is up. The others read
     /// `Start` even though picking one takes that run down — the entry names
     /// the run it is about to make, and that one is starting.
-    fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
         for (index, mode) in self.modes.iter().enumerate() {
             let current = index == self.index;
             out.push(UnitChoice {
                 verb: if current { verb(state) } else { START },
                 mode: Some(mode.name()),
+                mode_short: mode.name_short(),
                 event: UnitEvent::StartMode(index),
                 enabled: true,
                 current,
             });
         }
+        out.push(UnitChoice {
+            verb: STOP,
+            mode: None,
+            mode_short: None,
+            event: UnitEvent::Stop,
+            enabled: !state.is_stopped(),
+            current: false,
+        });
     }
 
     /// Move onto the mode that was picked, and run it.

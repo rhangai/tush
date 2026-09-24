@@ -17,8 +17,6 @@ use crate::{
 /// The type is the proof: an `App` is a config that survived
 /// [`new`](App::new), so anything holding one can stop asking whether the
 /// procs it names exist or whether their dependencies can be satisfied.
-///
-/// The start order is not here yet.
 pub struct App {
     /// Every proc as a [`Unit`](crate::unit::Unit), by its key.
     unit_map: Arc<AppUnitMap>,
