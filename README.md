@@ -123,21 +123,10 @@ Every config key is in [CONFIG.md](CONFIG.md).
 
 ## The screen
 
-```
-┌────────────────────────────┬────────────────────────────────────────────┐
-│ > ● API server             │ API server · running · Watch               │
-│     running          Watch │ Listening on http://localhost:3000         │
-│                            │ GET /api/health 200 1ms                    │
-│   ○ web                    │ GET /api/users 200 14ms                    │
-│     stopped                │                                            │
-│ ────────────────────────── │                                            │
-│   ✓ db-setup               │                                            │
-│     done                   │                                            │
-│   ✗ migrate                │                                            │
-│     exit 1                 │                                            │
-└────────────────────────────┴────────────────────────────────────────────┘
- ↑↓ move  ⇥ panel  ⏎ actions  r (re)start  ⌫ stop  pgup/dn scroll  q quit
-```
+<p align="center">
+  <img src="assets/screenshot.png" width="900"
+       alt="The tush screen: a proc list on the left with API server done in Build, a queue worker running and a web app killed, minor procs below a rule, the selected proc's log filling the right pane, and the key hints along the bottom">
+</p>
 
 Procs on the left, the selected one's output on the right, keys along the
 bottom. The list comes in two parts: the procs you sit and watch on top, and
