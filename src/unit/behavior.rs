@@ -268,7 +268,16 @@ trait UnitBehaviorKind {
     ///
     /// Nothing by default, that `Stop` included: a proc that declared no way
     /// to run has nothing an entry could ask of it.
-    fn choices(&self, _state: RunnerState, _out: &mut UnitChoices) {}
+    fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
+        out.push(UnitChoice {
+            verb: STOP,
+            mode: None,
+            mode_short: None,
+            event: UnitEvent::Stop,
+            enabled: !state.is_stopped(),
+            current: false,
+        });
+    }
 
     /// Which of its modes is current, for the kinds that have any.
     fn mode(&self) -> Option<SmallStr> {
