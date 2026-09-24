@@ -23,7 +23,7 @@ use crate::{
 /// have to re-subscribe.
 ///
 /// The current handle shares one lock with the flag saying whether a run has
-/// ever finished, because a restart changes both — see [`UnitCurrentHandle`].
+/// ever finished, because a restart changes both — see [`UnitHandleManager`].
 /// Nothing is awaited while it is held, so [`state`](Unit::state) and
 /// [`stop`](Unit::stop) can be called from any task, a restart in flight
 /// included.
@@ -37,7 +37,7 @@ pub struct Unit {
     /// the only thing that has a dispatcher to give.
     event_dispatcher: Option<EventDispatcher>,
     /// The current run and whether one has ever finished — see
-    /// [`UnitCurrentHandle`]. Behind an [`Arc`] because the task that waits
+    /// [`UnitHandleManager`]. Behind an [`Arc`] because the task that waits
     /// on a run holds a [`Weak`] to it and must not keep the unit alive.
     handle_manager: Arc<Mutex<UnitHandleManager>>,
 }

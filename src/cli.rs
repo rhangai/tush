@@ -43,7 +43,7 @@ const SOCKET_ENV: &str = "TUSH_SOCKET";
     about = "A process manager built around log tailing"
 )]
 pub struct Cli {
-    /// Which of the three ways to run was asked for.
+    /// Which of the four ways in was asked for.
     #[command(subcommand)]
     pub command: Command,
 }
@@ -93,7 +93,7 @@ pub struct ServeArgs {
     pub socket: Option<PathBuf>,
 }
 
-/// A screen with no session of its own. Not built yet.
+/// A screen with no session of its own, drawn over a socket.
 #[derive(Args, Debug)]
 pub struct AttachArgs {
     #[command(flatten)]

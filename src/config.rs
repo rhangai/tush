@@ -45,7 +45,7 @@
 //! as one command or a list of them.
 //!
 //! `serde_with`'s `KeyValueMap` and `OneOrMany` covered both until the commands
-//! moved into a [`JaggedVec`](crate::util::vec::JaggedVec), which is not the
+//! moved into a [`JaggedVec`](crate::util::jagged_vec::JaggedVec), which is not the
 //! `Vec<Vec<_>>` those adapters build. Writing it out is what the move bought:
 //! the words go from the parser straight into the one run of items, with no
 //! intermediate list made and dropped.
@@ -431,7 +431,7 @@ where
     deserializer.deserialize_any(SmallStrVisitor)
 }
 
-/// Streams the words straight into the [`JaggedVec`](crate::util::vec::JaggedVec).
+/// Streams the words straight into the [`JaggedVec`](crate::util::jagged_vec::JaggedVec).
 ///
 /// That is what the seeds are for: every visitor below is handed the vec
 /// itself, so a word is pushed where it will live instead of into a list that

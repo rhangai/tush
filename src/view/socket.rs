@@ -350,7 +350,9 @@ impl ViewClient for ViewSocket {
     }
 }
 
-/// A command on its way out, with the encoded key its URL needs.
+/// A command on its way out, with the key the config declared its unit
+/// under. Encoding that into a path segment belongs to [`ServerClient`],
+/// which is the only thing that knows what a route looks like.
 enum Outgoing {
     Start(SmallStr),
     Stop(SmallStr),

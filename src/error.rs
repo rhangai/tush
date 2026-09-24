@@ -94,10 +94,11 @@ pub enum AppError {
     /// and not a state a unit can be in.
     #[error("unit not found")]
     NotFound,
-    /// The unit was found and would not start.
+    /// The unit was found and would not start. Nothing constructs it today:
+    /// a start that fails arrives as [`UnitError`](AppError::UnitError).
     #[error("could not start the unit: {0}")]
     UnitStart(UnitError),
-    /// The unit was found and would not start.
+    /// The unit was found and the unit itself objected — see [`UnitError`].
     #[error("error with the unit: {0}")]
     UnitError(#[from] UnitError),
 }

@@ -232,7 +232,8 @@ impl BytesReusable {
         }
     }
 
-    /// Pre allocate the reusable bytes
+    /// Built at the size the value is expected to reach, so the first build
+    /// does not grow into it.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             bytes_mut: BytesMut::with_capacity(capacity),

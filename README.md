@@ -170,7 +170,7 @@ what it will do: `Restart` on the mode that is up, `Start` on the others.
 
 ## Commands
 
-Three ways to run, differing in where the session lives and where the screen
+Four ways to run, differing in where the session lives and where the screen
 is:
 
 | | What it does |
@@ -178,6 +178,7 @@ is:
 | `tush run -c tush.yaml [targets]` | Session and screen in one process. Quitting takes the procs with it. |
 | `tush serve -c tush.yaml [targets]` | The session with no screen: prints each line as `[proc] line`, listens on a socket. Ends on <kbd>Ctrl</kbd>+<kbd>C</kbd> or `SIGTERM`. |
 | `tush attach` | A screen onto a session started by `serve`. Quitting takes nothing down. |
+| `tush dispatch start\|stop KEY` | One command to a running session, and out. No screen. |
 
 A *target* is a proc's name, or `group:name` for a whole group. Name none and
 nothing starts.
@@ -186,7 +187,7 @@ nothing starts.
 | --- | --- | --- |
 | `-c`, `--config <PATH>` | `run`, `serve` | The config file. Required, and taken as given — no searching up the tree. |
 | `--no-tui` | `run` | Print the output line by line instead of drawing a screen, for a CI log or a pipe. |
-| `--socket <PATH>` | `serve`, `attach` | Which socket to listen on or attach to. Also read from `TUSH_SOCKET`. |
+| `--socket <PATH>` | `serve`, `attach`, `dispatch` | Which socket to listen on or talk to. Also read from `TUSH_SOCKET`. |
 | `--fps <N>` | `run`, `attach` | How often the screen redraws. Default 10. |
 | `--refresh-rate <DURATION>` | `run`, `attach` | The same number the other way round: `100ms`, `2s`. |
 
@@ -215,6 +216,26 @@ The socket itself:
   with the path in the error. Give it a `--socket` of its own.
 - One left behind by a crashed server is taken over automatically. It is
   created `0600`, and its directory has to exist already.
+
+### One command, no screen
+
+`tush dispatch` says one thing to a running session and exits with whether it
+worked — for a keybinding, a script, or a shell where a screen is in the way:
+
+```sh
+tush dispatch start web            # start it, restarting it if it is up
+tush dispatch start web Watch      # start it in its `Watch` mode
+tush dispatch stop web
+```
+
+The proc is its key — what you wrote it under in the config, not its `name`.
+A mode is matched by `name`, then `name_short`, neither minding case, then by
+its position in `modes` counting from zero. A proc nothing is declared under
+comes back named; a mode that does not exist comes back with the ones that do.
+Either way the command exits non-zero.
+
+No `-c`: the session is the one that read the config. `--socket` and
+`TUSH_SOCKET` work as they do for `serve` and `attach`.
 
 ### In a dev container
 

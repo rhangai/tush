@@ -31,7 +31,7 @@
 //!   ring the logs keep their chunks in, the dependency graph the config is
 //!   checked with.
 //! - [`mod@view`] — a session as something outside it sees and drives it: the
-//!   [`ViewClient`](view::ViewClient) the screen and, later, a socket read it
+//!   [`ViewClient`] the screen, a socket and a one-shot command read it
 //!   through.
 //!
 //! # Layering

@@ -190,6 +190,11 @@ fn drawn_revision(headers: &HeaderMap) -> Option<u64> {
         .ok()
 }
 
+/// One answer: a JSON body, and the revision it was taken at.
+///
+/// The `ETag` is written here and by no route, for the reason
+/// [`drawn_revision`] is read in one place — a number quoted one way going
+/// out and read another way coming back is a client that never gets a `304`.
 fn json_response(
     state: &Arc<ServerState>,
     revision: Option<u64>,

@@ -210,10 +210,10 @@ pane and not the log.
 **One rule for where a line ends.** `LogReaderIter::ends_line` is it. A second
 copy of that rule is a second chance for a window and a render to disagree.
 
-## The UI client
+## The view client
 
-**`UiClient` is what the screen sees a session through**, and one of its
-implementations will be a socket. So:
+**`ViewClient` is what the screen sees a session through**, and one of its
+implementations is a socket. So:
 
 - **Nothing is async and nothing returns a `Result`.** Reading is from a
   snapshot the client already holds; asking is `send`, fire and forget. A
@@ -221,6 +221,6 @@ implementations will be a socket. So:
 - **The UI declares, the client satisfies.** `set_log(key, region)` says what
   the pane wants; whether anything has to happen is the client's decision,
   because it is the one holding the region, the revision and the connection.
-- **Answers carry what they actually are.** `UiLog` reports its own region and
+- **Answers carry what they actually are.** `ViewLog` reports its own region and
   revision, which can differ from what was asked. A pane draws the overlap
   rather than blanking while a client catches up.

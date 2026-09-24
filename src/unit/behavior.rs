@@ -213,11 +213,12 @@ impl UnitBehavior {
 
     /// Everything that can be asked of this behavior right now.
     ///
-    /// Into a `Vec` the caller owns and reuses, so a menu that opens over and
+    /// Into a list the caller owns and reuses, so a menu that opens over and
     /// over refills that capacity rather than asking for it again.
     ///
-    /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, which is
-    /// also what makes it the last entry of every menu.
+    /// The list is the kind's entire answer, the closing
+    /// [`Stop`](UnitEvent::Stop) included, so a kind with no way to run
+    /// offers nothing at all.
     pub fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
         out.clear();
         self.inner.choices(state, out);
@@ -262,10 +263,11 @@ trait UnitBehaviorKind {
         None
     }
 
-    /// The ways this behavior offers to be run, in the order to list them.
+    /// The ways this behavior offers to be run, in the order to list them,
+    /// and the [`Stop`](UnitEvent::Stop) that closes a list that has any.
     ///
-    /// Nothing by default: a proc with no way to run has nothing to offer,
-    /// and a menu of one dim `Stop` is the honest picture of it.
+    /// Nothing by default, that `Stop` included: a proc that declared no way
+    /// to run has nothing an entry could ask of it.
     fn choices(&self, _state: RunnerState, _out: &mut UnitChoices) {}
 
     /// Which of its modes is current, for the kinds that have any.
@@ -395,12 +397,12 @@ fn command(argv: &[SmallStr], working_dir: Option<&SmallStr>) -> Result<Command,
 
 /// Several behaviors, one of which is the one that runs.
 ///
-/// The first of them, for now. What makes this a kind of its own rather than
-/// a `Vec` on the unit is that choosing is going to be its own behavior: the
-/// `dispatch` that switches modes belongs here, next to the list it switches
-/// within.
+/// A kind of its own rather than a `Vec` on the unit because choosing is
+/// itself a behavior: the [`dispatch`](UnitBehaviorKind::dispatch) that moves
+/// between modes lives here, next to the list it moves within.
 struct BehaviorModes {
     index: usize,
+    /// In the order the config wrote them, which is what an index means.
     modes: Vec<UnitBehavior>,
 }
 

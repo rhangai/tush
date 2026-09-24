@@ -12,9 +12,10 @@
 //! - [`Server`] — the socket, the accept loop, and the connections on it.
 //! - [`ServerState`] — the session as a connection reads it, and the one
 //!   reader per unit that makes asking for a log twice cheap.
+//! - `http` — what a connection says: one route per thing a client can read
+//!   or ask for, over HTTP on that socket.
 //!
-//! The frames a connection will exchange are not here yet. What is here is
-//! everything around them: where the socket lives, what happens to the one a
+//! Around the routes: where the socket lives, what happens to the one a
 //! crashed server left behind, and how a connection is ended when the session
 //! is.
 

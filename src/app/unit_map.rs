@@ -385,7 +385,7 @@ impl AppUnitMap {
     /// The largest and not each, because it is what a caller reusing one
     /// reader across units builds it at: a reader never holds more than the
     /// size it was built for, so a smaller one would follow a shorter tail
-    /// than the log it is put on — see [`LogReader`](crate::log::LogReader).
+    /// than the log it is put on — see [`LogReader`].
     pub fn log_capacity(&self) -> usize {
         self.log_capacity_max
     }
@@ -396,7 +396,8 @@ impl AppUnitMap {
         self.units.keys().copied()
     }
 
-    /// Every unit's key and entry
+    /// Every unit's key with its entry, in the same order as
+    /// [`keys`](AppUnitMap::keys), which is to say in none.
     pub fn entries(&self) -> impl Iterator<Item = (AppUnitKey, &AppUnitEntry)> {
         self.units.iter().map(|(key, value)| (*key, value))
     }

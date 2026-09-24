@@ -66,17 +66,33 @@ pub struct ServerState {
     /// reader between units has to build it at the largest of them, and
     /// `log_size` is per proc.
     logs: HashMap<AppUnitKey, Mutex<ServerLog>>,
+    /// Where the short pieces of an answer are written: an `ETag`, and
+    /// anything else of that size.
     bytes_pool: BytesMutSyncPool,
+    /// Where a body is serialized. Fewer slots and far more room each, a body
+    /// being the longest thing written here.
     bytes_json_pool: BytesMutSyncPool,
 }
 
+/// What the log route has to answer with.
+///
+/// Four answers and not a `Result`, because two of them are not failures: a
+/// caller whose copy is current and a key nothing is declared under are both
+/// things the session has to say, and collapsing either into an error moves
+/// the decision back to the handler.
 pub enum ServerLogResult<E> {
+    /// The revision the client sent is the one the log is still at.
     NotModified,
+    /// No unit under that key.
     NotFound,
+    /// The body as `read` wrote it, and the revision it was cut at.
     Read(Bytes, u64),
+    /// `read` itself failed, with whatever it failed with.
     Error(E),
 }
 
+/// What the units route has to answer with. No `NotFound`: the rows are the
+/// whole session, and there is always a session.
 pub enum ServerUnitResult {
     NotModified,
     Read(Bytes, u64),
@@ -135,17 +151,17 @@ impl ServerState {
         }
     }
 
-    /// Refresh the rows and hand the answer to `read`, with the revision they
-    /// are at.
+    /// Refresh the rows, and answer with them and the revision they are at.
     ///
     /// The three fields a run changes are compared rather than written over:
     /// the comparison is what the whole route rests on, since equal rows mean
     /// the body already sent is still current and the client can be told so in
     /// sixty six bytes.
     ///
-    /// Lent through a closure and not returned, for the reason
-    /// [`read_log`](ServerState::read_log) is — except that here what would
-    /// escape is the guard on the rows every client shares.
+    /// The body goes back as a [`Bytes`] and the guard ends here, which is
+    /// what keeps it out of the handler's `async fn`: one holding the rows
+    /// every client shares across an `.await` would queue every other poll
+    /// behind itself.
     pub fn read_units(&self, last_revision: Option<u64>) -> ServerUnitResult {
         let unit_map = self.app.unit_map();
         let mut slot = self.units.lock();
@@ -182,6 +198,11 @@ impl ServerState {
         ServerUnitResult::Read(slot.body.bytes().clone(), slot.revision)
     }
 
+    /// Everything that can be asked of one unit, as JSON.
+    ///
+    /// Built per request and not kept like the rows: a menu opens on a
+    /// keypress rather than on a clock, and the revision is taken only
+    /// because the route carries one — nothing here versions a list.
     pub fn choices(
         &self,
         key: AppUnitKey,
@@ -211,11 +232,11 @@ impl ServerState {
     /// Cut `region` out of a unit's log and hand it to `read`, with the
     /// revision it was taken at.
     ///
-    /// `None` for a key no unit was declared under, which is not something a
-    /// caller can act on beyond answering the client that there is nothing
-    /// there. A unit whose log has gone quiet is not that case: it reads as
-    /// the lines already copied, which is what a view of a finished process
-    /// should show.
+    /// [`NotFound`](ServerLogResult::NotFound) for a key no unit was declared
+    /// under, which is not something a caller can act on beyond answering the
+    /// client that there is nothing there. A unit whose log has gone quiet is
+    /// not that case: it reads as the lines already copied, which is what a
+    /// view of a finished process should show.
     ///
     /// **The lines are lent and not returned.** A closure is what keeps the
     /// guard out of an `async fn`: a handler holding one across an `.await`
@@ -245,10 +266,13 @@ impl ServerState {
         }
     }
 
+    /// One short piece of an answer — an `ETag` — out of the pool it shares
+    /// with every other request.
     pub fn write(&self, args: std::fmt::Arguments<'_>) -> Bytes {
         self.bytes_pool.write(args)
     }
 
+    /// One body, serialized out of the pool sized for bodies.
     pub fn json<T: ?Sized + Serialize>(&self, data: &T) -> Result<Bytes, serde_json::Error> {
         self.bytes_json_pool.json(data)
     }

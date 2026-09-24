@@ -24,6 +24,7 @@ use crate::{
     view::client::{ViewSettings, ViewUnit},
 };
 
+/// How to reach the session. A Unix socket is the only way in today.
 enum ServerClientAddress {
     UnixSocket(PathBuf),
 }
@@ -47,15 +48,18 @@ const BYTES_POOL_BUFFER: usize = 1024;
 /// two of them disagree — a screen firing a command at a row that has gone
 /// keeps polling, and `tush dispatch` exits non-zero.
 pub struct ServerClient {
-    /// The address for the client
+    /// Kept past the handshake: a session outlives the screens that attach
+    /// to it, so a connection that dropped is opened again against this.
     address: ServerClientAddress,
-    /// The sender. None if not connected
+    /// `None` before the first connect and after one that failed — see
+    /// [`ensure_connected`](ServerClient::ensure_connected).
     sender: Option<SendRequest<Full<Bytes>>>,
     /// Where a body that arrived in more than one frame is gathered, kept
     /// between requests so that it is refilled rather than built. Empty and
     /// untouched for a body that came whole, which is nearly all of them.
     spill: Vec<u8>,
-    /// Where some of the data is written
+    /// Where a path, a header value and a body are cut from, so the requests
+    /// of a poll write into one allocation instead of three of their own.
     bytes_pool: BytesMutPool<8>,
 }
 
@@ -123,7 +127,8 @@ pub struct ServerLogBody {
 }
 
 impl ServerClient {
-    /// Only creates the client
+    /// Not connected: [`connect`](ServerClient::connect) is what opens the
+    /// socket, and this is for a caller that wants the client first.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             address: ServerClientAddress::UnixSocket(path.into()),
@@ -142,7 +147,8 @@ impl ServerClient {
         Ok(client)
     }
 
-    /// Ensure the client is connected
+    /// Connect if there is no connection, which is what the poller calls at
+    /// the top of every round.
     pub async fn ensure_connected(&mut self) -> Result<(), ViewSocketError> {
         if self.sender.is_none() {
             self.reconnect().await?;
@@ -150,7 +156,10 @@ impl ServerClient {
         Ok(())
     }
 
-    /// Reconnects the sender, if needed
+    /// Throw the connection away and open another.
+    ///
+    /// The sender goes first: a handshake that fails leaves nothing behind,
+    /// so the next request is refused rather than sent down a dead socket.
     pub async fn reconnect(&mut self) -> Result<(), ViewSocketError> {
         self.sender = None;
         let stream = match &self.address {
@@ -449,21 +458,22 @@ impl ServerClient {
             .map_err(ViewSocketError::Http)
     }
 
-    /// The path of a request, out of [`path`](ServerClient::path).
+    /// The path of a request, cut from
+    /// [`bytes_pool`](ServerClient::bytes_pool): a [`Uri`] keeps the bytes it
+    /// is handed rather than copying them.
     fn uri(&mut self, args: fmt::Arguments<'_>) -> Result<Uri, ViewSocketError> {
         let path = self.bytes_pool.write(args);
         Ok(Uri::from_maybe_shared(path)?)
     }
 
-    /// The revision a log request already drew, out of
-    /// [`header_revision`](ServerClient::header_revision).
+    /// The revision a log request already drew, as `If-None-Match` spells
+    /// one — quoted, and cut from the same buffer.
     fn revision(&mut self, revision: u64) -> Result<HeaderValue, ViewSocketError> {
         let value = self.bytes_pool.write(format_args!("\"{revision}\""));
         Ok(HeaderValue::from_maybe_shared(value)?)
     }
 
-    /// One event as the JSON body of a request, out of
-    /// [`payload`](ServerClient::payload).
+    /// One event as the JSON body of a request, cut from the same buffer.
     fn body(&mut self, event: &UnitEvent) -> Result<Bytes, ViewSocketError> {
         let buf = self.bytes_pool.json(event)?;
         Ok(buf)

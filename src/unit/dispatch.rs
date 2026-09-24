@@ -56,6 +56,14 @@ pub struct UnitChoice {
     pub current: bool,
 }
 
+/// The entries of one menu, as one list handed about by value.
+///
+/// A [`SmallVec`] and not a `Vec`: the list is lent to a client and taken
+/// back on every open and every poll, and a proc's modes plus the `Stop`
+/// after them fit inside it without an allocation.
+///
+/// Transparent on the wire, so what crosses is the bare array of entries and
+/// the type costs the protocol nothing.
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct UnitChoices {

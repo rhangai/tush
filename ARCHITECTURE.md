@@ -25,7 +25,7 @@ it buys the caller.
 
 | Module | What is in it |
 | --- | --- |
-| `util` | Data structures with nothing to do with processes: `SmallStr`, the arenas and rings the logs are built on, the dependency graph. |
+| `util` | Data structures with nothing to do with processes: `SmallStr`, the arenas and rings the logs are built on, the buffer pools the wire is written from, the dependency graph. |
 | `base` | The OS: a child `Process` in its own group, and the `ExitReason` it finished with. |
 | `log` | Capture of a proc's output into a bounded `Log`, and the readers and regions a view sees it through. |
 | `runner` | Supervision of one run: the `Runner` trait, its `RunnerHandle` and the `RunnerState` it publishes. |
@@ -87,10 +87,10 @@ the process that minted it, so HTTP addresses a unit by the text it was
 declared under, which `ViewUnit::key` carries. The config key and not the
 display name, which is a label the config may change and two procs may share.
 
-The client encodes that segment in one place, `ViewSocket::key_path`, rather
-than at each `format!` that builds a URL — a config key is whatever somebody
-typed, and a space or a `/` in one otherwise makes a request that does not
-parse or one that routes somewhere else.
+The client encodes that segment in one place — `key_path`, beside the routes
+in `view::server` — rather than at each `format!` that builds a URL: a config
+key is whatever somebody typed, and a space or a `/` in one otherwise makes a
+request that does not parse or one that routes somewhere else.
 
 ## One event, coalescing
 
@@ -161,22 +161,27 @@ What that costs is the acknowledgement: a refused command has nowhere to come
 back through. When the session grows that channel, `ViewApp::send` is where it
 is written to.
 
+`tush dispatch` is outside the trait for that reason. It waits and it fails,
+because a shell wants an exit code and a command silently not delivered is the
+thing to avoid there — so `ViewDispatch` talks to `ServerClient` directly,
+which is the same routes both clients go through.
+
 ## Who owns the children
 
-Three commands, differing only in where the session is and where the screen
-is:
+Four commands, differing in where the session is and where the screen is:
 
 | | session | screen | what ends it |
 | --- | --- | --- | --- |
 | `run` | here | here | quitting the screen |
 | `serve` | here | stdout, and a socket | a signal |
 | `attach` | elsewhere | here | quitting takes nothing down |
+| `dispatch` | elsewhere | none | the session answering the one command |
 
 `run` owns its procs, so quitting has to take them with it, and
-`UnitMap::shutdown` is awaited rather than left to `Drop`, which cannot await.
-`serve` is the opposite: nothing a client does ends the session. The order at
-the end is the session first and the printer second, because `shutdown` is
-what writes the last note into each log.
+`AppUnitMap::shutdown` is awaited rather than left to `Drop`, which cannot
+await. `serve` is the opposite: nothing a client does ends the session. The
+order at the end is the session first and the printer second, because
+`shutdown` is what writes the last note into each log.
 
 ## Strings
 
@@ -188,6 +193,30 @@ filled in place and truncated.
 It was `ArcStr`, and is not going back: a bare pointer with no inline form
 makes every word of a config its own allocation, measured at three for
 `[npm, run, build]` against zero.
+
+## Buffers are refilled, not rebuilt
+
+A frame, a poll and a request are the same shapes at the same rate for as long
+as a session is up, so the steady state is what they are written against: the
+same allocation, cleared and filled again, rather than one per round.
+
+- **The screen draws into the buffer** and builds no `Line` or `Span` to hand
+  to a widget. A frame in steady state allocates nothing, and there is no
+  cache, because nothing is built to cache.
+- **What comes back over the socket is decoded over what the last answer
+  left** — `deserialize_in_place` into the rows, the lines and the choices the
+  screen and its poller trade back and forth.
+- **What goes out is cut from a pool**: `BytesMutPool` for one client's paths,
+  headers and bodies, `BytesMutSyncPool` for a server answering several
+  requests at once. A piece is a view onto the pool's own allocation, and the
+  slot comes back once that piece has been dropped.
+- **An answer asked for far more often than it changes is kept serialized** —
+  `BytesReusable`, which is what `/units` hands out a refcount of per poll.
+
+What that costs is a field that means nothing on its own: several types here
+keep a buffer past what it held, and the doc says what is in it in each case.
+A shape that made the stale state unrepresentable would make the surviving
+buffer unrepresentable too, which was the whole point.
 
 ## Errors
 
@@ -201,6 +230,6 @@ Decisions that are not settled, written down so they are not mistaken for
 ones that are.
 
 - **What `AppUnitMap` adds.** It owns the interner, the graph and the groups,
-  which is its reason to exist; the fifteen methods that forward to `UnitMap`
-  and rewrap `UnitMapError` as `AppError` are not, since `AppError` has one
-  variant a caller ever sees.
+  which is its reason to exist; the five start and stop methods that look a
+  key up and forward to the unit are not, since the only thing they add is an
+  `AppError::NotFound` a caller mostly cannot act on.
