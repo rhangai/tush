@@ -20,7 +20,7 @@ mod dispatch;
 mod unit;
 
 #[allow(unused_imports)]
-pub use behavior::UnitBehavior;
+pub use behavior::{UnitBehavior, UnitType};
 
 #[allow(unused_imports)]
 pub use dispatch::{UnitAction, UnitChoice, UnitChoices, UnitEvent};

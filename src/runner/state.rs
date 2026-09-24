@@ -51,6 +51,12 @@ impl RunnerState {
         )
     }
 
+    /// Whether the run is in flight: the child was spawned and has not been
+    /// waited out.
+    pub fn is_running(&self) -> bool {
+        matches!(self, RunnerState::Running)
+    }
+
     /// Whether the run reached a terminal state.
     pub fn is_finished(&self) -> bool {
         matches!(

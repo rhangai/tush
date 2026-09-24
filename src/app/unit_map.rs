@@ -294,9 +294,11 @@ impl AppUnitMap {
         let name = proc.name.clone().unwrap_or_else(|| proc.key.clone());
         let short = proc.name_short.clone();
 
-        // Every arm falls through to the one `with_short`: a `return` here
-        // reads as the same thing and is not, since the proc's own short name
-        // is applied below.
+        let unit_type = proc.unit_type.into();
+
+        // Every arm falls through to the one `with_short` and `with_type`: a
+        // `return` here reads as the same thing and is not, since the proc's
+        // own short name and type are applied below.
         // Where each run happens is settled here and nowhere else: a mode's
         // `working_dir` wins, the proc's stands in for a mode that named
         // none, and neither means the child inherits. Folding it once is what
@@ -318,12 +320,13 @@ impl AppUnitMap {
                         .or_else(|| proc.working_dir.clone());
                     UnitBehavior::run_many(mode.name.clone(), commands, working_dir)
                         .with_short(mode.name_short.clone())
+                        .with_type(mode.unit_type.unwrap_or(proc.unit_type).into())
                 }),
             )
         } else {
             UnitBehavior::noop(name)
         };
-        behavior.with_short(short)
+        behavior.with_short(short).with_type(unit_type)
     }
 
     /// The key `name` was interned as, if a proc was declared under it.
@@ -402,8 +405,8 @@ impl AppUnitMap {
         self.units.iter().map(|(key, value)| (*key, value))
     }
 
-    /// Fill `resolved` with every unit that has run to the end at least once
-    /// — see [`Unit::resolved`](crate::unit::Unit::resolved).
+    /// Fill `resolved` with every unit that has resolved at least once — see
+    /// [`Unit::resolved`](crate::unit::Unit::resolved).
     ///
     /// Clears it first and takes it by reference, so the loop that asks on
     /// every wake keeps one set instead of building a new one each time.

@@ -40,16 +40,17 @@ ui:                              # optional
 
 procs:
   <name>:
-    name:        <string>        # optional
-    name_short:  <string>        # optional
-    group:       [<string>, ...] # optional
-    depends:     [<string>, ...] # optional
-    working_dir: <path>          # optional
-    panel:       main | minor    # optional
-    log_size:    <size>          # optional
-    parse_ansi:  <boolean>       # optional
-    run:         <commands>      # optional
-    modes:       [<mode>, ...]   # optional
+    name:        <string>          # optional
+    name_short:  <string>          # optional
+    group:       [<string>, ...]   # optional
+    depends:     [<string>, ...]   # optional
+    working_dir: <path>            # optional
+    panel:       main | minor      # optional
+    type:        oneshot | service # optional
+    log_size:    <size>            # optional
+    parse_ansi:  <boolean>         # optional
+    run:         <commands>        # optional
+    modes:       [<mode>, ...]     # optional
 ```
 
 | Key | Type | Meaning |
@@ -57,9 +58,10 @@ procs:
 | `name` | string | A label to show instead of the proc's key |
 | `name_short` | string | A shorter label, for where the full one will not fit |
 | `group` | list of strings | Groups this proc belongs to |
-| `depends` | list of strings | Procs that have to finish before this one starts |
+| `depends` | list of strings | Procs that have to be done before this one starts |
 | `working_dir` | [path](#working_dir) | Where its commands run |
 | `panel` | `main` or `minor` | Which of the two lists on screen it is drawn in |
+| `type` | [`oneshot` or `service`](#type) | What a run of it has to reach to release whatever depends on it |
 | `log_size` | [size](#log_size) | How much of this proc's output to keep |
 | `parse_ansi` | [boolean](#parse_ansi) | Whether its escape sequences are read as escape sequences |
 | `run` | [commands](#run) | The one way this proc runs |
@@ -149,9 +151,9 @@ modes:
     run: [npm, run, watch]
 ```
 
-Every mode needs a `name` and a `run`; `name_short` and
-[`working_dir`](#working_dir) are the only other keys it may have. A mode's
-`run` takes the same two spellings as a proc's.
+Every mode needs a `name` and a `run`; `name_short`,
+[`working_dir`](#working_dir) and [`type`](#type) are the only other keys it
+may have. A mode's `run` takes the same two spellings as a proc's.
 
 Modes stay in the order you write them.
 
@@ -159,7 +161,7 @@ Modes stay in the order you write them.
 
 ## `depends`
 
-The procs that have to **finish** before this one starts. Each entry is
+The procs that have to be **done** before this one starts. Each entry is
 another proc's key.
 
 ```yaml
@@ -168,12 +170,64 @@ web:
   run: [npm, run, dev]
 ```
 
-Finished means the run ended, whatever it ended with: a proc that failed still
-releases what waited on it. So `depends` is for the steps that end — `npm ci`,
-a migration, a build.
+What counts as done is the other proc's [`type`](#type): a `oneshot` is done
+when its run ends, whatever it ended with — a proc that failed still releases
+what waited on it — and a `service` is done as soon as it is up.
 
-A proc that never exits never finishes, and whatever depends on it never
-starts: name a dev server here and it waits for good.
+---
+
+## `type`
+
+What a run of the proc has to reach before whatever `depends` on it may start.
+
+```yaml
+migrate:
+  type: oneshot         # the default: done when it ends
+  run: [./scripts/migrate.sh]
+
+api:
+  type: service         # done as soon as it is up
+  depends: [migrate]
+  run: [npm, start]
+
+web:
+  depends: [api]        # starts once `api` is up, not when it exits
+  run: [npm, run, dev]
+```
+
+`oneshot` is for the steps that end — `npm ci`, a migration, a build — and is
+what you get if you say nothing. A proc that never exits never ends, so
+anything waiting on one waits for good; `service` is the answer to that.
+
+**Up means the process started, and nothing more.** No port is checked and no
+line of output is waited for. When a dependent needs more than that, put the
+waiting in a `oneshot` of its own — a script that polls the port — and depend
+on that instead.
+
+A `service` whose command cannot be run at all — a program that is not on the
+path — counts as done anyway, so a typo does not leave the rest of the session
+waiting for a process that is never coming.
+
+With several commands, a `service` is done when the **first** one starts. They
+run one after another, so a service that never exits never reaches the second
+in any case — anything that has to run alongside it is a proc of its own.
+
+A mode may carry its own, and a mode's wins over the proc's. The mode you are
+on is the one that decides:
+
+```yaml
+web:
+  type: oneshot
+  modes:
+    - name: Build
+      run: [npm, run, build]
+    - name: Watch
+      type: service
+      run: [npm, run, dev]
+```
+
+Switching modes does not re-judge a run already going. And once a proc has
+released what depends on it, restarting it does not put them back on hold.
 
 ---
 

@@ -12,7 +12,10 @@ use crate::util::str::SmallStr;
 use crate::{
     log::{Log, LogReader, LogReaderSettings},
     runner::{RunnerHandle, RunnerState},
-    unit::{UnitAction, UnitEvent, behavior::UnitBehavior},
+    unit::{
+        UnitAction, UnitEvent,
+        behavior::{UnitBehavior, UnitType},
+    },
 };
 
 /// A named, restartable entry: one log, one behavior, one current run.
@@ -119,10 +122,10 @@ impl Unit {
 
     /// Run it, in whatever mode its behavior is on.
     pub fn start(&self) -> Result<Arc<UnitHandle>, UnitError> {
-        let handle = self.spawn()?;
+        let (runner_handle, unit_type) = self.spawn()?;
         let handle = {
             let mut manager = self.handle_manager.lock();
-            manager.set_handle(handle)
+            manager.set_handle(runner_handle, unit_type)
         };
         self.note_start(handle.start());
         Ok(handle)
@@ -157,7 +160,8 @@ impl Unit {
         self.handle_manager.lock().unit_handle.clone()
     }
 
-    /// Whether a run of this unit has ever reached the end.
+    /// Whether a run of this unit ever reached what its [`UnitType`] counts as
+    /// resolved: the end for a `Oneshot`, being up for a `Service`.
     ///
     /// What anything depending on this unit waits for. It stays true once
     /// set: a later restart does not put the dependents back on hold.
@@ -189,14 +193,18 @@ impl Unit {
         self.log.notes().write_line(text);
     }
 
-    /// A run of the current mode, wired to this unit's log and, if it has
-    /// one, its dispatcher.
-    fn spawn(&self) -> Result<RunnerHandle, UnitError> {
+    /// A run of the current mode, wired to this unit's log and, if it has one,
+    /// its dispatcher, with what resolves it.
+    ///
+    /// Both under the one lock, or a mode switched in between would have the
+    /// run of one mode resolving on the terms of the other.
+    fn spawn(&self) -> Result<(RunnerHandle, UnitType), UnitError> {
         let mut ctx = UnitBehaviorContext::new().with_writer(self.log.writer());
         if let Some(event_dispatcher) = self.event_dispatcher.as_ref() {
             ctx = ctx.with_event_dispatcher(event_dispatcher.clone());
         }
-        self.behavior.lock().spawn(ctx)
+        let behavior = self.behavior.lock();
+        Ok((behavior.spawn(ctx)?, behavior.unit_type()))
     }
 
     /// Stop the current run, and the one it is still replacing.
@@ -318,6 +326,9 @@ pub struct UnitHandle {
     manager_weak: Weak<Mutex<UnitHandleManager>>,
     handle_id: UnitHandleId,
     runner_handle: RunnerHandle,
+    /// What this run has to reach to resolve the unit, taken from the behavior
+    /// when it was built: by the end the mode may be another one's.
+    unit_type: UnitType,
     /// The start election. Whoever flips it is the one caller that goes on to
     /// take the outgoing run, so it is taken exactly once.
     started: AtomicBool,
@@ -328,11 +339,13 @@ impl UnitHandle {
         manager_weak: Weak<Mutex<UnitHandleManager>>,
         handle_id: UnitHandleId,
         runner_handle: RunnerHandle,
+        unit_type: UnitType,
     ) -> Arc<Self> {
         Arc::new(Self {
             manager_weak,
             handle_id,
             runner_handle,
+            unit_type,
             started: AtomicBool::new(false),
         })
     }
@@ -402,7 +415,11 @@ impl UnitHandle {
     }
 
     async fn resolve_task(self: Arc<Self>) {
-        if !self.runner_handle.wait_for(|s| s.is_finished()).await {
+        if !self
+            .runner_handle
+            .wait_for(|state| self.unit_type.is_resolved(*state))
+            .await
+        {
             return;
         }
         let Some(manager) = self.manager_weak.upgrade() else {
@@ -443,7 +460,7 @@ impl UnitHandleManager {
     /// displaced *again* before anybody waited on it is aborted here: the
     /// handle that would have seen it out was itself replaced, so nothing is
     /// left that could.
-    fn set_handle(&mut self, runner_handle: RunnerHandle) -> Arc<UnitHandle> {
+    fn set_handle(&mut self, runner_handle: RunnerHandle, unit_type: UnitType) -> Arc<UnitHandle> {
         self.handle_id.0 = if let Some(id) = self.handle_id.0.checked_add(1) {
             id
         } else {
@@ -459,7 +476,12 @@ impl UnitHandleManager {
                 stale.abort();
             }
         }
-        let unit_handle = UnitHandle::new(self.manager_weak.clone(), self.handle_id, runner_handle);
+        let unit_handle = UnitHandle::new(
+            self.manager_weak.clone(),
+            self.handle_id,
+            runner_handle,
+            unit_type,
+        );
         self.unit_handle = Some(unit_handle.clone());
         unit_handle
     }
@@ -480,7 +502,7 @@ impl UnitHandleManager {
     fn ensure_handle(
         &mut self,
         test: impl FnOnce(&UnitHandle) -> bool,
-        f: impl FnOnce() -> Result<RunnerHandle, UnitError>,
+        f: impl FnOnce() -> Result<(RunnerHandle, UnitType), UnitError>,
     ) -> Result<Arc<UnitHandle>, UnitError> {
         if let Some(handle) = self.unit_handle.as_ref() {
             // Check
@@ -488,7 +510,8 @@ impl UnitHandleManager {
                 return Ok(handle.clone());
             }
         };
-        Ok(self.set_handle(f()?))
+        let (runner_handle, unit_type) = f()?;
+        Ok(self.set_handle(runner_handle, unit_type))
     }
 
     fn set_resolved(&mut self, handle_id: UnitHandleId) {
@@ -532,8 +555,16 @@ mod test {
     #[tokio::test]
     async fn a_handle_replaced_before_it_started_does_not_run() {
         let unit = unit("sleep 30");
-        let superseded = unit.handle_manager.lock().set_handle(unit.spawn().unwrap());
-        let current = unit.handle_manager.lock().set_handle(unit.spawn().unwrap());
+        let (runner_handle, unit_type) = unit.spawn().unwrap();
+        let superseded = unit
+            .handle_manager
+            .lock()
+            .set_handle(runner_handle, unit_type);
+        let (runner_handle, unit_type) = unit.spawn().unwrap();
+        let current = unit
+            .handle_manager
+            .lock()
+            .set_handle(runner_handle, unit_type);
 
         superseded.start();
         current.start();

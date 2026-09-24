@@ -62,6 +62,7 @@ use serde::{
     de::{DeserializeSeed, Visitor},
 };
 
+use crate::unit::UnitType;
 use crate::util::str::SmallStr;
 use crate::util::types::{SmallMultiVecStr, SmallVecStr};
 
@@ -258,6 +259,14 @@ pub struct ConfigProc {
     /// here rather than a second flag that can contradict this one.
     #[serde(default)]
     pub panel: ConfigPanel,
+    /// `type:` — what a run of this proc has to reach to release whatever
+    /// `depends` on it.
+    ///
+    /// Renamed because `type` is a keyword. A proc with
+    /// [`modes`](ConfigProc::modes) hands this down to a mode that names none,
+    /// as [`working_dir`](ConfigProc::working_dir) does.
+    #[serde(default, rename = "type")]
+    pub unit_type: ConfigUnitType,
     /// `run:` — the one way this proc runs.
     #[serde(default)]
     pub run: Option<ConfigUnitRun>,
@@ -283,6 +292,36 @@ pub enum ConfigPanel {
     Main,
     /// The compact list under it, for what you do not sit and watch.
     Minor,
+}
+
+/// What a run of a proc has to reach before it counts as done — which is what
+/// anything that `depends` on it is waiting for.
+///
+/// `oneshot` is the default because it is what `depends` meant before this key
+/// existed: only the steps that end could release anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigUnitType {
+    /// Done when the run ends, however it ended.
+    #[default]
+    Oneshot,
+    /// Done as soon as the run is up.
+    Service,
+}
+
+/// The file's word for it, as [`unit`](crate::unit) holds it.
+///
+/// Written here and not beside [`UnitType`] so that only one of the two
+/// layers has to know about the other: a loader may know what it is building,
+/// where a unit that knew about config files would be a unit that cannot be
+/// built without one.
+impl From<ConfigUnitType> for UnitType {
+    fn from(value: ConfigUnitType) -> Self {
+        match value {
+            ConfigUnitType::Oneshot => UnitType::Oneshot,
+            ConfigUnitType::Service => UnitType::Service,
+        }
+    }
 }
 
 impl ConfigProc {
@@ -318,6 +357,13 @@ pub struct ConfigUnitMode {
     /// two levels read as one setting with an exception rather than as two.
     #[serde(default)]
     pub working_dir: Option<SmallStr>,
+    /// What a run of this mode has to reach, overriding the proc's.
+    ///
+    /// `None` is "whatever the proc says", as with
+    /// [`working_dir`](ConfigUnitMode::working_dir): the mode that is on is
+    /// the one that decides.
+    #[serde(default, rename = "type")]
+    pub unit_type: Option<ConfigUnitType>,
     /// What it runs.
     pub run: ConfigUnitRun,
 }

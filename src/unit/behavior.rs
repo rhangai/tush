@@ -51,6 +51,34 @@ impl UnitBehaviorContext {
     }
 }
 
+/// What a run has to reach before the unit counts as resolved.
+///
+/// Held by the behavior and not by the unit because a mode is a behavior: a
+/// proc with modes takes this from the mode it is on, and its own setting is
+/// what a mode that declared none was built with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnitType {
+    /// Resolves when the run ends, however it ended.
+    #[default]
+    Oneshot,
+    /// Resolves as soon as the run is up, for the procs that never end.
+    Service,
+}
+
+impl UnitType {
+    /// Whether `state` resolves a run of this type.
+    ///
+    /// A service counts a terminal state too: one that dies before it is ever
+    /// up — a program that is not on the path — would hold its dependents for
+    /// good.
+    pub fn is_resolved(&self, state: RunnerState) -> bool {
+        match self {
+            UnitType::Oneshot => state.is_finished(),
+            UnitType::Service => state.is_running() || state.is_finished(),
+        }
+    }
+}
+
 /// What a [`Unit`](crate::unit::Unit) does: what it spawns when started, and
 /// how it answers the events that reach it.
 ///
@@ -92,6 +120,11 @@ pub struct UnitBehavior {
     /// view knows whether it has the room for the long one, and a fallback
     /// taken here would reach it as a short name somebody chose.
     short: Option<SmallStr>,
+    /// What a run of it has to reach to resolve the unit. A behavior with
+    /// modes reads the current mode's instead — see
+    /// [`unit_type`](UnitBehavior::unit_type) — and this is what is left when
+    /// there is no mode to ask.
+    unit_type: UnitType,
     inner: UnitBehaviorInner,
 }
 
@@ -161,6 +194,15 @@ impl UnitBehavior {
         self
     }
 
+    /// Say what a run of it has to reach to resolve the unit.
+    ///
+    /// The config folds a mode's setting and the proc's into one value before
+    /// it gets here, so a mode and a proc are set the same way.
+    pub fn with_type(mut self, unit_type: UnitType) -> Self {
+        self.unit_type = unit_type;
+        self
+    }
+
     /// What this behavior is called: the proc, or the mode.
     ///
     /// By value, because it is cheap to hand over and the callers that want
@@ -179,6 +221,7 @@ impl UnitBehavior {
         Self {
             name,
             short: None,
+            unit_type: UnitType::default(),
             inner,
         }
     }
@@ -197,6 +240,16 @@ impl UnitBehavior {
     /// with no modes and for a mode that declared none.
     pub fn mode_short(&self) -> Option<SmallStr> {
         self.inner.mode_short()
+    }
+
+    /// What a run started now would have to reach to resolve the unit.
+    ///
+    /// The current mode's, where there are modes: the mode is what runs, so
+    /// the mode is what says. Read once when the run is spawned and carried by
+    /// it, so a mode picked afterwards does not change what the run in flight
+    /// counted as.
+    pub fn unit_type(&self) -> UnitType {
+        self.inner.mode_type().unwrap_or(self.unit_type)
     }
 
     /// Hand an event to the behavior, and take the action it asks for.
@@ -286,6 +339,12 @@ trait UnitBehaviorKind {
 
     /// That mode's short name, on the same terms.
     fn mode_short(&self) -> Option<SmallStr> {
+        None
+    }
+
+    /// That mode's [`UnitType`], on the same terms — `None` where there is no
+    /// mode to ask, which is where the behavior's own is used instead.
+    fn mode_type(&self) -> Option<UnitType> {
         None
     }
 
@@ -422,6 +481,10 @@ impl UnitBehaviorKind for BehaviorModes {
 
     fn mode_short(&self) -> Option<SmallStr> {
         self.modes.get(self.index)?.name_short()
+    }
+
+    fn mode_type(&self) -> Option<UnitType> {
+        Some(self.modes.get(self.index)?.unit_type())
     }
 
     /// One entry per mode, in the order the config wrote them.

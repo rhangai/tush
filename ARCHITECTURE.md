@@ -113,17 +113,25 @@ its own session alive is a shutdown that hangs.
 Only *direct* dependencies are checked on each wake. The deeper ones need no
 checking: they are pending too, and this is the loop that clears them.
 
-## Readiness is "a run finished"
+## Readiness is what the proc's `type` says
 
-`Unit::resolved` is true once a run has reached a terminal state — any
-terminal state, a failure included. It stays true, so a later restart does not
-put dependents back on hold.
+`Unit::resolved` is true once a run has reached what its `UnitType` counts as
+done: any terminal state for a `oneshot`, a failure included, and the moment
+the process is up for a `service`. It stays true, so a later restart does not
+put dependents back on hold. A service counts a terminal state too, or one
+that dies before it ever runs would hold its dependents for good.
 
-That makes `depends` an ordering between steps that end, and nothing else: a
-proc that never exits holds its dependents for as long as it runs. Settled,
-not a predicate still to be written — "up" cannot be read off a process, only
-guessed at from a port, a line on stdout or a grace period, and a guess that
-is wrong releases a dependent into a service that is not there yet.
+Up is `RunnerState::Running` and nothing further: the child was spawned. A
+health check does not belong here — a port, a line on stdout or a grace period
+are guesses about somebody else's program, and a wrong one releases a
+dependent into a service that is not listening yet. The config's answer to
+needing more is a `oneshot` that does the waiting.
+
+The type lives on the `UnitBehavior` and not on the `Unit`, because a mode is
+a behavior: a proc with `modes` takes it from the mode that is on, and its own
+is what a mode that declared none was built with. `Unit::spawn` reads it under
+the same lock as the run it builds and the handle carries it, so a run is
+judged on the terms of the mode that produced it.
 
 ## The log has one owner and one rule
 
