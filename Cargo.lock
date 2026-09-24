@@ -2044,6 +2044,7 @@ dependencies = [
  "ratatui",
  "replace_with",
  "serde",
+ "serde_derive",
  "serde_json",
  "smallvec",
  "smol_str",

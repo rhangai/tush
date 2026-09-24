@@ -549,3 +549,28 @@ const HEX: &[u8; 16] = b"0123456789ABCDEF";
 fn is_unreserved(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Guards the `serde_derive` feature the whole `_in_place` path rests on.
+    ///
+    /// Without it `deserialize_in_place` is the trait's default — a fresh
+    /// value built and assigned over the place — and every buffer here is
+    /// rebuilt per answer. Nothing else would say so: the body decodes
+    /// correctly either way, and only the address shows which one happened.
+    #[test]
+    fn a_decoded_body_keeps_its_buffers() {
+        const BODY: &[u8] = br#"{"region":{"line_start":0,"line_end":1,"column_start":0,"column_end":80},"revision":7,"lines":[{"text":"compiled in 41ms","writer":2,"styles":[]}]}"#;
+
+        let mut out = ServerLog::default().body;
+        decode_in_place(&mut out, BODY).unwrap();
+        let lines = out.lines.as_ptr();
+        let text = out.lines[0].text.as_ptr();
+
+        decode_in_place(&mut out, BODY).unwrap();
+        assert_eq!(out.lines.as_ptr(), lines, "the lines were reallocated");
+        assert_eq!(out.lines[0].text.as_ptr(), text, "the line was rebuilt");
+    }
+}

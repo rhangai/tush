@@ -23,11 +23,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::AppUnitKey,
-    log::LogRegion,
-    ui::theme::UiTheme,
-    unit::UnitChoices,
-    util::str::SmallStr,
+    app::AppUnitKey, log::LogRegion, ui::theme::UiTheme, unit::UnitChoices, util::str::SmallStr,
     view::ViewClient,
 };
 
