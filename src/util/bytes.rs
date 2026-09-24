@@ -232,6 +232,14 @@ impl BytesReusable {
         }
     }
 
+    /// Pre allocate the reusable bytes
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            bytes_mut: BytesMut::with_capacity(capacity),
+            bytes: Bytes::new(),
+        }
+    }
+
     /// The value as it stands, to clone into an answer.
     ///
     /// A clone still alive at the next rebuild is what stops the buffer being

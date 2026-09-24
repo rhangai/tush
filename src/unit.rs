@@ -23,7 +23,7 @@ mod unit;
 pub use behavior::UnitBehavior;
 
 #[allow(unused_imports)]
-pub use dispatch::{UnitAction, UnitChoice, UnitEvent};
+pub use dispatch::{UnitAction, UnitChoice, UnitChoices, UnitEvent};
 
 #[allow(unused_imports)]
 pub use unit::{Unit, UnitHandle, UnitStart};

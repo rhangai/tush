@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use hyper::StatusCode;
 use parking_lot::Mutex;
 use serde::Serialize;
 use tokio_util::bytes::Bytes;
@@ -8,6 +9,7 @@ use crate::{
     app::{App, AppUnitKey},
     log::{LogLine, LogReader, LogRegion},
     runner::RunnerState,
+    unit::UnitChoices,
     util::bytes::{BytesMutSyncPool, BytesReusable},
     view::ViewUnit,
 };
@@ -85,26 +87,23 @@ impl ServerState {
         let unit_map = app.unit_map();
         let logs = app
             .unit_map()
-            .keys()
-            .filter_map(|key| {
-                // Unreachable: the keys came out of this same map.
-                let entry = unit_map.entry(key).ok()?;
-                Some((
+            .entries()
+            .map(|(key, entry)| {
+                (
                     key,
                     Mutex::new(ServerLog {
                         reader: entry.log_reader(),
                         lines: Vec::with_capacity(1024),
                     }),
-                ))
+                )
             })
             .collect();
 
         let mut rows: Vec<ViewUnit> = unit_map
-            .keys()
-            .filter_map(|unit_key| {
-                let entry = unit_map.entry(unit_key).ok()?;
+            .entries()
+            .map(|(unit_key, entry)| {
                 let unit = entry.unit();
-                Some(ViewUnit {
+                ViewUnit {
                     unit_key,
                     key: entry.key().clone(),
                     name: unit.name(),
@@ -115,7 +114,7 @@ impl ServerState {
                     mode_short: None,
                     state: RunnerState::Stopped,
                     panel: entry.settings().panel,
-                })
+                }
             })
             .collect();
         rows.sort_by(|a, b| (a.panel, &a.name).cmp(&(b.panel, &b.name)));
@@ -128,7 +127,7 @@ impl ServerState {
                 // reaches one by having been answered with, and the first
                 // refresh moves it before anything is sent.
                 revision: 0,
-                body: BytesReusable::new(),
+                body: BytesReusable::with_capacity(1024),
             }),
             logs,
             bytes_pool: BytesMutSyncPool::with_capacity(8, 256),
@@ -158,7 +157,9 @@ impl ServerState {
                 continue;
             };
             let unit = entry.unit();
-            let (state, mode, mode_short) = (unit.state(), unit.mode(), unit.mode_short());
+            let state = unit.state();
+            let mode = unit.mode();
+            let mode_short = unit.mode_short();
             if row.state != state || row.mode != mode || row.mode_short != mode_short {
                 row.state = state;
                 row.mode = mode;
@@ -173,7 +174,7 @@ impl ServerState {
             slot.revision += 1;
             let ServerUnits { rows, body, .. } = &mut *slot;
             body.json(rows);
-            return ServerUnitResult::Read(slot.body.bytes().clone(), slot.revision);
+            return ServerUnitResult::Read(body.bytes().clone(), slot.revision);
         }
         if Some(slot.revision) == last_revision {
             return ServerUnitResult::NotModified;
@@ -181,9 +182,30 @@ impl ServerState {
         ServerUnitResult::Read(slot.body.bytes().clone(), slot.revision)
     }
 
+    pub fn choices(
+        &self,
+        key: AppUnitKey,
+        _last_revision: Option<u64>,
+    ) -> Result<Bytes, StatusCode> {
+        let unit_map = self.app.unit_map();
+        let entry = unit_map.entry(key).map_err(|_| StatusCode::NOT_FOUND)?;
+        let unit = entry.unit();
+        let mut choices = UnitChoices::new();
+        unit.choices(&mut choices);
+        self.bytes_json_pool
+            .json(&choices)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
     /// The session itself, for everything that is not a log.
     pub fn app(&self) -> &Arc<App> {
         &self.app
+    }
+
+    /// The [`AppUnitKey`] a config key was interned under, or nothing for a key no
+    /// proc was declared with.
+    pub fn key(&self, key: &str) -> Option<AppUnitKey> {
+        self.app.unit_map().key(key)
     }
 
     /// Cut `region` out of a unit's log and hand it to `read`, with the

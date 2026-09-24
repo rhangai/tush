@@ -16,7 +16,7 @@ use tokio::net::UnixStream;
 use crate::{
     error::ViewSocketError,
     log::{LogLine, LogRegion},
-    unit::{UnitChoice, UnitEvent},
+    unit::{UnitChoices, UnitEvent},
     util::{
         bytes::BytesMutPool,
         str::{SmallStr, SmallStrBuilder},
@@ -199,8 +199,8 @@ impl ServerClient {
     /// Everything that can be asked of one unit right now.
     ///
     /// Over a fresh vec; see [`units`](ServerClient::units).
-    pub async fn choices(&mut self, key: &SmallStr) -> Result<Vec<UnitChoice>, ViewSocketError> {
-        let mut out = Vec::new();
+    pub async fn choices(&mut self, key: &SmallStr) -> Result<UnitChoices, ViewSocketError> {
+        let mut out = UnitChoices::default();
         self.choices_in_place(&mut out, key).await?;
         Ok(out)
     }
@@ -209,7 +209,7 @@ impl ServerClient {
     /// [`units_in_place`](ServerClient::units_in_place).
     pub async fn choices_in_place(
         &mut self,
-        out: &mut Vec<UnitChoice>,
+        out: &mut UnitChoices,
         key: &SmallStr,
     ) -> Result<(), ViewSocketError> {
         let key = key_path(key);

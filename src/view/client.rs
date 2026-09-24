@@ -1,10 +1,11 @@
 use crate::app::AppUnitKey;
 use crate::config::ConfigPanel;
+use crate::unit::UnitChoices;
 use crate::util::str::SmallStr;
 use crate::{
     log::{LogLine, LogRegion},
     runner::RunnerState,
-    unit::{UnitChoice, UnitEvent},
+    unit::UnitEvent,
 };
 
 /// One unit, as the screen needs it.
@@ -133,7 +134,7 @@ pub trait ViewClient {
     /// Called when a menu opens, not per frame. Local and instant like every
     /// read here, so a client with a connection answers from its last sync,
     /// filling nothing if that is nothing.
-    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>);
+    fn choices(&self, key: AppUnitKey, out: &mut UnitChoices);
 
     /// Ask for something to happen, without waiting to find out whether it did.
     ///

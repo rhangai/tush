@@ -15,7 +15,7 @@ use crate::{
     app::AppUnitKey,
     log::{LogLine, LogRegion},
     server::state::{ServerLogResult, ServerState, ServerUnitResult},
-    unit::{UnitChoice, UnitEvent},
+    unit::UnitEvent,
     view::ViewSettings,
 };
 
@@ -122,13 +122,12 @@ async fn log(
 async fn choices(
     State(state): State<Arc<ServerState>>,
     Path(unit): Path<String>,
-) -> Result<Json<Vec<UnitChoice>>, StatusCode> {
-    let key = key(&state, &unit).ok_or(StatusCode::NOT_FOUND)?;
-    let mut out = Vec::new();
-    let unit_map = state.app().unit_map();
-    let entry = unit_map.entry(key).map_err(|_| StatusCode::NOT_FOUND)?;
-    entry.unit().choices(&mut out);
-    Ok(Json(out))
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let key = state.key(&unit).ok_or(StatusCode::NOT_FOUND)?;
+    let drawn = drawn_revision(&headers);
+    let res = state.choices(key, drawn)?;
+    json_response(&state, None, res)
 }
 
 /// Ask for a unit to run, once what it depends on is up.

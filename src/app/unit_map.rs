@@ -396,6 +396,11 @@ impl AppUnitMap {
         self.units.keys().copied()
     }
 
+    /// Every unit's key and entry
+    pub fn entries(&self) -> impl Iterator<Item = (AppUnitKey, &AppUnitEntry)> {
+        self.units.iter().map(|(key, value)| (*key, value))
+    }
+
     /// Fill `resolved` with every unit that has run to the end at least once
     /// — see [`Unit::resolved`](crate::unit::Unit::resolved).
     ///

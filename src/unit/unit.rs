@@ -6,12 +6,13 @@ use parking_lot::Mutex;
 
 use crate::error::UnitError;
 use crate::unit::behavior::UnitBehaviorContext;
+use crate::unit::dispatch::UnitChoices;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
     log::{Log, LogReader, LogReaderSettings},
     runner::{RunnerHandle, RunnerState},
-    unit::{UnitAction, UnitChoice, UnitEvent, behavior::UnitBehavior},
+    unit::{UnitAction, UnitEvent, behavior::UnitBehavior},
 };
 
 /// A named, restartable entry: one log, one behavior, one current run.
@@ -105,7 +106,7 @@ impl Unit {
     ///
     /// The state is read here rather than passed in, so the list and the
     /// state it was built from are the same moment.
-    pub fn choices(&self, out: &mut Vec<UnitChoice>) {
+    pub fn choices(&self, out: &mut UnitChoices) {
         let state = self.state();
         self.behavior.lock().choices(state, out);
     }

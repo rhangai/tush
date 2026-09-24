@@ -4,6 +4,7 @@ use enum_dispatch::enum_dispatch;
 use tokio::process::Command;
 
 use crate::error::UnitError;
+use crate::unit::dispatch::UnitChoices;
 use crate::util::event::EventDispatcher;
 use crate::util::str::SmallStr;
 use crate::{
@@ -217,17 +218,9 @@ impl UnitBehavior {
     ///
     /// [`Stop`](UnitEvent::Stop) is appended here and by no kind, which is
     /// also what makes it the last entry of every menu.
-    pub fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+    pub fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
         out.clear();
         self.inner.choices(state, out);
-        out.push(UnitChoice {
-            verb: STOP,
-            mode: None,
-            mode_short: None,
-            event: UnitEvent::Stop,
-            enabled: !state.is_stopped(),
-            current: false,
-        });
     }
 
     /// Build the runner and hand back a paused handle for it.
@@ -273,7 +266,7 @@ trait UnitBehaviorKind {
     ///
     /// Nothing by default: a proc with no way to run has nothing to offer,
     /// and a menu of one dim `Stop` is the honest picture of it.
-    fn choices(&self, _state: RunnerState, _out: &mut Vec<UnitChoice>) {}
+    fn choices(&self, _state: RunnerState, _out: &mut UnitChoices) {}
 
     /// Which of its modes is current, for the kinds that have any.
     fn mode(&self) -> Option<SmallStr> {
@@ -317,7 +310,7 @@ impl UnitBehaviorKind for BehaviorRun {
     /// One way to run, so one entry, always available: a run that is up
     /// restarts. Blind <kbd>Enter</kbd> used to refuse that; off a menu the
     /// entry says `Restart` and the cursor was put on it.
-    fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
         out.push(UnitChoice {
             verb: verb(state),
             mode: None,
@@ -325,6 +318,14 @@ impl UnitBehaviorKind for BehaviorRun {
             event: UnitEvent::Start,
             enabled: true,
             current: true,
+        });
+        out.push(UnitChoice {
+            verb: STOP,
+            mode: None,
+            mode_short: None,
+            event: UnitEvent::Stop,
+            enabled: !state.is_stopped(),
+            current: false,
         });
     }
 
@@ -417,7 +418,7 @@ impl UnitBehaviorKind for BehaviorModes {
     /// The mode it is on reads `Restart` while a run is up. The others read
     /// `Start` even though picking one takes that run down — the entry names
     /// the run it is about to make, and that one is starting.
-    fn choices(&self, state: RunnerState, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, state: RunnerState, out: &mut UnitChoices) {
         for (index, mode) in self.modes.iter().enumerate() {
             let current = index == self.index;
             out.push(UnitChoice {
@@ -429,6 +430,14 @@ impl UnitBehaviorKind for BehaviorModes {
                 current,
             });
         }
+        out.push(UnitChoice {
+            verb: STOP,
+            mode: None,
+            mode_short: None,
+            event: UnitEvent::Stop,
+            enabled: !state.is_stopped(),
+            current: false,
+        });
     }
 
     /// Move onto the mode that was picked, and run it.

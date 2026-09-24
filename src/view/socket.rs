@@ -8,7 +8,7 @@ use crate::{
     app::AppUnitKey,
     error::ViewSocketError,
     log::LogRegion,
-    unit::{UnitChoice, UnitEvent},
+    unit::{UnitChoices, UnitEvent},
     util::str::SmallStr,
     view::{
         client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit},
@@ -93,7 +93,7 @@ struct DataChoices {
     /// Which unit they are for, so a menu opened over another one shows
     /// nothing rather than the wrong verbs.
     unit_key: Option<AppUnitKey>,
-    list: Vec<UnitChoice>,
+    list: UnitChoices,
 }
 
 /// What the screen and the task share, and the only thing they share.
@@ -169,7 +169,7 @@ impl ViewSocket {
             log: Mutex::new(DataLog::new()),
             choices: Mutex::new(DataChoices {
                 unit_key: None,
-                list: Vec::new(),
+                list: UnitChoices::new(),
             }),
             wanted: Mutex::new(Wanted {
                 unit_key: None,
@@ -188,7 +188,7 @@ impl ViewSocket {
                 cancel: cancel.clone(),
                 client,
                 units: DataUnits::new(Vec::new()),
-                choices: Vec::new(),
+                choices: UnitChoices::new(),
                 log: ServerLog::default(),
                 unit_key: None,
                 key: SmallStr::default(),
@@ -275,7 +275,7 @@ impl ViewClient for ViewSocket {
     /// Read out of the shared slot rather than from a copy of it, and the
     /// clone is what that costs: a menu opens on a keypress, so there is
     /// nothing here worth a buffer of its own.
-    fn choices(&self, key: AppUnitKey, out: &mut Vec<UnitChoice>) {
+    fn choices(&self, key: AppUnitKey, out: &mut UnitChoices) {
         out.clear();
         let choices = self.shared.choices.lock();
         if choices.unit_key == Some(key) {
@@ -378,7 +378,7 @@ struct Poller {
     /// The rows to fill next, which is the buffer the screen left behind.
     units: DataUnits,
     /// The verbs to fill next, on the same terms.
-    choices: Vec<UnitChoice>,
+    choices: UnitChoices,
     /// The window to read into.
     ///
     /// Scratch and not a record: after a handover it holds whatever the screen

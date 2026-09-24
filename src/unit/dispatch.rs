@@ -1,3 +1,5 @@
+use smallvec::{IntoIter, SmallVec};
+
 use crate::util::str::SmallStr;
 
 /// Something asked of a unit, for its behavior to answer.
@@ -52,4 +54,54 @@ pub struct UnitChoice {
     pub enabled: bool,
     /// The one the unit is already on: where the menu opens its cursor.
     pub current: bool,
+}
+
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct UnitChoices {
+    choices: SmallVec<[UnitChoice; 4]>,
+}
+
+impl UnitChoices {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.choices.clear();
+    }
+
+    pub fn push(&mut self, choice: UnitChoice) {
+        self.choices.push(choice);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &UnitChoice> {
+        self.choices.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.choices.len()
+    }
+
+    pub fn at(&self, index: usize) -> &UnitChoice {
+        &self.choices[index]
+    }
+
+    pub fn get(&self, index: usize) -> Option<&UnitChoice> {
+        self.choices.get(index)
+    }
+}
+
+impl IntoIterator for UnitChoices {
+    type Item = UnitChoice;
+    type IntoIter = IntoIter<[UnitChoice; 4]>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.choices.into_iter()
+    }
+}
+
+impl Extend<UnitChoice> for UnitChoices {
+    fn extend<T: IntoIterator<Item = UnitChoice>>(&mut self, iter: T) {
+        self.choices.extend(iter)
+    }
 }
