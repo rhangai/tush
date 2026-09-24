@@ -249,10 +249,10 @@ impl Default for UiRender {
 /// The footer: what the keys do, written straight into the buffer like every
 /// other pane.
 ///
-/// It used to be a [`Line`](ratatui::text::Line) built once, which is what a
-/// line that never
-/// changes wants to be — until its words came from the theme, which the
-/// screen owns alongside it and so cannot be borrowed from for a `'static`.
+/// Borrows the theme for the frame rather than being a `'static`
+/// [`Line`](ratatui::text::Line) built once: the words come from the theme,
+/// which the screen owns alongside this and so cannot be borrowed from for
+/// `'static`.
 struct UiRenderHints<'a>(&'a UiTheme);
 
 impl Widget for UiRenderHints<'_> {

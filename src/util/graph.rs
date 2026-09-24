@@ -17,19 +17,6 @@
 //! produce one. A caller that cares can refuse to start, or warn; a caller
 //! that does not gets a usable order either way.
 //!
-//! # How both come out of one pass
-//!
-//! The strongly connected components of a graph are exactly its cycles: a
-//! component of more than one node is a set that can all reach each other,
-//! which is what a cycle is, and everything else is a component of one. The
-//! condensation — the graph of components — is by construction acyclic, so
-//! the components *do* have a topological order even when the nodes do not.
-//!
-//! That is the whole implementation. [`tarjan_scc`] hands back the components
-//! already in that order, so the grouping and the ordering are the same piece
-//! of work, and the cycles are not a separate search but a filter over the
-//! result: the groups of more than one, plus any node that depends on itself.
-//!
 //! # Starting from the middle
 //!
 //! [`resolve_from`](DependencyGraph::resolve_from) answers the same question
@@ -44,6 +31,20 @@
 //! is ordered by those numbers wherever the graph leaves a choice — between
 //! independent nodes, and between the members of one cycle. Same config in,
 //! same order out, which is what makes the output worth showing a user.
+//!
+//! # Implementation
+//!
+//! The order and the cycles come out of one pass. The strongly connected
+//! components of a graph are exactly its cycles: a component of more than one
+//! node is a set that can all reach each other, which is what a cycle is, and
+//! everything else is a component of one. The condensation — the graph of
+//! components — is by construction acyclic, so the components *do* have a
+//! topological order even when the nodes do not.
+//!
+//! That is the whole of it. [`tarjan_scc`] hands back the components already
+//! in that order, so the grouping and the ordering are the same piece of
+//! work, and the cycles are not a separate search but a filter over the
+//! result: the groups of more than one, plus any node that depends on itself.
 
 #![allow(dead_code)]
 
