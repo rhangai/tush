@@ -207,3 +207,75 @@ impl Drop for BytesMutSyncPoolGuard<'_> {
         self.pool.bytes_mut.lock()[self.index] = std::mem::take(&mut self.bytes_mut);
     }
 }
+
+/// One value in its serialized form, kept until the value changes.
+///
+/// For an answer asked for far more often than it moves — the rows of a
+/// session sitting still — where re-serializing per request is the waste and
+/// the [`Bytes`] handed out is a refcount rather than a copy. The buffer that
+/// produced it is kept beside it, so a rebuild writes into the same
+/// allocation.
+pub struct BytesReusable {
+    /// Where the next value is written: the tail of the same allocation the
+    /// last one was cut from.
+    bytes_mut: BytesMut,
+    /// The value as it stands. Empty before the first build, and again after
+    /// one that failed.
+    bytes: Bytes,
+}
+
+impl BytesReusable {
+    pub fn new() -> Self {
+        Self {
+            bytes_mut: BytesMut::new(),
+            bytes: Bytes::new(),
+        }
+    }
+
+    /// The value as it stands, to clone into an answer.
+    ///
+    /// A clone still alive at the next rebuild is what stops the buffer being
+    /// reclaimed, and that rebuild allocates instead — measured at four
+    /// allocations against none. It costs a rebuild, not an answer.
+    pub fn bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
+    /// Whether there is nothing to answer with: never built, or built by a
+    /// serialization that failed. What a caller tests to decide to build.
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// Rebuild it from formatted text.
+    pub fn write(&mut self, args: std::fmt::Arguments<'_>) {
+        self.reclaim();
+        _ = self.bytes_mut.write_fmt(args);
+        self.bytes = self.bytes_mut.split().freeze();
+    }
+
+    /// Rebuild it by serializing `data`.
+    ///
+    /// A failure leaves it empty rather than stale, so the next caller to ask
+    /// builds again instead of answering with what the failure replaced.
+    pub fn json<T: ?Sized + Serialize>(&mut self, data: &T) {
+        self.reclaim();
+        let Self { bytes_mut, bytes } = self;
+        let result = serde_json::to_writer(bytes_mut.writer(), data);
+        if result.is_ok() {
+            *bytes = bytes_mut.split().freeze();
+        }
+    }
+
+    /// Let go of the last value, which is what makes the buffer writable
+    /// again.
+    ///
+    /// The assignment is the whole of it: dropping the old [`Bytes`] is what
+    /// lets the buffer be reclaimed, and `Bytes::clear` does not do that — it
+    /// shortens the view and keeps the reference, measured at four
+    /// allocations per rebuild against none.
+    fn reclaim(&mut self) {
+        self.bytes = Bytes::new();
+        self.bytes_mut.clear();
+    }
+}
