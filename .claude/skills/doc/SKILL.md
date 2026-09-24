@@ -55,6 +55,46 @@ what a reader cannot recover by reading: what was tried, what it cost, what
 breaks if it changes. If none of those three has an answer, the item probably
 does not need a doc.
 
+## 0. The observable comes first
+
+A reader arrives to *use* the thing. They read about its insides only if they
+are changing it, and most of them never are. So the order is fixed:
+
+1. **What it is for**, in one line, in the caller's words.
+2. **How the pieces are used together** — who holds which half, what each one
+   calls. Where a module has two halves used against each other, a short
+   worked example is shorter and truer than the paragraph it replaces.
+3. **The behaviour a caller cannot read off the signatures** — what coalesces,
+   what blocks, what a sentinel return means.
+4. **`# Implementation`**, with everything internal under it.
+
+That heading is the whole trick. Orderings, atomics, why a field exists, which
+line has to stay above which — all of it is worth writing and none of it
+belongs above the fold. Under the heading, a reader deciding how to call the
+thing knows where to stop; above it, they have to read the lot to find out
+none of it was for them.
+
+**History only with the number or the constraint attached.** "It was a
+`watch` of `()` before" on its own is not documentation: nobody re-decides
+that from a doc — they do the cost analysis at the time — and until someone
+does, it is a paragraph every reader pays for. What earns its place is the
+result that stops the work being redone: `log.rs` pricing the queue it
+replaced at 1.8 to 3.2 times slower, `arena.rs` pricing a `Weak` upgrade at
+35x on one thread and 731x on eight, `config.rs` naming the `serde_with`
+adapters that cannot build a `JaggedVec`. That is the "what was tried, what it
+cost" this repo runs on. A bare before-and-after carrying neither is not.
+
+**Do not document what the thing is not.** `util/event.rs` opened with a
+paragraph on why the signal carries no payload and must not become a channel.
+Naming the wrong frame at the top is how the reader ends up in it: they arrive
+looking for a channel and read the rest through that. If a misuse genuinely
+has to be guarded, guard it where the change would be made, not in the
+module's first paragraph.
+
+That module is the failure this repo has actually had, twice in one pass — a
+`//!` rewritten once and still opening with internals, then rewritten again
+and still leading with a payload the type never had.
+
 ## 1. Recover the why, before writing a line
 
 In this order, and stop as soon as you have it:
@@ -73,8 +113,9 @@ In this order, and stop as soon as you have it:
 
 ## 2. What gets a doc
 
-- **Module (`//!`)** — why the module is a seam: what belongs in it and what
-  does not. Only when it is one; a two-type file rarely is.
+- **Module (`//!`)** — what it is for and how its pieces are used together,
+  in the order §0 fixes, and then the seam. Only when it is one; a two-type
+  file rarely is.
 - **Type** — why it exists at all and the invariant it carries. Not a tour of
   its fields.
 - **Field or variant** — only when something is not plain: why it is separate
@@ -114,11 +155,13 @@ One sentence is the default. Two or three when there is a trade-off to name.
 
 `# Heading` sections only when the item genuinely holds two or three separate
 subtleties — `log.rs`, `util/arena.rs` and `base/process.rs` have earned them;
-almost nothing else has.
+almost nothing else has. `# Implementation` is the exception and is not
+rationed: anything internal earns it, however short (§0).
 
 Never: restate the signature, narrate the body, list the parameters, open with
-"This function…", add an `# Examples` block nobody asked for, or defend a
-small choice across three paragraphs. If a sentence is there for rhythm rather
+"This function…", add an example to an item whose one use is obvious — §0
+wants one where two halves are used against each other, and nowhere else — or
+defend a small choice across three paragraphs. If a sentence is there for rhythm rather
 than because a reader would get it wrong without it, cut it.
 
 Twenty-eight lines of prose over a function that writes two lines of text is
