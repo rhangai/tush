@@ -131,7 +131,7 @@ impl AppScheduleRunnerTask {
         let mut scheduled: HashMap<AppUnitKey, AppScheduleKind> = HashMap::new();
         let mut resolved: HashSet<AppUnitKey> = HashSet::new();
         let mut remove: HashSet<AppUnitKey> = HashSet::new();
-        while event_listener.changed().await {
+        while event_listener.triggered().await {
             //
             let Some(unit_map) = self.unit_map.upgrade() else {
                 break;
