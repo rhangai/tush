@@ -88,13 +88,21 @@ jobs:
           git cliff --tag "$TAG" --unreleased --strip all -o RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
-      - name: Bump Cargo.toml
+      - name: Bump the version
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           sed -i "0,/^version = .*/s//version = \"$VERSION\"/" Cargo.toml
           cargo update --workspace
+          # The install snippets pin a tag because the asset filename carries
+          # it — /releases/latest/download/ cannot name the file without it.
+          sed -i \
+            -e "s/^tag=v.*/tag=$TAG/" \
+            -e "s/^ARG TUSH_VERSION=v.*/ARG TUSH_VERSION=$TAG/" \
+            README.md
           grep -m1 '^version' Cargo.toml
+          grep -nE '^(tag=|ARG TUSH_VERSION=)' README.md
 
       - name: Build
         run: cargo zigbuild --locked --release --target "$TARGET.$GLIBC"
@@ -126,7 +134,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md Cargo.toml Cargo.lock
+          git add CHANGELOG.md Cargo.toml Cargo.lock README.md
           git commit -m "chore(release): $TAG"
           git tag -a "$TAG" -m "$TAG"
           git push origin "HEAD:${{ github.ref_name }}" "$TAG"
