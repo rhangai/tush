@@ -72,11 +72,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     app::App,
-    cli::{AttachArgs, Cli, Command, DispatchArgs, DispatchCommand, RunArgs, ServeArgs},
+    cli::{
+        AttachArgs, Cli, Command, DispatchArgs, DispatchCommand, RunArgs, ServeArgs, StatusArgs,
+    },
     config::Config,
     server::{Server, default_socket_path},
     ui::{Ui, UiTheme},
-    view::{ViewApp, ViewClient, ViewDispatch, ViewPrinter, ViewSocket},
+    view::{ViewApp, ViewClient, ViewDispatch, ViewPrinter, ViewSocket, ViewStatus},
 };
 
 #[tokio::main]
@@ -86,6 +88,7 @@ async fn main() -> Result<()> {
         Command::Serve(args) => serve(args).await,
         Command::Attach(args) => attach(args).await,
         Command::Dispatch(args) => dispatch(args).await,
+        Command::Status(args) => status(args).await,
     }
 }
 
@@ -176,6 +179,19 @@ async fn dispatch(args: DispatchArgs) -> Result<()> {
         DispatchCommand::Start { key, mode } => client.start(&key, mode.as_deref()).await?,
         DispatchCommand::Stop { key } => client.stop(&key).await?,
     }
+    Ok(())
+}
+
+/// Print what a session that is already running is running, and stop.
+///
+/// Like [`dispatch`] and for the same reason: with neither procs nor a screen
+/// there is nothing to take down, so this is free to wait on the round trip
+/// and to fail when there was nobody on the other end of it — a listing that
+/// came back empty because nothing answered is the one wrong answer here.
+async fn status(args: StatusArgs) -> Result<()> {
+    let socket = args.socket.unwrap_or_else(default_socket_path);
+    let mut client = ViewStatus::connect(socket).await?;
+    client.print().await?;
     Ok(())
 }
 

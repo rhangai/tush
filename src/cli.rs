@@ -1,12 +1,13 @@
 //! The command line, parsed.
 //!
-//! Four ways in, differing in where the session is and where the screen is:
+//! Five ways in, differing in where the session is and where the screen is:
 //!
 //! ```text
 //! tush run       --config x.yaml  [targets]   both here; quitting takes it down
 //! tush serve     --config x.yaml  [targets]   the session, for something else to attach to
 //! tush attach                                 the screen, over a socket
 //! tush dispatch  start|stop KEY               neither: one command, over the socket
+//! tush status                                 neither: one listing, over the socket
 //! ```
 
 use std::{path::PathBuf, str::FromStr, time::Duration};
@@ -43,12 +44,12 @@ const SOCKET_ENV: &str = "TUSH_SOCKET";
     about = "A process manager built around log tailing"
 )]
 pub struct Cli {
-    /// Which of the four ways in was asked for.
+    /// Which of the five ways in was asked for.
     #[command(subcommand)]
     pub command: Command,
 }
 
-/// The four ways in, differing in where the session and the screen are.
+/// The five ways in, differing in where the session and the screen are.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run a session and show it, in one process.
@@ -62,6 +63,8 @@ pub enum Command {
     Attach(AttachArgs),
     /// Tell a session that is already running to do one thing.
     Dispatch(DispatchArgs),
+    /// Print where every proc of a session that is already running got to.
+    Status(StatusArgs),
 }
 
 /// Session and screen both, in this process.
@@ -146,6 +149,20 @@ pub enum DispatchCommand {
         #[arg(value_name = "KEY")]
         key: String,
     },
+}
+
+/// Every proc of a session somewhere else, as a listing.
+///
+/// No `--config` and no target, for the same reason `dispatch` has none: the
+/// session is the one that read the file, and what it is running is what it
+/// answers with.
+#[derive(Args, Debug)]
+pub struct StatusArgs {
+    /// Which session to ask, as the path to its Unix socket.
+    ///
+    /// The same default and the same variable as the three commands above.
+    #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
+    pub socket: Option<PathBuf>,
 }
 
 /// What makes a session: the file it is declared in, and what to start.

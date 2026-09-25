@@ -12,6 +12,8 @@
 //!   the two clients below to share.
 //! - [`ViewDispatch`] — the client that says one thing and exits, for
 //!   `tush dispatch`.
+//! - [`ViewStatus`] — the client that reads the rows once and exits, for
+//!   `tush status`.
 //! - [`ViewPrinter`] — the view that is a stream rather than a screen, for
 //!   `tush serve` and for a `run` with no terminal to draw on.
 //!
@@ -25,6 +27,7 @@ mod dispatch;
 mod print;
 mod server;
 mod socket;
+mod status;
 
 #[allow(unused_imports)]
 pub use app::ViewApp;
@@ -37,6 +40,9 @@ pub use socket::ViewSocket;
 
 #[allow(unused_imports)]
 pub use dispatch::ViewDispatch;
+
+#[allow(unused_imports)]
+pub use status::ViewStatus;
 
 #[allow(unused_imports)]
 pub use client::{ViewClient, ViewCommand, ViewLog, ViewSettings, ViewUnit};
