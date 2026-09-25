@@ -67,7 +67,7 @@ Grab the binary from the [latest
 release](https://github.com/rhangai/tush/releases/latest):
 
 ```sh
-tag=v0.1.1
+tag=v0.1.2
 mkdir -p ~/.local/bin
 curl -fsSL "https://github.com/rhangai/tush/releases/download/$tag/tush-$tag-x86_64-unknown-linux-gnu.tar.gz" \
   | tar -xz -C ~/.local/bin
@@ -273,7 +273,7 @@ The container runs the session; you attach a screen when you want to look.
 
 ```dockerfile
 FROM node:22
-ARG TUSH_VERSION=v0.1.1
+ARG TUSH_VERSION=v0.1.2
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl tini \
     && rm -rf /var/lib/apt/lists/* \
