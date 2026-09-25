@@ -159,15 +159,13 @@ what it will do: `Restart` on the mode that is up, `Start` on the others.
 
 ## Commands
 
-Four ways to run, differing in where the session lives and where the screen
-is:
-
 | | What it does |
 | --- | --- |
 | `tush run -c tush.yaml [targets]` | Session and screen in one process. Quitting takes the procs with it. |
 | `tush serve -c tush.yaml [targets]` | The session with no screen: prints each line as `[proc] line`, listens on a socket. Ends on <kbd>Ctrl</kbd>+<kbd>C</kbd> or `SIGTERM`. |
 | `tush attach` | A screen onto a session started by `serve`. Quitting takes nothing down. |
 | `tush dispatch start\|stop KEY` | One command to a running session, and out. No screen. |
+| `tush status` | One line per proc from a running session, and out. No screen. |
 
 A *target* is a proc's name, or `group:name` for a whole group. Name none and
 nothing starts.
@@ -176,7 +174,7 @@ nothing starts.
 | --- | --- | --- |
 | `-c`, `--config <PATH>` | `run`, `serve` | The config file. Required, and taken as given — no searching up the tree. |
 | `--no-tui` | `run` | Print the output line by line instead of drawing a screen, for a CI log or a pipe. |
-| `--socket <PATH>` | `serve`, `attach`, `dispatch` | Which socket to listen on or talk to. Also read from `TUSH_SOCKET`. |
+| `--socket <PATH>` | `serve`, `attach`, `dispatch`, `status` | Which socket to listen on or talk to. Also read from `TUSH_SOCKET`. |
 | `--fps <N>` | `run`, `attach` | How often the screen redraws. Default 10. |
 | `--refresh-rate <DURATION>` | `run`, `attach` | The same number the other way round: `100ms`, `2s`. |
 
@@ -225,6 +223,49 @@ Either way the command exits non-zero.
 
 No `-c`: the session is the one that read the config. `--socket` and
 `TUSH_SOCKET` work as they do for `serve` and `attach`.
+
+### Asking what is running
+
+`tush status` prints one line per proc — its key, where its run got to, and
+the mode it is on if it has one:
+
+```sh
+$ tush status
+server            running  Watch
+site-admin        stopped  Watch
+server-setup      done
+site-setup        exit 1
+```
+
+The first column is the key, the same one `dispatch` takes. The words are the
+screen's: `stopped`, `waiting`, `starting`, `running`, `stopping`, `done`,
+`failed`, `killed`. A proc that came back with a code says so instead —
+`exit 1`, `killed 9`. The rows come in the screen's order, the main panel
+before the minor one.
+
+It exits non-zero only when it could not ask: nothing listening on that
+socket, no socket at that path, or an answer it could not read. A proc that
+failed is something it reports, not something it fails for.
+
+### As a Docker healthcheck
+
+That exit code is what makes it one. A container running `tush serve` has no
+port to probe, so without this a healthcheck has nothing to look at but the
+process being alive:
+
+```dockerfile
+HEALTHCHECK --interval=10s --start-period=5s CMD tush status || exit 1
+```
+
+To have the check care about a particular proc, look for its line — nothing
+else does, since a failed proc on its own leaves the session healthy:
+
+```dockerfile
+HEALTHCHECK CMD tush status | grep -qE '^api +running' || exit 1
+```
+
+Either way `TUSH_SOCKET` is what points it at the session, so set it in the
+image and both halves agree without a flag.
 
 ### In a dev container
 

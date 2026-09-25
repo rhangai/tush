@@ -160,7 +160,8 @@ pub enum DispatchCommand {
 pub struct StatusArgs {
     /// Which session to ask, as the path to its Unix socket.
     ///
-    /// The same default and the same variable as the three commands above.
+    /// The same default and the same variable as `serve`, `attach` and
+    /// `dispatch`.
     #[arg(long, env = SOCKET_ENV, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 }

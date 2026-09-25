@@ -169,14 +169,15 @@ What that costs is the acknowledgement: a refused command has nowhere to come
 back through. When the session grows that channel, `ViewApp::send` is where it
 is written to.
 
-`tush dispatch` is outside the trait for that reason. It waits and it fails,
-because a shell wants an exit code and a command silently not delivered is the
-thing to avoid there — so `ViewDispatch` talks to `ServerClient` directly,
-which is the same routes both clients go through.
+`tush dispatch` and `tush status` are outside the trait for that reason. They
+wait and they fail, because a shell wants an exit code and a command silently
+not delivered — or a listing that came back empty because nothing answered —
+is the thing to avoid there. So `ViewDispatch` and `ViewStatus` talk to
+`ServerClient` directly, which is the same routes every client goes through.
 
 ## Who owns the children
 
-Four commands, differing in where the session is and where the screen is:
+Five commands, differing in where the session is and where the screen is:
 
 | | session | screen | what ends it |
 | --- | --- | --- | --- |
@@ -184,6 +185,7 @@ Four commands, differing in where the session is and where the screen is:
 | `serve` | here | stdout, and a socket | a signal |
 | `attach` | elsewhere | here | quitting takes nothing down |
 | `dispatch` | elsewhere | none | the session answering the one command |
+| `status` | elsewhere | stdout, once | the listing being printed |
 
 `run` owns its procs, so quitting has to take them with it, and
 `AppUnitMap::shutdown` is awaited rather than left to `Drop`, which cannot
