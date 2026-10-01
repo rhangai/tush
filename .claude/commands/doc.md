@@ -1,12 +1,12 @@
 ---
-name: doc
-description: Write or repair the docs of this repo — doc comments on a named Rust item, file or module, or a Markdown file like README.md or CONFIG.md — in the house style: why and not what, terse, English. Use when asked to document a type, trait, function, field, const or module, to write or improve one of the Markdown docs, or when a doc has gone stale.
+description: Write or repair the docs on one target — a Rust item, file or module, or a Markdown doc — in the house style.
+argument-hint: <path | item | module>
 ---
 
 # Documenting
 
-`/doc <target>` — a path (`src/log/chunk.rs`, `README.md`), a type or function
-name (`LogReader`, `copy_region`), or a module (`log`). With no target, ask
+Target: **$ARGUMENTS** — a path (`src/log/chunk.rs`, `README.md`), a type or function
+name (`LogReader`, `copy_region`), or a module (`log`). If it is empty, ask
 which one and stop; do not pick.
 
 The deliverable is the docs on that target and nothing else. Code never
@@ -57,7 +57,7 @@ does not need a doc.
 
 ## 0. The observable comes first
 
-A reader arrives to *use* the thing. They read about its insides only if they
+A reader arrives to _use_ the thing. They read about its insides only if they
 are changing it, and most of them never are. So the order is fixed:
 
 1. **What it is for**, in one line, in the caller's words.
@@ -100,7 +100,7 @@ and still leading with a payload the type never had.
 In this order, and stop as soon as you have it:
 
 - The item and what it touches — its fields, its callers (`grep -rn '<name>'
-  src`), the module's `//!` if it has one.
+src`), the module's `//!` if it has one.
 - The history: `git log -S '<name>' --oneline -- src`, then `git show` the
   commit that introduced or last changed it. Commit messages in this repo
   carry the reason more often than the code does.
@@ -108,7 +108,7 @@ In this order, and stop as soon as you have it:
   the reason behind much of what you will meet. Cite that decision; do not
   re-derive it.
 - Neighbours, for the shape: `src/util/str.rs`, `src/log/chunk.rs` and
-  `src/ui/client.rs` are the style at full strength; `src/runner/state.rs` is
+  `src/view/client.rs` are the style at full strength; `src/runner/state.rs` is
   it at the length most items rate.
 
 ## 2. What gets a doc
@@ -175,7 +175,7 @@ first — a doc that shrank and lost nothing was prolix, and most of them are.
 
 ## 5. Name the reason when the choice looks odd
 
-If the item is one of these, the reason *is* the doc:
+If the item is one of these, the reason _is_ the doc:
 
 - a newtype over a crate's type;
 - a `Copy` type holding loose parts instead of the obvious aggregate;
@@ -200,7 +200,7 @@ stale docs on the target you were given; report the ones you notice elsewhere
 and leave them alone.
 
 Link the first mention of a type or method a reader would go and look at —
-``[`SmolStr`]``, ``[`sync`](UiClient::sync)``, ``[`Hash`](std::hash::Hash)`` —
+``[`SmolStr`]``, ``[`sync`](ViewClient::sync)``, ``[`Hash`](std::hash::Hash)`` —
 not every mention.
 
 ## 7. When the why is not recoverable

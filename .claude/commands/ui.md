@@ -1,18 +1,18 @@
 ---
-name: ui
-description: Draw the terminal UI in this repo — add or change a pane, a row, a popup, a key, a status mark, the footer, the theme, or how the screen behaves at a size it does not fit in. Carries the TUI's UX rules (what a developer reads a screen like this for, what may move, what a key costs) and the drawing rules under `src/ui` (panes are widgets, text goes straight into the buffer, every glyph comes from the theme). Use when asked to design or implement something on screen, to judge a layout, or when the screen is wrong at some terminal size.
+description: Design or change something on the terminal screen — a pane, a row, a key, the theme, a size it breaks at.
+argument-hint: <pane | thing to add | key | complaint>
 ---
 
 # Drawing the screen
 
-`/ui <target>` — a pane (`log`, `units`, the menu), a thing to add (a filter
+Target: **$ARGUMENTS** — a pane (`log`, `units`, the menu), a thing to add (a filter
 row, a second popup, a count in the title), a binding, a theme entry, or a
-complaint ("the list looks cramped", "it breaks at 80 columns"). With no
-target, ask which one and stop; do not pick.
+complaint ("the list looks cramped", "it breaks at 80 columns"). If it is
+empty, ask which one and stop; do not pick.
 
 The deliverable is the change under `src/ui`. If the pane needs something the
 session does not already hand over, that is a `ViewClient` change — say what
-you need and why, and wait (AGENTS.md, *The UI client*: it has to survive
+you need and why, and wait (AGENTS.md, _The view client_: it has to survive
 becoming a socket).
 
 **A design question gets an answer, not a branch.** "Would a third pane work?",
@@ -33,7 +33,7 @@ prettier and the gutter slower to read has lost.
 
 ## 2. Settled — cite it, do not re-derive it
 
-`src/ui/render.rs`'s `//!` and AGENTS.md (*The UI*) say most of this. Re-read
+`src/ui/render.rs`'s `//!` and AGENTS.md (_The UI_) say most of this. Re-read
 the pane you are changing before designing anything.
 
 - **A pane is a `Widget`, and what it remembers between frames is its
@@ -59,8 +59,7 @@ the pane you are changing before designing anything.
 
 Numbers already chosen, and what they are: `UNITS_WIDTH` 30 (a name does not
 grow when the window does), `LOG_MARGIN` 100 (a page of scrolling costs no
-round trip), `MINOR_SHARE` 2, `NAME_MIN` 8, menu `MIN_WIDTH` 28, `WHEEL_LINES`
-3. Changing one is a decision to write down, not a tweak.
+round trip), `MINOR_SHARE` 2, `NAME_MIN` 8, menu `MIN_WIDTH` 28, `WHEEL_LINES` 3. Changing one is a decision to write down, not a tweak.
 
 ## 3. The UX rules
 
@@ -135,7 +134,7 @@ allocates. The keys that reach it go in `Ui::handle`, in `src/ui/ui.rs`, which
 is the only place that knows about keys.
 
 **A new key.** `Ui::handle` (or `handle_menu`), a `statusbar_*` pair in
-`UiThemeSymbols` *and* `UiThemeTexts` *and* `UiThemeSymbols::ascii`, and an
+`UiThemeSymbols` _and_ `UiThemeTexts` _and_ `UiThemeSymbols::ascii`, and an
 entry in `hints()` — whose array is `[(…); 8]`, so adding one is a decision
 about which eight the footer shows.
 
@@ -150,7 +149,7 @@ The screen has to hold at the sizes people actually have. Walk these; most
 take one look at the code:
 
 - **80×24**, the floor. Footer readable, both panes usable, menu inside the
-  frame (`centered` clamps, so check the *content* fits).
+  frame (`centered` clamps, so check the _content_ fits).
 - **Very narrow.** Under `UNITS_WIDTH + border`, the log pane has no columns
   left; under `NAME_MIN`, the right hand column has to be dropped rather than
   the name.
@@ -168,11 +167,11 @@ here is a panic that takes the terminal down with raw mode still on.
 
 ## 6. Scope
 
-**Ask before writing what was not asked for** (AGENTS.md, *Scope*) — a helper
+**Ask before writing what was not asked for** (AGENTS.md, _Scope_) — a helper
 type, a second pane "while I was here", a theme field nobody wanted.
 
 **No UI tests.** The screen is being shaped and tests over a shape about to
-change are work thrown away twice. To *look* at a layout without a terminal,
+change are work thrown away twice. To _look_ at a layout without a terminal,
 render into `ratatui::backend::TestBackend` from a throwaway `#[test]`, print
 the buffer, and delete it before reporting — say that you did. Keeping it is a
 separate ask.
@@ -191,10 +190,10 @@ cargo test
 ```
 
 Then look at it. The agent cannot read a TUI out of a pipe, so ask the user to
-run it — `! cargo run -- run --config tmp/example.yaml`, which has two panels,
-modes, a dependency and a process that fails — and say what to look at.
+run it — `! cargo run -- run --config tmp/demo/tush.yaml`, which has two
+panels, groups, modes and dependencies — and say what to look at.
 
 Report short: what changed on screen, which of §5 you actually checked and
 which you reasoned about, and anything you found wrong and left alone. Claims
-about allocation get measured or dropped (AGENTS.md, *Claims*). English,
+about allocation get measured or dropped (AGENTS.md, _Claims_). English,
 whatever language the conversation is in.

@@ -23,20 +23,20 @@ it buys the caller.
 `view` is the one seam that points both ways by design: it reads `app`, `log`,
 `runner` and `unit`, and none of them read it.
 
-| Module | What is in it |
-| --- | --- |
-| `util` | Data structures with nothing to do with processes: `SmallStr`, the arenas and rings the logs are built on, the buffer pools the wire is written from, the dependency graph. |
-| `base` | The OS: a child `Process` in its own group, and the `ExitReason` it finished with. |
-| `log` | Capture of a proc's output into a bounded `Log`, and the readers and regions a view sees it through. |
-| `runner` | Supervision of one run: the `Runner` trait, its `RunnerHandle` and the `RunnerState` it publishes. |
-| `unit` | A named, restartable proc, and the `UnitBehavior` that decides what starting it means. |
-| `app` | A checked `Config` and the session built from it: the unit map, the dependency graph, the schedule. |
-| `config` | The file, parsed. |
-| `view` | A session as something outside it reads and drives it — `ViewClient` and its two implementations. |
-| `ui` | The terminal screen. |
-| `server` | A session with no screen, listening for something to attach. |
-| `cli` | The command line, as `clap` reads it. |
-| `error` | Every error type in the crate, gathered in one file. |
+| Module   | What is in it                                                                                                                                                               |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `util`   | Data structures with nothing to do with processes: `SmallStr`, the arenas and rings the logs are built on, the buffer pools the wire is written from, the dependency graph. |
+| `base`   | The OS: a child `Process` in its own group, and the `ExitReason` it finished with.                                                                                          |
+| `log`    | Capture of a proc's output into a bounded `Log`, and the readers and regions a view sees it through.                                                                        |
+| `runner` | Supervision of one run: the `Runner` trait, its `RunnerHandle` and the `RunnerState` it publishes.                                                                          |
+| `unit`   | A named, restartable proc, and the `UnitBehavior` that decides what starting it means.                                                                                      |
+| `app`    | A checked `Config` and the session built from it: the unit map, the dependency graph, the schedule.                                                                         |
+| `config` | The file, parsed.                                                                                                                                                           |
+| `view`   | A session as something outside it reads and drives it — `ViewClient` and its two implementations.                                                                           |
+| `ui`     | The terminal screen.                                                                                                                                                        |
+| `server` | A session with no screen, listening for something to attach.                                                                                                                |
+| `cli`    | The command line, as `clap` reads it.                                                                                                                                       |
+| `error`  | Every error type in the crate, gathered in one file.                                                                                                                        |
 
 ## A handle is one run; a unit outlives its runs
 
@@ -110,7 +110,11 @@ The task holds both the session and the schedule **weakly**. Recording a
 request against a session that is gone is a no-op, and a task that could keep
 its own session alive is a shutdown that hangs.
 
-Only *direct* dependencies are checked on each wake. The deeper ones need no
+That is the shape today, not the target: a `Weak` back to an owner means
+ownership is not a tree, and `rust-maintainable` (_Ownership_) describes the
+shape new code aims for.
+
+Only _direct_ dependencies are checked on each wake. The deeper ones need no
 checking: they are pending too, and this is the loop that clears them.
 
 ## Readiness is what the proc's `type` says
@@ -179,13 +183,13 @@ is the thing to avoid there. So `ViewDispatch` and `ViewStatus` talk to
 
 Five commands, differing in where the session is and where the screen is:
 
-| | session | screen | what ends it |
-| --- | --- | --- | --- |
-| `run` | here | here | quitting the screen |
-| `serve` | here | stdout, and a socket | a signal |
-| `attach` | elsewhere | here | quitting takes nothing down |
-| `dispatch` | elsewhere | none | the session answering the one command |
-| `status` | elsewhere | stdout, once | the listing being printed |
+|            | session   | screen               | what ends it                          |
+| ---------- | --------- | -------------------- | ------------------------------------- |
+| `run`      | here      | here                 | quitting the screen                   |
+| `serve`    | here      | stdout, and a socket | a signal                              |
+| `attach`   | elsewhere | here                 | quitting takes nothing down           |
+| `dispatch` | elsewhere | none                 | the session answering the one command |
+| `status`   | elsewhere | stdout, once         | the listing being printed             |
 
 `run` owns its procs, so quitting has to take them with it, and
 `AppUnitMap::shutdown` is awaited rather than left to `Drop`, which cannot

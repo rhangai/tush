@@ -2,7 +2,7 @@
 
 Notes for an agent working in this repository. They are the corrections that
 came out of real sessions, so each one is here because getting it wrong cost
-something.
+something. The last section maps the commands and skills in `.claude/`.
 
 ## Scope
 
@@ -23,6 +23,10 @@ again afterwards: a mutex, a `LogSpan` newtype, a handle type for writing log
 notes from a task, a reader with a capacity of its own, three modules' worth of
 UI tests. Each one was defensible on its own terms. That is exactly why the
 rule is "ask", and not "use judgement".
+
+What it guards against is invention — a type, a lock, a test suite, a refactor
+nobody named. Work that was asked for, such as documenting what you were told
+to document, is done and reported, not asked about.
 
 **Do what was asked, and stop there.** The most common failure in this repo is
 not a bug, it is scope: answering a question with a redesign, inventing a type
@@ -204,7 +208,7 @@ cases long and written down nowhere.
 
 **To show a window, copy one out.** `LogReader::copy_region` takes a
 `LogRegion` — lines counted back from the end, columns of each — and fills a
-`Vec<String>` the caller keeps. Bounded in both directions, so it costs the
+`Vec<LogLine>` the caller keeps. Bounded in both directions, so it costs the
 pane and not the log.
 
 **One rule for where a line ends.** `LogReaderIter::ends_line` is it. A second
@@ -224,3 +228,22 @@ implementations is a socket. So:
 - **Answers carry what they actually are.** `ViewLog` reports its own region and
   revision, which can differ from what was asked. A pane draws the overlap
   rather than blanking while a client catches up.
+
+## Tooling
+
+**Use the command that owns the job instead of doing it inline**, and outside
+one, suggest it in a line:
+
+| When                                               | Use                                                                                                               |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| A feature or a fix of more than a few lines        | `/feature:spec` → `/feature:plan` → `/feature:work` → `/feature:pr`; `/feature:plan <idea>` alone for a small one |
+| "Does this make sense?", "where should this live?" | `/engineer:arch`                                                                                                  |
+| Anything that adds or changes `unsafe`             | `/engineer:soundness`                                                                                             |
+| "Is this cheaper?", "how many allocations?"        | `/engineer:perf`                                                                                                  |
+| Anything drawn on screen                           | `/ui`                                                                                                             |
+| A doc comment, `README.md`, `CONFIG.md`            | `/doc`                                                                                                            |
+
+**Two skills load when writing Rust.** `rust-maintainable` is the target shape
+— not the code as it stands, much of which took the easy shape — and
+`rust-hot-path` is how a frame or a poll stays at zero allocations. Code that
+diverges from them is reported, not refactored in passing.
