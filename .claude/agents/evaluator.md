@@ -50,7 +50,12 @@ Only what can be checked against a written rule, each with `file:line`:
 - **Layers.** A `use crate::…` that points up the order in
   `rust-maintainable`; code above `view` naming `App`, a `Unit` or a handle.
 - **Tests.** A new test outside `log`, `util` or `unit`, or any in `ui`,
-  unless `## Decisions` approved it.
+  unless `## Decisions` approved it. And in every new test, what makes it
+  confirm the code instead of checking it (`.claude/agents/tester.md`): a
+  private field read where an observable result exists, an expected value
+  computed with the code's own formula, a bare `#[should_panic]`, logic that
+  builds the answer, a name that does not say the behaviour, a test that no
+  plausible bug would make fail.
 - **The permission list** (AGENTS.md, _Cleverness_): a type parameter to save
   a name, `Arc`/`Rc` to drop a clone, `mem::forget`, `catch_unwind`, a new
   trait. New `unsafe` is listed for `/engineer:soundness`, not judged here.

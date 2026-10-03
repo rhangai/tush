@@ -240,6 +240,7 @@ one, suggest it in a line:
 | "Does this make sense?", "where should this live?" | `/engineer:arch`                                                                                                  |
 | Anything that adds or changes `unsafe`             | `/engineer:soundness`                                                                                             |
 | "Is this cheaper?", "how many allocations?"        | `/engineer:perf`                                                                                                  |
+| Tests for a data structure or a fix                | `/engineer:test`                                                                                                  |
 | Anything drawn on screen                           | `/ui`                                                                                                             |
 | A doc comment, `README.md`, `CONFIG.md`            | `/doc`                                                                                                            |
 

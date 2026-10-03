@@ -60,7 +60,7 @@ $ARGUMENTS
 **Done when**
 
 - [ ] <observable behaviour>
-      → test: `<module>` › `<test_name>`
+      → test: `<module>` › `<test_name>` — fails if <the bug it catches>
 - [ ] <observable behaviour>
       → command: `<command>` <what it has to print or do>
 - [ ] <observable behaviour>
@@ -99,7 +99,10 @@ on its own, **"how do I know it is done?"**, without opening code.
   loads and runs exactly as it did" ✓. "`ConfigProc` has a new field" ✗:
   that is the how, and it goes in the notes.
 - **Every check is one of three kinds:**
-    - `test:` a named test, existing or written in the sprint. Tests belong on
+    - `test:` a named test, existing or written in the sprint, and the bug
+      it catches: "fails if the reader recounts lines it already saw". No
+      plausible bug, no test; reach for the edges (empty, full, wrap, a line
+      split across chunks) before the happy path. Tests belong on
       the data structures — `log`, `util`, `unit` — and nowhere in `ui`
       (AGENTS.md, _Scope_). A test anywhere else is proposed to the user, not
       planned silently.
