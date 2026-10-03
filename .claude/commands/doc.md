@@ -145,9 +145,12 @@ six lines and its neighbours run one, the six is the mistake. Where the long
 version is genuinely needed — a public method a caller reads — say it there
 once, and leave the field a line that points at it.
 
-The result to aim for is a block where every item has a doc and none of them
-is more than about three lines. A field whose reason cannot fit that is
-usually a reason about the type, and belongs in the type's doc.
+**The rule: once one item in a block has a doc, every item in it gets one** —
+every field of the struct, every variant of the enum, every sibling method a
+caller reads (`new` and plain getters still excepted). A one-liner for the
+obvious ones is enough; a blank next to documented neighbours is not. And
+none of them more than about three lines: a field whose reason cannot fit
+that is usually a reason about the type, and belongs in the type's doc.
 
 ## 4. The budget
 
