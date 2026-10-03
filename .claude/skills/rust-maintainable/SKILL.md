@@ -127,6 +127,9 @@ util → error → log → base → runner → unit → config → app → view 
 - **Names become keys once**, at the boundary. Everything after it addresses
   a unit by `AppUnitKey`; a `&str` name travelling inward is a lookup someone
   will repeat.
+- **Every way in keeps the same rule.** When a structure has several entry
+  points, a rule kept on one is kept on all: if a read flushes, so do `end`
+  and the notes. The one left out is where the bug is.
 
 ## Speed against readability
 
@@ -146,6 +149,21 @@ util → error → log → base → runner → unit → config → app → view 
 5. **Prefer a better data structure to a cleverer loop.** When code needs
    tricks to be fast enough, the structure underneath is usually the problem;
    propose the alternative (`/engineer:arch`) instead of tuning around it.
+6. **Let what bounds the problem shape the algorithm.** Before writing a
+   loop, find what limits the answer — a maximum, the end where the decision
+   is made — and start there, stopping where the limit says. `cut_at` looks
+   for an escape left open at a cut: an escape is at most `LOG_ESCAPE_MAX`
+   bytes, so the answer lies within that many bytes back from the cut, and
+   one backward scan settles it. A version that searched the line from its
+   start for an `ESC` and walked on for the final byte also worked, read
+   badly, and touched the whole chunk in the worst case. Done this way the
+   code is faster and plainer at once, and that is the target — not a trade
+   between the two.
+7. **The code reads as the sentence that says it.** Say what a non-trivial
+   body does in one sentence; if the code does not read as that sentence,
+   restate the problem rather than polish the loop. `cut_at`'s is "back from
+   the cut, a final byte first means every escape is closed, an `ESC` first
+   means one is open" — and that is the loop, and its comment.
 
 ## Needs permission, every time
 
@@ -208,6 +226,13 @@ overloading, and a newtype that only saves two words.
 - **Bounds in a `where` clause**, and `impl Trait` in argument position only
   where nobody will want to name the type.
 - **Borrow in signatures**: `&[T]` and `&str`, not `&Vec<T>` and `&String`.
+- **A constructor hands back a value whose invariant already holds.** A type
+  that is only valid after a second call has that call inside its
+  constructor, not in every caller.
+- **An alias guarantees nothing.** If the aliased type can be built in a way
+  that breaks what the name promises, it is a struct with one constructor.
+- **What refuses its input hands it back**: `Result<T, Input>`, not
+  `Option<T>`, above all for what cannot be rebuilt, such as an arena block.
 
 ## Modules
 

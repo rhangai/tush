@@ -33,19 +33,34 @@ $ARGUMENTS
    `rust-maintainable` and `rust-hot-path` apply to the code you write.
    Drawing on screen follows `.claude/commands/ui.md`; docs follow
    `.claude/commands/doc.md` — read the one that applies.
-2. Implement **what the sprint says, and stop there** (AGENTS.md, _Scope_).
+2. **Sketch the shape and question it before the first edit.** Write the
+   types and signatures the sprint adds or changes — 10 to 20 lines, no
+   bodies — and run §3 and §4 of `.claude/commands/engineer/arch.md` over
+   it. A shape is a line to change here and a rewrite once the bodies exist.
+   Look hardest for: a value only valid after a second call; a type or alias
+   promising what its constructor does not enforce; an input refused and
+   dropped instead of handed back; one entry point skipping a rule the
+   others keep. Each finding goes to the user as a question, with the
+   sketch, and waits for the answer; none found is one line, and on.
+3. Implement **what the sprint says, and stop there** (AGENTS.md, _Scope_).
    The tests named in "Done when" are part of the sprint, but you do not
-   write them: step 5 does. Anything else you would add — a helper type, a
+   write them: step 7 does. Anything else you would add — a helper type, a
    test elsewhere, a fix next door — is a question first, not a paragraph in
    the summary.
-3. An item is wrong, impossible or ambiguous? **Stop and ask**, quoting the
+4. An item is wrong, impossible or ambiguous? **Stop and ask**, quoting the
    item's text and saying what you found. Do not reinterpret it silently. If
    the user decides to change it, edit the sprint and record it under
    `## Decisions`.
-4. Code that diverges from the skills, found on the way: add it to
+5. Code that diverges from the skills, found on the way: add it to
    `## Found, not fixed` in `plan.md` — `file:line`, what is wrong, which
    sprint — and leave it (AGENTS.md, _A finding is not a mandate_).
-5. With the code in place, hand the sprint's `test:` items to `tester`: the
+6. **Reread each new function as the person who will maintain it.** Can
+   its idea be said in one sentence, and does the code read as that
+   sentence? Does the algorithm start and stop where the problem's limits
+   say (`rust-maintainable`, _Speed against readability_)? If not, rewrite
+   it now: it is the sprint's own code, unreported, and cheaper to fix
+   before the user reads it than after.
+7. With the code in place, hand the sprint's `test:` items to `tester`: the
    context that wrote the code tests what it wrote. The plan already
    approved the list, so it goes straight to the write phase, with nothing
    from this conversation:

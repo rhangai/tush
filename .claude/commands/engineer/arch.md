@@ -108,6 +108,12 @@ and only one or two will bite:
   newtype that saves two words, a layer that only forwards. `RunnerSerial`
   earns it — it makes a list of commands indistinguishable from one process
   to everything above. Most do not.
+- **Is there a plainer way to say it?** For a body, ask what bounds the
+  problem — a maximum, the end where the decision is made — and whether the
+  code starts and stops there, and whether it reads as one sentence. The
+  answer is the shorter version, as a snippet, with the sentence it says;
+  `cut_at` going back from the cut, never further than `LOG_ESCAPE_MAX`, is
+  the model.
 
 Then run §4 over the same decision. A decision that survives this list can
 still be the wrong thing to write in Rust, and that is the half a developer
