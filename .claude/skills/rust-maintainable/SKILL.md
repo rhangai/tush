@@ -164,6 +164,13 @@ util → error → log → base → runner → unit → config → app → view 
    restate the problem rather than polish the loop. `cut_at`'s is "back from
    the cut, a final byte first means every escape is closed, an `ESC` first
    means one is open" — and that is the loop, and its comment.
+8. **Named state over a clever chain.** An iterator that carries state
+   between items is a struct with plain fields and a `next` that loops; a
+   chain of `zip`/`chain`/`once`, or a closure holding `mut` state, is quick
+   to write once and has to be pieced together by every reader after.
+   `TextLine::clip` went through three such versions, each read as worse;
+   `TextClipIter`, with `current` and `end` and a `while`, is the one that
+   reads.
 
 ## Needs permission, every time
 
