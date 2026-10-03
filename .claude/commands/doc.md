@@ -206,6 +206,11 @@ Link the first mention of a type or method a reader would go and look at —
 ``[`SmolStr`]``, ``[`sync`](ViewClient::sync)``, ``[`Hash`](std::hash::Hash)`` —
 not every mention.
 
+A link to something not in scope takes its qualified path —
+``[`LogReader`](crate::log::LogReader)`` — never a `#[cfg(doc)] use` brought
+in to shorten it. Remove any such import on the target and qualify the links
+it served; it is the one code change this pass makes (§8).
+
 ## 7. When the why is not recoverable
 
 Do not invent one. An invented reason is worse than no doc: the next reader
@@ -219,7 +224,8 @@ stopping to ask mid-pass, and nothing waits on the answer.
 
 Writing docs is not an architectural decision: write them, do not ask first.
 The guard is elsewhere — **the code itself does not change.** Not a rename,
-not a reorder, not an extracted helper, not an `#[allow]`. If the code is
+not a reorder, not an extracted helper, not an `#[allow]` — removing a
+`#[cfg(doc)]` import (§6) is the only exception. If the code is
 wrong, say so in the report and leave it.
 
 No new tests, no new types, nothing "while I was here". Comments and
