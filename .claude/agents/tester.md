@@ -141,10 +141,20 @@ Every new test has to be able to fail. `cargo-mutants` mutates the code in a
 copy of the tree and runs the tests against each mutant; `src` is not touched.
 
 ```
-M="nix shell nixpkgs#cargo-mutants -c"
-$M cargo mutants -f <file> --list           # what it will try
-$M cargo mutants -f <file> -F '<fn regex>'  # run, scoped to the target
+T=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')
+export "CARGO_TARGET_${T}_RUNNER=systemd-run --user --scope -q -p MemoryMax=512M -p MemorySwapMax=0"
+cargo mutants -f <file> --list                        # what it will try
+cargo mutants -f <file> -F '<fn regex>' --timeout 30  # run, scoped
 ```
+
+If `cargo mutants` is not installed, do not install it: say that the proof
+was skipped and that `cargo install --locked cargo-mutants` brings it.
+
+The runner caps each test binary, not the build: a mutant that breaks a
+stop condition in code that manages memory (`log2/buffer.rs`, a ring, a
+chunk) otherwise allocates until the machine falls over. No test here needs
+anywhere near 512M, so a test killed by the cap fails, and that mutant counts
+as caught. Never raise the cap to make a run pass.
 
 Never pass `--in-place`. Scope with `-F` to the functions under test: a whole
 file can take a long time. Read `mutants.out/missed.txt` afterwards and
@@ -160,8 +170,11 @@ If the target has `unsafe`, also run the new tests under Miri; they are
 soundness coverage too:
 
 ```
-nix shell github:nix-community/fenix#latest.toolchain -c cargo miri test <filter>
+cargo +nightly miri test <filter>
 ```
+
+Miri needs a nightly with the component (`rustup +nightly component add
+miri`). If it is not there, say so in the report rather than installing it.
 
 ## Report
 

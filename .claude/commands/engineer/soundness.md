@@ -111,15 +111,14 @@ the checklist that applies; not all of it everywhere.
 cargo test
 cargo test --release            # different codegen; UB shows differently
 
-# Miri is not on the default toolchain; nix brings a nightly that has it.
-M="nix shell github:nix-community/fenix#latest.toolchain -c"
-$M cargo miri test <filter>
-MIRIFLAGS=-Zmiri-strict-provenance $M cargo miri test <filter>
-MIRIFLAGS=-Zmiri-tree-borrows      $M cargo miri test <filter>
+# Miri is not on the default toolchain: it needs a nightly with the component.
+cargo +nightly miri test <filter>
+MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test <filter>
+MIRIFLAGS=-Zmiri-tree-borrows      cargo +nightly miri test <filter>
 ```
 
-The first `nix shell` builds the toolchain and takes minutes; after that it is
-cached. Miri builds into `target/miri`, apart from the normal build. Filter
+If the component is missing, `rustup +nightly component add miri` brings it;
+do not install it yourself, say so. Miri builds into `target/miri`, apart from the normal build. Filter
 it to the module under audit (`util::jagged_vec`, `util::arena`): it is slow.
 
 Miri is the only thing that _settles_ UB, and only for the paths the tests

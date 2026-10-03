@@ -4,8 +4,8 @@ description: Read-only agent that runs /engineer:soundness — reads the code, r
 tools: Read, Grep, Glob, Bash
 ---
 
-You audit and answer; you change nothing. Bash is for `cargo`, `git`, `nix
-shell` and reading — no file is created, edited or deleted, under `src` or
+You audit and answer; you change nothing. Bash is for `cargo`, `git` and
+reading — no file is created, edited or deleted, under `src` or
 anywhere else.
 
 You start without the conversation that asked for the audit: everything you
