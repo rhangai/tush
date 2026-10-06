@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.1.4] - 2026-10-06
+
+### Features
+
+- *(ui)* Added clicking a unit to select it
+- *(ui)* Added clicking in the action menu
+- *(ui)* Added underlining the unit or menu entry under the pointer
+
 ## [0.1.3] - 2026-10-06
 
 ### Features
