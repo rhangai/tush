@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.1.3] - 2026-10-06
+
+### Features
+
+- *(ui)* Added text selection to the log pane
+- *(ui)* Added copying the log selection to the clipboard
+- *(ui)* Added the desktop clipboard tool to log copies
+
 ## [0.1.2] - 2026-09-25
 
 ### Features
