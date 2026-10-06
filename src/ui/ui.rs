@@ -292,6 +292,7 @@ impl<C: ViewClient> Ui<C> {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.render.scroll_log_lines(WHEEL_LINES),
             MouseEventKind::ScrollDown => self.render.scroll_log_lines(-WHEEL_LINES),
+            MouseEventKind::Moved => self.render.hover(x, y),
             // The menu sits over everything, so a press is the menu's: it
             // never reaches the list or the log behind it.
             MouseEventKind::Down(MouseButton::Left) if self.render.menu_open() => {

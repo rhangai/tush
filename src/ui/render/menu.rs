@@ -158,7 +158,7 @@ impl UiRenderMenuState {
 
     /// The row drawn at (`x`, `y`): an entry's index, `items.len()` for the
     /// way out, or `None` for the border, the padding and the gap.
-    fn row_at(&self, x: u16, y: u16) -> Option<usize> {
+    pub fn row_at(&self, x: u16, y: u16) -> Option<usize> {
         if !self.rows.contains(Position::new(x, y)) {
             return None;
         }
@@ -235,14 +235,21 @@ pub enum UiMenuChoice {
 /// run is; working that out from a name and a state would be a second copy of
 /// those rules in the module least able to check them.
 pub struct UiRenderMenu<'a> {
+    /// The row under the pointer, as [`row_at`](UiRenderMenuState::row_at)
+    /// counts them, which is underlined when a click there would move to it.
+    hovered: Option<usize>,
     border: &'a Block<'a>,
     theme: &'a UiTheme,
 }
 
 impl<'a> UiRenderMenu<'a> {
     /// The menu, drawn inside `border`.
-    pub fn new(border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
-        Self { border, theme }
+    pub fn new(hovered: Option<usize>, border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
+        Self {
+            hovered,
+            border,
+            theme,
+        }
     }
 }
 
@@ -289,6 +296,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
                 item,
                 row_at(row as u16),
                 row == state.cursor,
+                self.hovered == Some(row),
             );
         }
 
@@ -301,7 +309,10 @@ impl StatefulWidget for UiRenderMenu<'_> {
                 &self.theme.texts.cancel,
                 None,
                 row_at(row),
-                Style::new(),
+                match self.hovered == Some(state.items.len()) {
+                    true => Style::new().add_modifier(Modifier::UNDERLINED),
+                    false => Style::new(),
+                },
                 state.cursor == state.items.len(),
             );
         }
@@ -309,16 +320,21 @@ impl StatefulWidget for UiRenderMenu<'_> {
 }
 
 /// One entry: the mark, the verb, and the mode it applies to.
+///
+/// Underlined under the pointer only when it can be chosen: a click on a dim
+/// entry moves nothing, so nothing says it would.
 fn draw_choice(
     buffer: &mut Buffer,
     theme: &UiTheme,
     item: &UnitChoice,
     area: Rect,
     selected: bool,
+    hovered: bool,
 ) {
-    let style = match item.enabled {
-        true => Style::new(),
-        false => Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+    let style = match (item.enabled, hovered) {
+        (true, true) => Style::new().add_modifier(Modifier::UNDERLINED),
+        (true, false) => Style::new(),
+        (false, _) => Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
     };
     draw_row(
         buffer,
