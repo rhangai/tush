@@ -286,7 +286,7 @@ impl<C: ViewClient> Ui<C> {
 
     /// Act on the mouse: the wheel scrolls the log wherever the pointer is,
     /// that being the only thing on screen with more in it than fits, and the
-    /// left button selects the log's text.
+    /// left button moves the cursor to a unit or selects the log's text.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         let (x, y) = (mouse.column, mouse.row);
         match mouse.kind {
@@ -294,7 +294,10 @@ impl<C: ViewClient> Ui<C> {
             MouseEventKind::ScrollDown => self.render.scroll_log_lines(-WHEEL_LINES),
             // The menu sits over the log, so a press there is not on it.
             _ if self.render.menu_open() => {}
+            // A press selects the unit under it, or starts a selection in the
+            // log; either way it clears the selection already up.
             MouseEventKind::Down(MouseButton::Left) => {
+                self.render.click_unit(x, y);
                 self.render.select_log_from(x, y, &self.client);
             }
             MouseEventKind::Drag(MouseButton::Left) => self.render.select_log_to(x, y),

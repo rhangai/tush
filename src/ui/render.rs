@@ -173,6 +173,14 @@ impl UiRender {
         self.log.follow();
     }
 
+    /// Put the cursor on the unit clicked, if any; the log follows when the
+    /// unit changed, as it does for j and k.
+    pub fn click_unit(&mut self, x: u16, y: u16) {
+        if self.units.click(x, y) {
+            self.log.follow();
+        }
+    }
+
     /// Scroll the log pane back by `lines`, or forward by a negative number.
     pub fn scroll_log_lines(&mut self, lines: isize) {
         self.log.scroll_lines(lines);
