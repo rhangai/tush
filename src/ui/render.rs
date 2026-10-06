@@ -258,6 +258,12 @@ impl UiRender {
         self.menu.open(key, title, items);
     }
 
+    /// A press while the menu is up — see
+    /// [`click`](UiRenderMenuState::click).
+    pub fn click_menu(&mut self, x: u16, y: u16) {
+        self.menu.click(x, y);
+    }
+
     /// Give the keys back to the list.
     pub fn close_menu(&mut self) {
         self.menu.close();

@@ -1,6 +1,6 @@
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Position, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Clear, StatefulWidget, Widget},
 };
@@ -53,6 +53,12 @@ pub struct UiRenderMenuState {
     /// Which row: an entry, or the way out at `items.len()`. Only ever one
     /// that can be chosen.
     cursor: usize,
+    /// Where the last frame drew the box, and the rows inside it — what a
+    /// click is measured against. The rows are recorded rather than worked
+    /// out again from the box, so a row the frame had no room for is not one
+    /// a click can land on.
+    area: Rect,
+    rows: Rect,
 }
 
 impl UiRenderMenuState {
@@ -127,6 +133,41 @@ impl UiRenderMenuState {
                 self.cursor = at;
                 return;
             }
+        }
+    }
+
+    /// A press at (`x`, `y`): outside the box closes it, as <kbd>Esc</kbd>
+    /// does; on an entry that can be chosen, or on the way out, the cursor
+    /// moves there. Anywhere else inside does nothing — a dim entry included,
+    /// so the cursor keeps the rule [`select`](Self::select) keeps.
+    ///
+    /// Never chooses: a pointer misses, and a missed click must not restart
+    /// anything. <kbd>Enter</kbd> is the one way to act.
+    pub fn click(&mut self, x: u16, y: u16) {
+        if !self.area.contains(Position::new(x, y)) {
+            self.close();
+            return;
+        }
+        let Some(row) = self.row_at(x, y) else {
+            return;
+        };
+        if row == self.items.len() || self.items.at(row).enabled {
+            self.cursor = row;
+        }
+    }
+
+    /// The row drawn at (`x`, `y`): an entry's index, `items.len()` for the
+    /// way out, or `None` for the border, the padding and the gap.
+    fn row_at(&self, x: u16, y: u16) -> Option<usize> {
+        if !self.rows.contains(Position::new(x, y)) {
+            return None;
+        }
+        let row = (y - self.rows.y) as usize;
+        let cancel = self.items.len() + CANCEL_GAP as usize;
+        match row {
+            row if row < self.items.len() => Some(row),
+            row if row == cancel => Some(self.items.len()),
+            _ => None,
         }
     }
 
@@ -212,6 +253,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
         if !state.is_open() {
             return;
         }
+        state.area = area;
         // What is underneath is still drawn, and shows through otherwise.
         Clear.render(area, buffer);
         let inner = self.border.inner(area);
@@ -237,6 +279,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
         // where the text starts, not where the row does.
         let top = inner.y + PAD_Y;
         let rows = inner.height.saturating_sub(PAD_Y * 2);
+        state.rows = Rect::new(inner.x, top, inner.width, rows);
         let row_at = |y: u16| Rect::new(inner.x, top + y, inner.width, 1);
 
         for (row, item) in state.items.iter().take(rows as usize).enumerate() {

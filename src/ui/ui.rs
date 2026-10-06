@@ -292,7 +292,11 @@ impl<C: ViewClient> Ui<C> {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.render.scroll_log_lines(WHEEL_LINES),
             MouseEventKind::ScrollDown => self.render.scroll_log_lines(-WHEEL_LINES),
-            // The menu sits over the log, so a press there is not on it.
+            // The menu sits over everything, so a press is the menu's: it
+            // never reaches the list or the log behind it.
+            MouseEventKind::Down(MouseButton::Left) if self.render.menu_open() => {
+                self.render.click_menu(x, y);
+            }
             _ if self.render.menu_open() => {}
             // A press selects the unit under it, or starts a selection in the
             // log; either way it clears the selection already up.
