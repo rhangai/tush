@@ -1,13 +1,18 @@
-use std::time::Duration;
+use std::{env, io, process::Stdio, time::Duration};
 
 use crossterm::{
+    clipboard::CopyToClipboard,
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+        KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
 };
 use ratatui::DefaultTerminal;
+use tokio::{
+    io::AsyncWriteExt,
+    process::{Child, Command},
+};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +31,12 @@ use crate::{
 /// a terminal scrolls by and so what a hand expects.
 const WHEEL_LINES: isize = 3;
 
+/// How long a clipboard tool gets to take the text before it is killed.
+///
+/// Taking it is a write to a pipe and a fork, over in milliseconds; one that
+/// is still going after this is waiting on a display that is not there.
+const CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// The terminal UI: the redraw loop, the keys, and the two things they act
 /// on — the client and the screen.
 ///
@@ -43,6 +54,8 @@ pub struct Ui<C: ViewClient> {
     /// The last thing [`request_log`](Ui::request_log) told the client, and
     /// `None` before it has told it anything.
     asked: Option<(Option<AppUnitKey>, LogRegion)>,
+    /// The text of the last selection copied, kept for its capacity.
+    copy: String,
 }
 
 impl<C: ViewClient> Ui<C> {
@@ -74,12 +87,13 @@ impl<C: ViewClient> Ui<C> {
             render: UiRender::new(theme),
             running: true,
             asked: None,
+            copy: String::new(),
         };
         let mut terminal = ratatui::init();
         // The wheel is not reported unless asked for, and asking costs the
-        // terminal's own selection: dragging over the log no longer selects
-        // it, and copying a line takes the terminal's override, `Shift` in
-        // nearly all of them.
+        // terminal's own selection — which is why the log pane selects its
+        // own text. The terminal's still works behind its override, `Shift`
+        // in nearly all of them.
         let mouse = execute!(std::io::stdout(), EnableMouseCapture);
         let result = ui.main_loop(&mut terminal, refresh, cancel).await;
         if mouse.is_ok() {
@@ -166,6 +180,9 @@ impl<C: ViewClient> Ui<C> {
         let key = match event {
             Event::Key(key) => key,
             Event::Mouse(mouse) => return self.handle_mouse(mouse),
+            // The selection is cells of the pane as it was laid out, which a
+            // resize moves.
+            Event::Resize(..) => return self.render.clear_log_selection(),
             _ => return,
         };
         if key.kind != KeyEventKind::Press {
@@ -267,14 +284,42 @@ impl<C: ViewClient> Ui<C> {
         self.render.open_menu(key, title, items);
     }
 
-    /// Act on the wheel: it scrolls the log wherever the pointer is, that
-    /// being the only thing on screen with more in it than fits.
+    /// Act on the mouse: the wheel scrolls the log wherever the pointer is,
+    /// that being the only thing on screen with more in it than fits, and the
+    /// left button selects the log's text.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let (x, y) = (mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::ScrollUp => self.render.scroll_log_lines(WHEEL_LINES),
             MouseEventKind::ScrollDown => self.render.scroll_log_lines(-WHEEL_LINES),
+            // The menu sits over the log, so a press there is not on it.
+            _ if self.render.menu_open() => {}
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.render.select_log_from(x, y, &self.client);
+            }
+            MouseEventKind::Drag(MouseButton::Left) => self.render.select_log_to(x, y),
+            MouseEventKind::Up(MouseButton::Left) => self.end_selection(),
             _ => {}
         }
+    }
+
+    /// The button came up: hand whatever was selected to the terminal, which
+    /// puts it on the clipboard, and to the desktop's clipboard tool as well.
+    ///
+    /// Both, every time: a terminal that ignores OSC 52 says nothing, so there
+    /// is no failure to fall back from, and where both work they write the
+    /// same text to the same clipboard. Written straight to stdout, which is
+    /// safe here because events are handled between frames and never during
+    /// one; a write that failed leaves no screen to say it on.
+    fn end_selection(&mut self) {
+        if !self.render.select_log_end(&mut self.copy) {
+            return;
+        }
+        let _ = execute!(
+            std::io::stdout(),
+            CopyToClipboard::to_clipboard_from(&self.copy)
+        );
+        tokio::spawn(copy_with_tool(self.copy.clone()));
     }
 
     /// Move the cursor, bounded by however many units there are.
@@ -308,4 +353,53 @@ impl<C: ViewClient> Ui<C> {
     fn is_quit(key: &KeyEvent) -> bool {
         matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
     }
+}
+
+/// Hand `text` to the first clipboard tool that fits the session and starts.
+///
+/// Picked per copy rather than once at startup, so a tool installed while
+/// tush runs is found. A tool that fails to start moves on to the next; one
+/// that started is the last, whatever it does. Left detached on purpose: the
+/// timeout ends it, and `kill_on_drop` takes a hung tool down with it rather
+/// than leaving it behind — `wl-copy` and `xclip` fork to keep serving the
+/// clipboard, and by then the child started here has already exited.
+async fn copy_with_tool(text: String) {
+    let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = env::var_os("DISPLAY").is_some();
+    let tools: [(bool, &str, &[&str]); 4] = [
+        (wayland, "wl-copy", &[]),
+        (x11, "xclip", &["-selection", "clipboard"]),
+        (x11, "xsel", &["--clipboard", "--input"]),
+        (cfg!(target_os = "macos"), "pbcopy", &[]),
+    ];
+    for (applies, program, args) in tools {
+        if !applies {
+            continue;
+        }
+        // Nothing of the tool's reaches the terminal: it would draw over
+        // the screen.
+        let started = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn();
+        let Ok(child) = started else {
+            continue;
+        };
+        let _ = tokio::time::timeout(CLIPBOARD_TIMEOUT, feed(child, &text)).await;
+        return;
+    }
+}
+
+/// Write `text` to the tool's stdin, close it, and wait for the tool to exit.
+///
+/// Closing is what tells the tool the text is complete.
+async fn feed(mut child: Child, text: &str) -> io::Result<()> {
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes()).await?;
+    }
+    child.wait().await?;
+    Ok(())
 }
