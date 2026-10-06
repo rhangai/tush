@@ -268,20 +268,37 @@ impl UiRenderLogState {
 
     /// Move the selection's free end to the cell under (`x`, `y`), clamped to
     /// the text: a drag that leaves the pane holds at its edge.
+    ///
+    /// On the edge, the pane also scrolls by as many cells as the pointer
+    /// moved since the last drag, so a fast hand scrolls fast and a nudge
+    /// scrolls a line; [`step_edge`](Self::step_edge) keeps it going when
+    /// the hand stops.
     pub fn select_to(&mut self, x: u16, y: u16) {
-        let shown = self.frozen_window();
-        let Some(selection) = &mut self.selection else {
+        let Some(selection) = self.selection else {
             return;
         };
-        if selection.clicks > 1 || shown.is_empty() {
+        if selection.clicks > 1 {
+            return;
+        }
+        let moved = self.dragging.map_or(0, |(last_x, last_y)| {
+            last_x.abs_diff(x).max(last_y.abs_diff(y)) as usize
+        });
+        self.dragging = Some((x, y));
+        if let Some(scroll) = self.edge_scroll(moved) {
+            self.scroll = scroll;
+        }
+        let shown = self.frozen_window();
+        if shown.is_empty() {
             return;
         }
         let (left, top) = self.origin;
         let last_column = self.size.1.saturating_sub(1);
         let row = (shown.start + y.saturating_sub(top) as usize).min(shown.end - 1);
         let column = (x.saturating_sub(left) as usize).min(last_column);
-        selection.head = (row, column);
-        self.dragging = Some((x, y));
+        self.selection = Some(UiRenderLogSelection {
+            head: (row, column),
+            ..selection
+        });
     }
 
     /// Whether a drag is held on the pane's first or last [`EDGE_ROWS`], or
@@ -289,13 +306,13 @@ impl UiRenderLogState {
     /// calls [`step_edge`](Self::step_edge). False at the end of them, or
     /// the loop would wake to redraw a pane that cannot move.
     pub fn is_at_edge(&self) -> bool {
-        self.edge_scroll().is_some()
+        self.edge_scroll(EDGE_LINES).is_some()
     }
 
     /// Scroll a held drag [`EDGE_LINES`] towards the edge it sits on, as far
     /// as the frozen lines reach, and move the selection's end with it.
     pub fn step_edge(&mut self) {
-        let Some(scroll) = self.edge_scroll() else {
+        let Some(scroll) = self.edge_scroll(EDGE_LINES) else {
             return;
         };
         self.scroll = scroll;
@@ -304,18 +321,18 @@ impl UiRenderLogState {
         }
     }
 
-    /// The scroll one step of a held drag lands on, or `None` when it is off
-    /// the edge or the frozen lines end there.
-    fn edge_scroll(&self) -> Option<usize> {
+    /// The scroll `lines` towards the edge a held drag sits on lands on, or
+    /// `None` when it is off the edge or the frozen lines end there.
+    fn edge_scroll(&self, lines: usize) -> Option<usize> {
         let back = self.edge()?;
         let rows = self.size.0;
         let oldest = self.frozen_start + self.frozen.len().saturating_sub(rows);
         // Never against the edge, should a client that lagged have left the
         // scroll outside what was frozen.
         let scroll = if back {
-            (self.scroll + EDGE_LINES).min(oldest).max(self.scroll)
+            (self.scroll + lines).min(oldest).max(self.scroll)
         } else {
-            let forward = self.scroll.saturating_sub(EDGE_LINES);
+            let forward = self.scroll.saturating_sub(lines);
             forward.max(self.frozen_start).min(self.scroll)
         };
         (scroll != self.scroll).then_some(scroll)
