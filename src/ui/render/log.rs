@@ -1,3 +1,8 @@
+use std::{
+    ops::Range,
+    time::{Duration, Instant},
+};
+
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use ratatui::{
@@ -23,6 +28,18 @@ use crate::{
 /// because scrolling goes both ways — stretched backwards only, it would make
 /// scrolling down cost exactly what it was meant to save.
 const LOG_MARGIN: usize = 100;
+
+/// How many columns of each line are asked for, whatever the pane's width.
+///
+/// A copy takes whole lines, and the client holds only what was asked for —
+/// fetching the selected lines again when the button comes up would fetch
+/// other lines, the log being addressed from an end that keeps moving. Capped
+/// so a window still costs the pane and not the log: past this a line, a
+/// minified bundle say, is copied cut.
+const LOG_COLUMNS_MAX: usize = 4096;
+
+/// How long the bottom border says a copy went out.
+const COPIED_FOR: Duration = Duration::from_secs(2);
 
 /// Blank columns at each edge, so the output is not written onto the border.
 const PAD_X: u16 = 1;
@@ -50,6 +67,9 @@ pub struct UiRenderLogState {
     /// client's lines slide out from under the selection. Kept between
     /// selections for its capacity; what it holds means nothing without one.
     frozen: Vec<LogLine>,
+    /// When the last copy went out and how many lines it held, for the
+    /// border to say so for [`COPIED_FOR`].
+    copied: Option<(Instant, usize)>,
 }
 
 /// Two cells of the text, as (row, column) from its top left: where the
@@ -112,11 +132,11 @@ impl UiRenderLogState {
     }
 
     /// The rectangle the pane wants: what it draws, plus [`LOG_MARGIN`] lines
-    /// either side and clipped to its width.
+    /// either side, [`LOG_COLUMNS_MAX`] wide.
     pub fn region(&self) -> LogRegion {
-        let (rows, columns) = self.size;
+        let rows = self.size.0;
         let start = self.scroll.saturating_sub(LOG_MARGIN);
-        LogRegion::new(start..self.scroll + rows + LOG_MARGIN, 0..columns)
+        LogRegion::new(start..self.scroll + rows + LOG_MARGIN, 0..LOG_COLUMNS_MAX)
     }
 
     /// Pull the scroll back to what there is to show.
@@ -186,19 +206,48 @@ impl UiRenderLogState {
     }
 
     /// The button came up: a selection that never left the cell it started
-    /// on was a click, and a click clears.
-    pub fn select_end(&mut self) {
-        if self
-            .selection
-            .is_some_and(|selection| selection.anchor == selection.head)
-        {
+    /// on was a click, and a click clears; anything else is copied into
+    /// `out`, rows joined by newlines, and the return says there is a copy.
+    ///
+    /// A release on the pane's right edge takes the rest of its line, which
+    /// is what dragging off the side of a line that does not fit means.
+    pub fn select_end(&mut self, out: &mut String) -> bool {
+        let Some(selection) = self.selection else {
+            return false;
+        };
+        if selection.anchor == selection.head {
             self.clear_selection();
+            return false;
         }
+        out.clear();
+        let edge = self.size.1.saturating_sub(1);
+        let ((first_row, first_column), (last_row, last_column)) = selection.ordered();
+        for row in first_row..=last_row {
+            let Some(line) = self.frozen.get(row) else {
+                break;
+            };
+            let from = if row == first_row { first_column } else { 0 };
+            let to = if row == last_row && last_column < edge {
+                last_column
+            } else {
+                usize::MAX
+            };
+            if row > first_row {
+                out.push('\n');
+            }
+            if let Some((_, bytes)) = overlap(&line.text, from, to) {
+                out.push_str(&line.text[bytes]);
+            }
+        }
+        self.copied = Some((Instant::now(), last_row - first_row + 1));
+        true
     }
 
-    /// Drop the selection, and with it the freeze.
+    /// Drop the selection, and with it the freeze and the word that a copy
+    /// went out — left up, it would say so over a pane that moved on.
     pub fn clear_selection(&mut self) {
         self.selection = None;
+        self.copied = None;
     }
 }
 
@@ -312,8 +361,22 @@ impl StatefulWidget for UiRenderLog<'_> {
         // a block's title is a `Line`, and both building one and rendering
         // one allocate.
         self.draw_title(buffer, area, inner);
-        if state.selection.is_some() {
-            draw_selecting(buffer, self.theme, area);
+        // A frozen pane looks exactly like a process that went quiet, so it
+        // says so — and while it is frozen, the count of lines below is of
+        // lines it is not showing anyway.
+        let texts = &self.theme.texts;
+        let copied = state.copied.filter(|(at, _)| at.elapsed() < COPIED_FOR);
+        if let Some((_, count)) = copied {
+            let mut digits = [0u8; DIGITS_MAX];
+            let number = decimal(count, &mut digits);
+            let unit = if count == 1 {
+                &texts.copied_line
+            } else {
+                &texts.copied_lines
+            };
+            draw_border_note(buffer, area, &[&texts.copied, number, unit]);
+        } else if state.selection.is_some() {
+            draw_border_note(buffer, area, &[&texts.selecting]);
         } else {
             draw_behind(buffer, self.theme, area, state.scroll);
         }
@@ -351,9 +414,8 @@ impl StatefulWidget for UiRenderLog<'_> {
 
 /// Reverse the selected cells, over text already drawn.
 ///
-/// A row is selected from the character under its first cell to the
-/// character under its last, so a wide character the selection touches at
-/// all is taken whole; the rows between the ends are selected to their end.
+/// The rows between the ends are selected to their end; past the pane there
+/// is nothing drawn to reverse.
 fn draw_selection(
     buffer: &mut Buffer,
     lines: &[LogLine],
@@ -361,6 +423,7 @@ fn draw_selection(
     selection: UiRenderLogSelection,
 ) {
     let style = Style::new().add_modifier(Modifier::REVERSED);
+    let width = text.width as usize;
     let ((first_row, first_column), (last_row, last_column)) = selection.ordered();
     for row in first_row..=last_row {
         let Some(line) = lines.get(row) else {
@@ -372,46 +435,59 @@ fn draw_selection(
         } else {
             usize::MAX
         };
-
-        // Walk the line a character at a time, keeping the cells of those
-        // that overlap `from..=to`; past the pane nothing is drawn to reverse.
-        let mut start = None;
-        let mut end = 0;
-        let mut column = 0;
-        for character in line.text.chars() {
-            if column > to || column >= text.width as usize {
-                break;
-            }
-            let next = column + character.width().unwrap_or(0);
-            if next > from {
-                start.get_or_insert(column);
-                end = next;
-            }
-            column = next;
-        }
-        let Some(start) = start else {
+        let Some((columns, _)) = overlap(&line.text, from, to.min(width.saturating_sub(1))) else {
             continue;
         };
-        let end = end.min(text.width as usize);
+        let end = columns.end.min(width);
         let cells = Rect::new(
-            text.x + start as u16,
+            text.x + columns.start as u16,
             text.y + row as u16,
-            (end - start) as u16,
+            (end - columns.start) as u16,
             1,
         );
         buffer.set_style(cells, style);
     }
 }
 
-/// Say in the bottom border that the pane is held still, where
-/// [`draw_behind`] would count the lines below it.
+/// The characters of `text` with a cell in `from..=to`: the columns they
+/// cover, and their bytes.
 ///
-/// A frozen pane looks exactly like a process that went quiet, and while a
-/// selection is up that count is of lines the pane is not showing anyway.
-fn draw_selecting(buffer: &mut Buffer, theme: &UiTheme, area: Rect) {
-    let word = &theme.texts.selecting;
-    let width = (word.width() + 2) as u16;
-    let Some(x) = area.right().checked_sub(width + 1) else {
+/// A wide character the range touches at all is taken whole. The one rule
+/// for both the highlight and the copy, so the two cannot disagree on where
+/// a selection starts or ends.
+fn overlap(text: &str, from: usize, to: usize) -> Option<(Range<usize>, Range<usize>)> {
+    let mut found: Option<(Range<usize>, Range<usize>)> = None;
+    let mut column = 0;
+    for (index, character) in text.char_indices() {
+        if column > to {
+            break;
+        }
+        let next = column + character.width().unwrap_or(0);
+        if next > from {
+            let byte_end = index + character.len_utf8();
+            match &mut found {
+                Some((columns, bytes)) => {
+                    columns.end = next;
+                    bytes.end = byte_end;
+                }
+                None => found = Some((column..next, index..byte_end)),
+            }
+        }
+        column = next;
+    }
+    found
+}
+
+/// Write `pieces` into the bottom border, a space either side, ending one
+/// short of the corner — where [`draw_behind`] counts the lines below.
+///
+/// Skipped when the border is too short to hold them.
+fn draw_border_note(buffer: &mut Buffer, area: Rect, pieces: &[&str]) {
+    let mut width = 2;
+    for piece in pieces {
+        width += piece.width();
+    }
+    let Some(x) = area.right().checked_sub(width as u16 + 1) else {
         return;
     };
     if x <= area.x {
@@ -421,7 +497,9 @@ fn draw_selecting(buffer: &mut Buffer, theme: &UiTheme, area: Rect) {
     let y = area.bottom().saturating_sub(1);
     let style = Style::new();
     let mut x = buffer.set_stringn(x, y, " ", 1, style).0;
-    x = buffer.set_stringn(x, y, word, word.width(), style).0;
+    for piece in pieces {
+        x = buffer.set_stringn(x, y, piece, piece.width(), style).0;
+    }
     buffer.set_stringn(x, y, " ", 1, style);
 }
 

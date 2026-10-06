@@ -199,9 +199,10 @@ impl UiRender {
         self.log.select_to(x, y);
     }
 
-    /// The button came up over the log selection.
-    pub fn select_log_end(&mut self) {
-        self.log.select_end();
+    /// The button came up over the log selection — see
+    /// [`select_end`](UiRenderLogState::select_end).
+    pub fn select_log_end(&mut self, out: &mut String) -> bool {
+        self.log.select_end(out)
     }
 
     /// Drop the log selection, and let the pane move again.

@@ -225,6 +225,11 @@ pub struct UiThemeTexts {
     pub empty: SmallStr,
     /// In the log pane's bottom border while a selection holds it still.
     pub selecting: SmallStr,
+    /// In the same place for a moment after a copy. A *prefix* to the number
+    /// of lines, with the word after it for one line and for several.
+    pub copied: SmallStr,
+    pub copied_line: SmallStr,
+    pub copied_lines: SmallStr,
     /// The menu's way out.
     pub cancel: SmallStr,
 
@@ -272,6 +277,9 @@ impl Default for UiThemeTexts {
             log: SmallStr::literal("log"),
             empty: SmallStr::literal("no output yet"),
             selecting: SmallStr::literal("selecting"),
+            copied: SmallStr::literal("copied "),
+            copied_line: SmallStr::literal(" line"),
+            copied_lines: SmallStr::literal(" lines"),
             cancel: SmallStr::literal("cancel"),
 
             statusbar_move: SmallStr::literal("move"),

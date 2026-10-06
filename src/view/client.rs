@@ -150,8 +150,9 @@ pub trait ViewClient {
     /// several later. `None` releases whatever was held for the last unit.
     ///
     /// Ask for more than the pane draws — the extra is what the view scrolls
-    /// within without asking again, and a rectangle clipped to the pane's
-    /// width is cheap whatever the log behind it is.
+    /// within without asking again. A rectangle bounded both ways costs its
+    /// own size whatever the log behind it is; the log pane asks wider than
+    /// it draws, up to a cap, because a copy takes whole lines.
     ///
     /// Called when the pane moves or is resized, and not every frame: the
     /// screen holds what it last said and does not repeat it. A client may

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crossterm::{
+    clipboard::CopyToClipboard,
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
         KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -43,6 +44,8 @@ pub struct Ui<C: ViewClient> {
     /// The last thing [`request_log`](Ui::request_log) told the client, and
     /// `None` before it has told it anything.
     asked: Option<(Option<AppUnitKey>, LogRegion)>,
+    /// The text of the last selection copied, kept for its capacity.
+    copy: String,
 }
 
 impl<C: ViewClient> Ui<C> {
@@ -74,6 +77,7 @@ impl<C: ViewClient> Ui<C> {
             render: UiRender::new(theme),
             running: true,
             asked: None,
+            copy: String::new(),
         };
         let mut terminal = ratatui::init();
         // The wheel is not reported unless asked for, and asking costs the
@@ -284,9 +288,26 @@ impl<C: ViewClient> Ui<C> {
                 self.render.select_log_from(x, y, &self.client);
             }
             MouseEventKind::Drag(MouseButton::Left) => self.render.select_log_to(x, y),
-            MouseEventKind::Up(MouseButton::Left) => self.render.select_log_end(),
+            MouseEventKind::Up(MouseButton::Left) => self.end_selection(),
             _ => {}
         }
+    }
+
+    /// The button came up: hand whatever was selected to the terminal,
+    /// which puts it on the clipboard.
+    ///
+    /// Written straight to stdout, which is safe here because events are
+    /// handled between frames and never during one. A terminal that ignores
+    /// OSC 52 says nothing, so neither can this, and a write that failed
+    /// leaves no screen to say it on.
+    fn end_selection(&mut self) {
+        if !self.render.select_log_end(&mut self.copy) {
+            return;
+        }
+        let _ = execute!(
+            std::io::stdout(),
+            CopyToClipboard::to_clipboard_from(&self.copy)
+        );
     }
 
     /// Move the cursor, bounded by however many units there are.

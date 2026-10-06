@@ -151,11 +151,18 @@ below the rule the ones you only look at when they break (`panel: minor`).
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd>, wheel | Scroll the log |
 | <kbd>Shift</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Scroll it a line at a time |
 | <kbd>End</kbd>, <kbd>G</kbd> | Back to following the tail |
+| Drag over the log | Select it, and copy it when you let go; a click clears it |
 | <kbd>q</kbd>, <kbd>Esc</kbd> | Quit, stopping everything `tush run` started |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit, from anywhere |
 
 Open the menu on a proc with `modes` to switch between them. Every entry says
 what it will do: `Restart` on the mode that is up, `Start` on the others.
+
+A selection copies whole lines, even the parts too wide for the pane (up to
+4096 columns), and the log holds still until you clear it. The copy goes
+through your terminal (OSC 52), so it works over SSH too. If nothing lands on
+your clipboard, your terminal has that turned off; in tmux, it takes
+`set -g set-clipboard on`.
 
 ## Commands
 
