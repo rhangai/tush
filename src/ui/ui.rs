@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{env, io, process::Stdio, time::Duration};
 
 use crossterm::{
     clipboard::CopyToClipboard,
@@ -9,6 +9,10 @@ use crossterm::{
     execute,
 };
 use ratatui::DefaultTerminal;
+use tokio::{
+    io::AsyncWriteExt,
+    process::{Child, Command},
+};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +30,12 @@ use crate::{
 /// How many lines one notch of the wheel moves the log: three, which is what
 /// a terminal scrolls by and so what a hand expects.
 const WHEEL_LINES: isize = 3;
+
+/// How long a clipboard tool gets to take the text before it is killed.
+///
+/// Taking it is a write to a pipe and a fork, over in milliseconds; one that
+/// is still going after this is waiting on a display that is not there.
+const CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The terminal UI: the redraw loop, the keys, and the two things they act
 /// on — the client and the screen.
@@ -293,13 +303,14 @@ impl<C: ViewClient> Ui<C> {
         }
     }
 
-    /// The button came up: hand whatever was selected to the terminal,
-    /// which puts it on the clipboard.
+    /// The button came up: hand whatever was selected to the terminal, which
+    /// puts it on the clipboard, and to the desktop's clipboard tool as well.
     ///
-    /// Written straight to stdout, which is safe here because events are
-    /// handled between frames and never during one. A terminal that ignores
-    /// OSC 52 says nothing, so neither can this, and a write that failed
-    /// leaves no screen to say it on.
+    /// Both, every time: a terminal that ignores OSC 52 says nothing, so there
+    /// is no failure to fall back from, and where both work they write the
+    /// same text to the same clipboard. Written straight to stdout, which is
+    /// safe here because events are handled between frames and never during
+    /// one; a write that failed leaves no screen to say it on.
     fn end_selection(&mut self) {
         if !self.render.select_log_end(&mut self.copy) {
             return;
@@ -308,6 +319,7 @@ impl<C: ViewClient> Ui<C> {
             std::io::stdout(),
             CopyToClipboard::to_clipboard_from(&self.copy)
         );
+        tokio::spawn(copy_with_tool(self.copy.clone()));
     }
 
     /// Move the cursor, bounded by however many units there are.
@@ -341,4 +353,53 @@ impl<C: ViewClient> Ui<C> {
     fn is_quit(key: &KeyEvent) -> bool {
         matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
     }
+}
+
+/// Hand `text` to the first clipboard tool that fits the session and starts.
+///
+/// Picked per copy rather than once at startup, so a tool installed while
+/// tush runs is found. A tool that fails to start moves on to the next; one
+/// that started is the last, whatever it does. Left detached on purpose: the
+/// timeout ends it, and `kill_on_drop` takes a hung tool down with it rather
+/// than leaving it behind — `wl-copy` and `xclip` fork to keep serving the
+/// clipboard, and by then the child started here has already exited.
+async fn copy_with_tool(text: String) {
+    let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = env::var_os("DISPLAY").is_some();
+    let tools: [(bool, &str, &[&str]); 4] = [
+        (wayland, "wl-copy", &[]),
+        (x11, "xclip", &["-selection", "clipboard"]),
+        (x11, "xsel", &["--clipboard", "--input"]),
+        (cfg!(target_os = "macos"), "pbcopy", &[]),
+    ];
+    for (applies, program, args) in tools {
+        if !applies {
+            continue;
+        }
+        // Nothing of the tool's reaches the terminal: it would draw over
+        // the screen.
+        let started = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn();
+        let Ok(child) = started else {
+            continue;
+        };
+        let _ = tokio::time::timeout(CLIPBOARD_TIMEOUT, feed(child, &text)).await;
+        return;
+    }
+}
+
+/// Write `text` to the tool's stdin, close it, and wait for the tool to exit.
+///
+/// Closing is what tells the tool the text is complete.
+async fn feed(mut child: Child, text: &str) -> io::Result<()> {
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes()).await?;
+    }
+    child.wait().await?;
+    Ok(())
 }
