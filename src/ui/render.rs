@@ -231,6 +231,17 @@ impl UiRender {
         self.log.select_to(x, y);
     }
 
+    /// Whether a log selection is being dragged on the pane's edge.
+    pub fn is_log_at_edge(&self) -> bool {
+        self.log.is_at_edge()
+    }
+
+    /// Scroll a drag held on the log pane's edge one step — see
+    /// [`step_edge`](UiRenderLogState::step_edge).
+    pub fn step_log_edge(&mut self) {
+        self.log.step_edge();
+    }
+
     /// The button came up over the log selection — see
     /// [`select_end`](UiRenderLogState::select_end).
     pub fn select_log_end(&mut self, out: &mut String) -> bool {

@@ -12,6 +12,7 @@ use ratatui::DefaultTerminal;
 use tokio::{
     io::AsyncWriteExt,
     process::{Child, Command},
+    time::MissedTickBehavior,
 };
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -30,6 +31,13 @@ use crate::{
 /// How many lines one notch of the wheel moves the log: three, which is what
 /// a terminal scrolls by and so what a hand expects.
 const WHEEL_LINES: isize = 3;
+
+/// How often a drag held on the log pane's edge scrolls it.
+///
+/// A timer of its own rather than the frame's, which `--fps` sets: a pointer
+/// held still sends no events, and at one frame a second the edge would
+/// barely move.
+const EDGE_STEP: Duration = Duration::from_millis(100);
 
 /// How long a clipboard tool gets to take the text before it is killed.
 ///
@@ -117,6 +125,10 @@ impl<C: ViewClient> Ui<C> {
     ) -> Result<(), UiError> {
         let mut events = EventStream::new();
         let mut ticks = tokio::time::interval(refresh);
+        // Polled only while a drag sits on the edge; `Delay` so the ticks it
+        // missed meanwhile do not arrive at once when it is armed again.
+        let mut edge = tokio::time::interval(EDGE_STEP);
+        edge.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         while self.running {
             // Ask before syncing, so that a client with a round trip to make
@@ -130,6 +142,7 @@ impl<C: ViewClient> Ui<C> {
                 .map_err(UiError::DrawError)?;
             tokio::select! {
                 _ = ticks.tick() => {}
+                _ = edge.tick(), if self.render.is_log_at_edge() => self.render.step_log_edge(),
                 // Whoever wants us gone is waiting on the process, so the
                 // frame in flight is not worth finishing.
                 _ = cancel.cancelled() => break,
