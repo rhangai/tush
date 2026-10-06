@@ -1,54 +1,58 @@
 ---
-name: arch
-description: Judge an architectural decision in this repo — where something belongs, who owns it, what drives what — and say whether it is right, costly, or a Rust antipattern wearing the clothes of a good design. Reviews ownership, async cancellation, trait shape, error and type design down to the detail a developer would walk past. Aimed at orchestration (app, schedule, unit, runner, config) and the seams between layers; the UI is its own beast and is out of scope except where it crosses UiClient. Use when asked "does this make sense", "where should this live", "who should own this", "is this idiomatic", "is there a dumb decision here".
+description: Judge an architectural decision — ownership, seams, async, traits, errors — and say whether it is right, costly or a Rust antipattern. Opinion only, no edits.
+argument-hint: <decision | module | seam | diff | sweep>
+effort: high
 ---
 
 # Architecture
 
-`/arch <target>` — a decision ("should the schedule own the interner?"), a
+Target: **$ARGUMENTS** — a decision ("should the schedule own the interner?"), a
 module (`app`, `runner`), a seam (`Unit` ↔ `RunnerHandle`), a diff (`HEAD`, a
-branch), or a sweep ("is there anything dumb in the orchestration?"). With no
-target, ask which one and stop; do not pick.
+branch), or a sweep ("is there anything dumb in the orchestration?"). If it is
+empty, ask which one and stop; do not pick.
 
 The deliverable is an **opinion**. Nothing under `src` changes — not a rename,
 not an extracted type, not a test. A design question gets answered, not
-implemented (AGENTS.md, *Scope*). If the change is three lines, say the three
+implemented (AGENTS.md, _Scope_). If the change is three lines, say the three
 lines and let the user ask for them.
 
 Opinions are welcome on anything: naming, module boundaries, what the config
 file should look like, whether a feature is worth having at all. The one thing
-this skill does not do is design the UI — panes, layout, key handling and
-drawing are settled elsewhere. `UiClient` *is* in scope, because it is the
+this command does not do is design the UI — panes, layout, key handling and
+drawing are settled elsewhere (`/ui`). `ViewClient` _is_ in scope, because it is the
 protocol between a session and a screen and one day a socket.
 
-## 1. The shape that already exists
+## 1. The shape as it stands
 
-Judge against this; do not re-derive it, and do not propose it back as if it
-were new:
+Much of this code took the shape that was easy at the time, not the one that
+was good. **What exists is evidence, not a standard**: judge it like anything
+else, and a better shape is a welcome answer. What _is_ settled is the
+maintainer's — AGENTS.md — and the target the skills describe
+(`rust-maintainable`, `rust-hot-path`); judge against those.
 
-- **Three layers, each unaware of the one above.** `base` → `runner` → `unit`,
-  with `app` composing units and `ui` reading the whole thing through
-  `UiClient`. A decision that makes a lower layer know about a higher one is
-  the finding, whatever it buys.
-- **A handle is one run; a unit outlives its runs.** Restart is a new handle,
-  never an operation on the old one. The log belongs to the unit for the same
-  reason.
-- **`App` is the proof type.** Holding one means the config was checked — keys
-  exist, dependencies resolve, cycles were named. Anything that re-checks
-  downstream is either redundant or evidence the proof is too weak.
-- **Names become keys once, in `AppUnitMap`.** Everything above addresses a
-  unit by `UnitKey`. A `&str` name flowing upward is a finding.
-- **One event, coalescing.** `EventDispatcher` is a `watch<()>`: "something
-  moved, look again". A proposal to carry data on it is a proposal to turn it
-  into a channel, with the buffering and the lost-message question that comes
-  with it — say so.
-- **A bad config is an answer, not a failure.** `DependencyGraph::resolve`
-  always returns an order plus the cycles it broke; `App::new` collects every
-  error rather than stopping at the first. New checks follow that or explain
-  why not.
+Know the current shape before opining on it, so a proposal is not the thing
+already there:
+
+- **Layers.** `ARCHITECTURE.md` draws them; `rust-maintainable` has the
+  import order as it stands. Nothing below `view` knows it exists; `ui` and
+  `server` each hold a `ViewClient`.
+- **Runs and units.** A `RunnerHandle` is one run; restart makes a new one.
+  The log belongs to the unit, which outlives its runs.
+- **`App` as proof.** Holding one means the config was checked; the errors are
+  collected rather than stopping at the first, and `DependencyGraph::resolve`
+  returns an order plus the cycles it broke.
+- **Keys.** Names become `AppUnitKey`s once, in `AppUnitMap`.
+- **One signal, coalescing.** `EventDispatcher` wakes listeners with no
+  payload (a `Notify` plus a version counter); listeners re-read what they
+  care about. Carrying data on it would make it a channel, with a buffer and
+  a lost-message question.
 - **Requests are recorded, not awaited.** The schedule writes down what is
-  wanted and a task re-reads it on every event. Nothing in the orchestration
-  blocks waiting for another unit.
+  wanted and its task re-reads it on every event.
+- **Shared state behind locks, and `Weak`s back to owners.** `Unit` keeps its
+  state behind `parking_lot` mutexes; `AppSchedule`, `UnitHandle` and
+  `UnitHandleManager` hold `Weak`s to what owns them. This is the part most
+  likely to be the easy shape — `rust-maintainable`, _Ownership_, is the
+  target.
 
 ## 2. Read before opining
 
@@ -60,27 +64,32 @@ In this order, stopping when you have it:
 - `AGENTS.md` — strings, the log, the UI client. Those are settled; cite, do
   not reopen. Reopening one needs a measurement, not an argument.
 - History: `git log -S '<name>' --oneline -- src`, then `git show`. Several of
-  these decisions were made *after* the obvious one was tried and removed —
+  these decisions were made _after_ the obvious one was tried and removed —
   the mutex, the `LogSpan`, the note handle. Proposing one of those back is
   the failure mode this section exists to prevent.
 - The callers: `grep -rn '<name>' src`. An ownership question is a question
   about the set of call sites.
 
-`README.md` is stale in places (it still describes `RunnerState` as a packed
-atomic with a CAS loop; it is a `tokio::sync::watch`). Trust the source.
+Prose goes stale before code does: where a doc and the source disagree, trust
+the source and name the doc.
 
 ## 3. The questions to actually ask
 
 Of any decision, in roughly this order — most of them are answered in one line
 and only one or two will bite:
 
-- **Who owns it, and who merely reads it?** An `Arc` in a field that could be
-  a `Weak` is a lifetime decision made by accident. `AppSchedule` holds the
-  unit map weakly *on purpose*: recording against a dead session is a no-op,
-  not a leak.
-- **What is the state, and is there a second copy of it?** Two places that
-  must agree is the defect this repo has paid for most. If a second copy is
-  unavoidable, which one is the truth, and what reconciles them.
+- **Is it the right data structure?** This is where cost is won without
+  hurting the reading: a `Vec` indexed by a dense key (`AppUnitKey` is an
+  interned `u32`) instead of a `HashMap`, a ring instead of a `Vec` that grows
+  and shifts, one pool instead of a buffer per caller. Propose the structure,
+  what it costs to switch, and what reads simpler afterwards — not a
+  micro-optimisation of the one in place.
+- **Who owns it, and who merely reads it?** Ownership should be a tree. A
+  `Weak` back to a parent means the tree has a cycle — ask what restructuring
+  would remove it before accepting the `Weak` as the answer.
+- **Who writes it?** One writer per fact. Readers may hold copies — a
+  snapshot, a version, a swapped buffer — as long as they say which way they
+  can be stale. Two places that both write the same fact is the defect.
 - **What happens when the task is cancelled here?** Every `.await` is a place
   the future is dropped. Name what is half done: a handle published but never
   waited on, a unit never moved to terminal, a scheduled request never
@@ -91,14 +100,20 @@ and only one or two will bite:
 - **Where does the work happen, and how often?** Work on every wake that could
   be answered once at build time is the schedule's `dependencies` map — that
   is the right fix, and the pattern to look for elsewhere.
-- **What does it cost when there is a socket in the middle?** `UiClient` has
-  to survive becoming remote: nothing async, nothing returning `Result`,
+- **What does it cost when there is a socket in the middle?** `ViewClient`
+  has to survive becoming remote: nothing async, nothing returning `Result`,
   answers carrying what they actually are. A decision that only works
   in-process is a decision with a deadline.
 - **Is the abstraction carrying its weight?** A trait with one implementer, a
   newtype that saves two words, a layer that only forwards. `RunnerSerial`
   earns it — it makes a list of commands indistinguishable from one process
   to everything above. Most do not.
+- **Is there a plainer way to say it?** For a body, ask what bounds the
+  problem — a maximum, the end where the decision is made — and whether the
+  code starts and stops there, and whether it reads as one sentence. The
+  answer is the shorter version, as a snippet, with the sentence it says;
+  `cut_at` going back from the cut, never further than `LOG_ESCAPE_MAX`, is
+  the model.
 
 Then run §4 over the same decision. A decision that survives this list can
 still be the wrong thing to write in Rust, and that is the half a developer
@@ -113,19 +128,19 @@ and the cost or the deadlock arrives later. Run the group that applies.
 **Ownership and lifetimes**
 
 - `Arc<Mutex<T>>` reached for as the default. The question is whether the data
-  is shared or the *work* is: a task owning `T` and taking messages needs no
-  lock. This repo already has both answers — `Unit` shares state behind a
-  lock because every caller reads it; `AppSchedule` hands work to a task.
+  is shared or the _work_ is: a task owning `T` and taking messages needs no
+  lock, and keeps the invariant in one loop. `Unit` shares its state behind
+  locks today; whether that is right is a fair question, not a precedent.
 - A spawned task holding an `Arc` to what spawned it: the session can then
-  never drop. `Weak` plus a defined behaviour on failed upgrade is the repo's
-  answer (`AppSchedule::unit_map`, `UnitHandle::manager_weak`) — a new task
-  that takes an `Arc` is a leak nobody will notice until shutdown hangs.
+  never drop. The fix is ownership — the parent owns the task and ends it,
+  so the task never outlives it — rather than a `Weak` with a silent no-op on
+  failed upgrade, which is what the code does today.
 - `Clone` on a type that owns a lock or a channel: cloning now means "another
   handle to the same thing", which is a decision about identity, not a
   convenience. Say which one it is in the doc or do not derive it.
 - A lifetime parameter on a struct to avoid a clone. It infects every holder
   and usually ends in `Arc` anyway a week later; in a config-driven program,
-  `SmallStr` is the cheaper answer (AGENTS.md, *Strings*).
+  `SmallStr` is the cheaper answer (AGENTS.md, _Strings_).
 - `Deref` to reach a field, or `AsRef`/`Into` chains that quietly allocate. A
   `&str` accessor feeding an `impl Into<SmallStr>` is the repo's known one.
 - `&mut self` vs `&self` is API design, not spelling: `&self` plus interior
@@ -153,8 +168,8 @@ and the cost or the deadlock arrives later. Run the group that applies.
 - Picking the wrong Tokio primitive. `watch` = latest value, coalescing,
   lossy; `mpsc` = every message, with back pressure; `broadcast` = every
   message to everyone, lossy under lag; `Notify` = a wakeup with no payload.
-  `EventDispatcher` is a `watch<()>` on purpose; "I need to know *what*
-  changed" is a request to change that primitive, with all of its costs.
+  `EventDispatcher` carries no payload on purpose; "I need to know _what_
+  changed" is a request for a different primitive, with all of its costs.
 - `Notify` wakeup semantics: `notify_one` before a `notified()` stores a
   permit, `notify_waiters` does not — a gate built on the wrong one loses the
   wakeup exactly once, at startup, under load. `RunnerHandle`'s start gate
@@ -208,11 +223,12 @@ and the cost or the deadlock arrives later. Run the group that applies.
   nobody validated.
 - `usize` where the value crosses a wire or a config, `as` casts that narrow,
   and `u32`/`u16` packing chosen for a saving nobody measured.
-- Deriving `PartialEq`/`Hash` on a type holding a key *and* a name: two values
+- Deriving `PartialEq`/`Hash` on a type holding a key _and_ a name: two values
   that mean the same unit then compare unequal.
 
-Ordering, `unsafe` and whether a micro-optimisation actually pays are
-`/soundness`'s job — name the claim and hand it off rather than redoing it.
+Whether `unsafe` can be reached into UB is `/engineer:soundness`'s job, and
+whether an optimisation pays is `/engineer:perf`'s — name the claim and hand
+it off rather than redoing it.
 
 ## 5. Dumb-decision sweep
 
@@ -222,15 +238,15 @@ these, in the orchestration modules (`app`, `unit`, `runner`, `config`,
 
 - State that exists twice, or an invariant enforced in two places.
 - A name where a key exists; a `String` where the module holds `SmallStr`, or
-  the reverse (AGENTS.md, *Strings*).
-- An `Arc` cycle, or an `Arc` that should be `Weak` — `Unit` ↔ its supervising
-  task, `AppSchedule` ↔ `AppUnitMap` are the ones already got right.
+  the reverse (AGENTS.md, _Strings_).
+- An `Arc` cycle, or a `Weak` standing in for an ownership tree — `Unit` ↔
+  its handle manager (`Arc::new_cyclic`), `AppSchedule` ↔ `AppUnitMap`.
 - A `Result` that no caller can act on, or an error type with one variant that
   is ever constructed.
 - A check repeated below `App::new`, which already proved it.
 - Configuration re-parsed, re-resolved or re-interned per read.
 - A cache over something that should not be built in the first place
-  (AGENTS.md, *The UI*).
+  (AGENTS.md, _The UI_).
 - A `pub` surface wider than its callers need — especially in `log` and
   `runner`, where the narrow surface is what makes the invariants checkable.
 - Something in `util` that knows about processes, or something in `base` that
@@ -248,20 +264,20 @@ produce findings will invent them.
 
 - **UI internals.** Panes, `State`, drawing, theming, key handling. If the
   answer is "that is a UI decision", say that in one line and stop. The
-  exception is anything crossing `UiClient`, and anything the UI needs from a
+  exception is anything crossing `ViewClient`, and anything the UI needs from a
   session that the session cannot give.
 - **Rewrites nobody asked for.** The answer to a question about one field is
   not a new module layout. If you think the layout is wrong, say so in two
   sentences and let the user decide whether to open it.
-- **Soundness and cost audits.** `/soundness` is the one that reasons about
-  orderings, `unsafe` and whether an optimisation pays. Hand off rather than
-  redo it; if a decision rests on a soundness claim, say which claim and that
-  it is unverified.
+- **UB and cost audits.** `/engineer:soundness` checks `unsafe`;
+  `/engineer:perf` measures what a change costs. Hand off rather than redo
+  it; if a decision rests on one of those claims, say which and that it is
+  unverified.
 
 ## 7. Claims
 
 Anything about allocation, cost or contention gets measured or traced to the
-bottom (AGENTS.md, *Claims*). A decision argued from a cost that turns out not
+bottom (AGENTS.md, _Claims_). A decision argued from a cost that turns out not
 to exist is worse than no answer, because it gets built.
 
 When you cannot settle it, say what would: a benchmark, a `cargo test
@@ -276,6 +292,6 @@ alternative to win; that is usually the useful half.
 
 Name the invariant a proposal touches, quoted from the module doc rather than
 from memory, and say plainly when it breaks one that is documented as load
-bearing. A snippet is fine when the snippet *is* the answer. A branch is not.
+bearing. A snippet is fine when the snippet _is_ the answer. A branch is not.
 
 Short. English, whatever language the conversation is in.

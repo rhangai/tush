@@ -1,2 +1,4 @@
 /target
 /tmp
+/mutants.out*
+/CLAUDE.local.md
