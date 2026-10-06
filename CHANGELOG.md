@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.1.5] - 2026-10-06
+
+### Features
+
+- *(ui)* Added double-click to select a word and triple-click to select a line in the log
+- *(ui)* Added scrolling the log while a selection is dragged to the pane's edge
+- *(ui)* Added scrolling the log faster as the mouse moves while dragging on the pane's edge
+
 ## [0.1.4] - 2026-10-06
 
 ### Features
