@@ -188,6 +188,27 @@ impl UiRender {
         self.log.follow();
     }
 
+    /// Start selecting the log at the cell under (`x`, `y`) — see
+    /// [`select_from`](UiRenderLogState::select_from).
+    pub fn select_log_from<C: ViewClient>(&mut self, x: u16, y: u16, client: &C) {
+        self.log.select_from(x, y, client.log());
+    }
+
+    /// Stretch the log selection to the cell under (`x`, `y`).
+    pub fn select_log_to(&mut self, x: u16, y: u16) {
+        self.log.select_to(x, y);
+    }
+
+    /// The button came up over the log selection.
+    pub fn select_log_end(&mut self) {
+        self.log.select_end();
+    }
+
+    /// Drop the log selection, and let the pane move again.
+    pub fn clear_log_selection(&mut self) {
+        self.log.clear_selection();
+    }
+
     /// The rectangle the log pane wants.
     pub fn log_region(&self) -> LogRegion {
         self.log.region()
@@ -220,7 +241,11 @@ impl UiRender {
     }
 
     /// Open the menu over `key`, titled `title`, listing `items`.
+    ///
+    /// Drops the log selection: the menu sits over the pane, and a frozen
+    /// highlight behind it is a selection nothing can reach.
     pub fn open_menu(&mut self, key: AppUnitKey, title: SmallStr, items: UnitChoices) {
+        self.log.clear_selection();
         self.menu.open(key, title, items);
     }
 

@@ -116,9 +116,10 @@ missing border.
 are measured with `unicode_width`, never `len()`. A name that simply stops
 looks like a name spelled that way.
 
-**The wheel is the only mouse.** Capturing it already costs the terminal's own
-selection (`Shift` to override); taking clicks as well would cost more than a
-pointer is worth on this screen.
+**The mouse scrolls and selects, and nothing else.** Capturing the wheel costs
+the terminal's own selection, so the log pane selects its own text with the
+left button. Clicking rows, buttons or the menu would cost more than a pointer
+is worth on this screen.
 
 **Ten frames a second is the budget.** Whatever you add is drawn 10×/s
 forever; if it cannot be written into the buffer straight from what is already

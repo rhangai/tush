@@ -1,4 +1,4 @@
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use ratatui::{
     buffer::Buffer,
@@ -39,6 +39,36 @@ pub struct UiRenderLogState {
     scroll: usize,
     /// Rows and columns of text, as of the last frame drawn.
     size: (usize, usize),
+    /// Where the text starts on screen, as of the last frame drawn — what a
+    /// mouse position is measured from.
+    origin: (u16, u16),
+    /// The text being selected, while a selection is up.
+    selection: Option<UiRenderLogSelection>,
+    /// The rows on screen when the button went down, which the pane draws
+    /// instead of the client's while [`selection`](Self::selection) is up:
+    /// the log is addressed from its end, so with output arriving the
+    /// client's lines slide out from under the selection. Kept between
+    /// selections for its capacity; what it holds means nothing without one.
+    frozen: Vec<LogLine>,
+}
+
+/// Two cells of the text, as (row, column) from its top left: where the
+/// button went down, and where the pointer is now. Either can be the earlier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct UiRenderLogSelection {
+    anchor: (usize, usize),
+    head: (usize, usize),
+}
+
+impl UiRenderLogSelection {
+    /// The two cells in reading order.
+    fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        if self.head < self.anchor {
+            (self.head, self.anchor)
+        } else {
+            (self.anchor, self.head)
+        }
+    }
 }
 
 impl UiRenderLogState {
@@ -47,8 +77,10 @@ impl UiRenderLogState {
     /// Called when the selection moves — a scroll is a position in one unit's
     /// output and means nothing in another's — and when the user asks,
     /// because getting back to the end should not mean holding a key down.
+    /// Either way the frozen rows are no longer what the pane is about.
     pub fn follow(&mut self) {
         self.scroll = 0;
+        self.clear_selection();
     }
 
     /// Whether the pane is showing the end of the log as it arrives.
@@ -57,7 +89,11 @@ impl UiRenderLogState {
     }
 
     /// Scroll back by `lines`, or forward by a negative number of them.
+    ///
+    /// Drops the selection: it is a stretch of the rows on screen, and those
+    /// are about to be other rows.
     pub fn scroll_lines(&mut self, lines: isize) {
+        self.clear_selection();
         let by = lines.unsigned_abs();
         self.scroll = if lines < 0 {
             self.scroll.saturating_sub(by)
@@ -92,8 +128,77 @@ impl UiRenderLogState {
     /// The limit puts the oldest line at the top of the pane, not the bottom:
     /// past that every further line of scroll buys a blank row, so a log
     /// shorter than the pane does not scroll at all.
+    ///
+    /// Not while a selection is up: `held` is the client's count, which keeps
+    /// moving under rows that are frozen.
     pub fn clamp(&mut self, held: usize) {
+        if self.selection.is_some() {
+            return;
+        }
         self.scroll = self.scroll.min(held.saturating_sub(self.size.0));
+    }
+
+    /// Start a selection at the cell under (`x`, `y`), freezing the rows of
+    /// `log` the pane is showing.
+    ///
+    /// Drops any selection already up first, so a click anywhere clears one.
+    /// A press outside the text, or over a pane with nothing in it, starts
+    /// nothing.
+    pub fn select_from(&mut self, x: u16, y: u16, log: Option<ViewLog>) {
+        self.clear_selection();
+        let (rows, columns) = self.size;
+        let (left, top) = self.origin;
+        let (Some(column), Some(row)) = (x.checked_sub(left), y.checked_sub(top)) else {
+            return;
+        };
+        let (row, column) = (row as usize, column as usize);
+        if row >= rows || column >= columns {
+            return;
+        }
+        let Some(log) = log else {
+            return;
+        };
+        let lines = visible(&log, self.scroll, rows);
+        if lines.is_empty() {
+            return;
+        }
+        self.frozen.clear();
+        self.frozen.extend_from_slice(lines);
+        let cell = (row.min(self.frozen.len() - 1), column);
+        self.selection = Some(UiRenderLogSelection {
+            anchor: cell,
+            head: cell,
+        });
+    }
+
+    /// Move the selection's free end to the cell under (`x`, `y`), clamped to
+    /// the text: a drag that leaves the pane holds at its edge.
+    pub fn select_to(&mut self, x: u16, y: u16) {
+        let Some(selection) = &mut self.selection else {
+            return;
+        };
+        let (left, top) = self.origin;
+        let last_row = self.frozen.len().saturating_sub(1);
+        let last_column = self.size.1.saturating_sub(1);
+        let row = (y.saturating_sub(top) as usize).min(last_row);
+        let column = (x.saturating_sub(left) as usize).min(last_column);
+        selection.head = (row, column);
+    }
+
+    /// The button came up: a selection that never left the cell it started
+    /// on was a click, and a click clears.
+    pub fn select_end(&mut self) {
+        if self
+            .selection
+            .is_some_and(|selection| selection.anchor == selection.head)
+        {
+            self.clear_selection();
+        }
+    }
+
+    /// Drop the selection, and with it the freeze.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
     }
 }
 
@@ -201,16 +306,24 @@ impl StatefulWidget for UiRenderLog<'_> {
             ..inner
         };
         state.size = (text.height as usize, text.width as usize);
+        state.origin = (text.x, text.y);
 
         // The title goes over the top border rather than through the block:
         // a block's title is a `Line`, and both building one and rendering
         // one allocate.
         self.draw_title(buffer, area, inner);
-        draw_behind(buffer, self.theme, area, state.scroll);
+        if state.selection.is_some() {
+            draw_selecting(buffer, self.theme, area);
+        } else {
+            draw_behind(buffer, self.theme, area, state.scroll);
+        }
 
-        let lines = self.log.as_ref().map_or(&[][..], |log| {
-            visible(log, state.scroll, text.height as usize)
-        });
+        let lines = match state.selection {
+            Some(_) => &state.frozen[..],
+            None => self.log.as_ref().map_or(&[][..], |log| {
+                visible(log, state.scroll, text.height as usize)
+            }),
+        };
         if lines.is_empty() {
             let style = Style::new().add_modifier(Modifier::DIM);
             let empty = &self.theme.texts.empty;
@@ -230,7 +343,86 @@ impl StatefulWidget for UiRenderLog<'_> {
                 buffer.set_stringn(text.x, y, &line.text, text.width as usize, base);
             }
         }
+        if let Some(selection) = state.selection {
+            draw_selection(buffer, lines, text, selection);
+        }
     }
+}
+
+/// Reverse the selected cells, over text already drawn.
+///
+/// A row is selected from the character under its first cell to the
+/// character under its last, so a wide character the selection touches at
+/// all is taken whole; the rows between the ends are selected to their end.
+fn draw_selection(
+    buffer: &mut Buffer,
+    lines: &[LogLine],
+    text: Rect,
+    selection: UiRenderLogSelection,
+) {
+    let style = Style::new().add_modifier(Modifier::REVERSED);
+    let ((first_row, first_column), (last_row, last_column)) = selection.ordered();
+    for row in first_row..=last_row {
+        let Some(line) = lines.get(row) else {
+            break;
+        };
+        let from = if row == first_row { first_column } else { 0 };
+        let to = if row == last_row {
+            last_column
+        } else {
+            usize::MAX
+        };
+
+        // Walk the line a character at a time, keeping the cells of those
+        // that overlap `from..=to`; past the pane nothing is drawn to reverse.
+        let mut start = None;
+        let mut end = 0;
+        let mut column = 0;
+        for character in line.text.chars() {
+            if column > to || column >= text.width as usize {
+                break;
+            }
+            let next = column + character.width().unwrap_or(0);
+            if next > from {
+                start.get_or_insert(column);
+                end = next;
+            }
+            column = next;
+        }
+        let Some(start) = start else {
+            continue;
+        };
+        let end = end.min(text.width as usize);
+        let cells = Rect::new(
+            text.x + start as u16,
+            text.y + row as u16,
+            (end - start) as u16,
+            1,
+        );
+        buffer.set_style(cells, style);
+    }
+}
+
+/// Say in the bottom border that the pane is held still, where
+/// [`draw_behind`] would count the lines below it.
+///
+/// A frozen pane looks exactly like a process that went quiet, and while a
+/// selection is up that count is of lines the pane is not showing anyway.
+fn draw_selecting(buffer: &mut Buffer, theme: &UiTheme, area: Rect) {
+    let word = &theme.texts.selecting;
+    let width = (word.width() + 2) as u16;
+    let Some(x) = area.right().checked_sub(width + 1) else {
+        return;
+    };
+    if x <= area.x {
+        return;
+    }
+
+    let y = area.bottom().saturating_sub(1);
+    let style = Style::new();
+    let mut x = buffer.set_stringn(x, y, " ", 1, style).0;
+    x = buffer.set_stringn(x, y, word, word.width(), style).0;
+    buffer.set_stringn(x, y, " ", 1, style);
 }
 
 /// Draw one line as the runs the log found in it.

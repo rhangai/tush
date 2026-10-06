@@ -223,6 +223,8 @@ pub struct UiThemeTexts {
     /// A log pane with nothing in it, so an empty one does not read as a pane
     /// that failed to draw.
     pub empty: SmallStr,
+    /// In the log pane's bottom border while a selection holds it still.
+    pub selecting: SmallStr,
     /// The menu's way out.
     pub cancel: SmallStr,
 
@@ -269,6 +271,7 @@ impl Default for UiThemeTexts {
 
             log: SmallStr::literal("log"),
             empty: SmallStr::literal("no output yet"),
+            selecting: SmallStr::literal("selecting"),
             cancel: SmallStr::literal("cancel"),
 
             statusbar_move: SmallStr::literal("move"),

@@ -3,7 +3,7 @@ use std::time::Duration;
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+        KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
 };
@@ -77,9 +77,9 @@ impl<C: ViewClient> Ui<C> {
         };
         let mut terminal = ratatui::init();
         // The wheel is not reported unless asked for, and asking costs the
-        // terminal's own selection: dragging over the log no longer selects
-        // it, and copying a line takes the terminal's override, `Shift` in
-        // nearly all of them.
+        // terminal's own selection — which is why the log pane selects its
+        // own text. The terminal's still works behind its override, `Shift`
+        // in nearly all of them.
         let mouse = execute!(std::io::stdout(), EnableMouseCapture);
         let result = ui.main_loop(&mut terminal, refresh, cancel).await;
         if mouse.is_ok() {
@@ -166,6 +166,9 @@ impl<C: ViewClient> Ui<C> {
         let key = match event {
             Event::Key(key) => key,
             Event::Mouse(mouse) => return self.handle_mouse(mouse),
+            // The selection is cells of the pane as it was laid out, which a
+            // resize moves.
+            Event::Resize(..) => return self.render.clear_log_selection(),
             _ => return,
         };
         if key.kind != KeyEventKind::Press {
@@ -267,12 +270,21 @@ impl<C: ViewClient> Ui<C> {
         self.render.open_menu(key, title, items);
     }
 
-    /// Act on the wheel: it scrolls the log wherever the pointer is, that
-    /// being the only thing on screen with more in it than fits.
+    /// Act on the mouse: the wheel scrolls the log wherever the pointer is,
+    /// that being the only thing on screen with more in it than fits, and the
+    /// left button selects the log's text.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let (x, y) = (mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::ScrollUp => self.render.scroll_log_lines(WHEEL_LINES),
             MouseEventKind::ScrollDown => self.render.scroll_log_lines(-WHEEL_LINES),
+            // The menu sits over the log, so a press there is not on it.
+            _ if self.render.menu_open() => {}
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.render.select_log_from(x, y, &self.client);
+            }
+            MouseEventKind::Drag(MouseButton::Left) => self.render.select_log_to(x, y),
+            MouseEventKind::Up(MouseButton::Left) => self.render.select_log_end(),
             _ => {}
         }
     }
