@@ -1,6 +1,6 @@
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Position, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Clear, StatefulWidget, Widget},
 };
@@ -53,6 +53,12 @@ pub struct UiRenderMenuState {
     /// Which row: an entry, or the way out at `items.len()`. Only ever one
     /// that can be chosen.
     cursor: usize,
+    /// Where the last frame drew the box, and the rows inside it — what a
+    /// click is measured against. The rows are recorded rather than worked
+    /// out again from the box, so a row the frame had no room for is not one
+    /// a click can land on.
+    area: Rect,
+    rows: Rect,
 }
 
 impl UiRenderMenuState {
@@ -130,6 +136,41 @@ impl UiRenderMenuState {
         }
     }
 
+    /// A press at (`x`, `y`): outside the box closes it, as <kbd>Esc</kbd>
+    /// does; on an entry that can be chosen, or on the way out, the cursor
+    /// moves there. Anywhere else inside does nothing — a dim entry included,
+    /// so the cursor keeps the rule [`select`](Self::select) keeps.
+    ///
+    /// Never chooses: a pointer misses, and a missed click must not restart
+    /// anything. <kbd>Enter</kbd> is the one way to act.
+    pub fn click(&mut self, x: u16, y: u16) {
+        if !self.area.contains(Position::new(x, y)) {
+            self.close();
+            return;
+        }
+        let Some(row) = self.row_at(x, y) else {
+            return;
+        };
+        if row == self.items.len() || self.items.at(row).enabled {
+            self.cursor = row;
+        }
+    }
+
+    /// The row drawn at (`x`, `y`): an entry's index, `items.len()` for the
+    /// way out, or `None` for the border, the padding and the gap.
+    pub fn row_at(&self, x: u16, y: u16) -> Option<usize> {
+        if !self.rows.contains(Position::new(x, y)) {
+            return None;
+        }
+        let row = (y - self.rows.y) as usize;
+        let cancel = self.items.len() + CANCEL_GAP as usize;
+        match row {
+            row if row < self.items.len() => Some(row),
+            row if row == cancel => Some(self.items.len()),
+            _ => None,
+        }
+    }
+
     /// What <kbd>Enter</kbd> means where the cursor is.
     ///
     /// A row can go dim under a resting cursor — `stop` does, the moment the
@@ -194,14 +235,21 @@ pub enum UiMenuChoice {
 /// run is; working that out from a name and a state would be a second copy of
 /// those rules in the module least able to check them.
 pub struct UiRenderMenu<'a> {
+    /// The row under the pointer, as [`row_at`](UiRenderMenuState::row_at)
+    /// counts them, which is underlined when a click there would move to it.
+    hovered: Option<usize>,
     border: &'a Block<'a>,
     theme: &'a UiTheme,
 }
 
 impl<'a> UiRenderMenu<'a> {
     /// The menu, drawn inside `border`.
-    pub fn new(border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
-        Self { border, theme }
+    pub fn new(hovered: Option<usize>, border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
+        Self {
+            hovered,
+            border,
+            theme,
+        }
     }
 }
 
@@ -212,6 +260,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
         if !state.is_open() {
             return;
         }
+        state.area = area;
         // What is underneath is still drawn, and shows through otherwise.
         Clear.render(area, buffer);
         let inner = self.border.inner(area);
@@ -237,6 +286,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
         // where the text starts, not where the row does.
         let top = inner.y + PAD_Y;
         let rows = inner.height.saturating_sub(PAD_Y * 2);
+        state.rows = Rect::new(inner.x, top, inner.width, rows);
         let row_at = |y: u16| Rect::new(inner.x, top + y, inner.width, 1);
 
         for (row, item) in state.items.iter().take(rows as usize).enumerate() {
@@ -246,6 +296,7 @@ impl StatefulWidget for UiRenderMenu<'_> {
                 item,
                 row_at(row as u16),
                 row == state.cursor,
+                self.hovered == Some(row),
             );
         }
 
@@ -258,7 +309,10 @@ impl StatefulWidget for UiRenderMenu<'_> {
                 &self.theme.texts.cancel,
                 None,
                 row_at(row),
-                Style::new(),
+                match self.hovered == Some(state.items.len()) {
+                    true => Style::new().add_modifier(Modifier::UNDERLINED),
+                    false => Style::new(),
+                },
                 state.cursor == state.items.len(),
             );
         }
@@ -266,16 +320,21 @@ impl StatefulWidget for UiRenderMenu<'_> {
 }
 
 /// One entry: the mark, the verb, and the mode it applies to.
+///
+/// Underlined under the pointer only when it can be chosen: a click on a dim
+/// entry moves nothing, so nothing says it would.
 fn draw_choice(
     buffer: &mut Buffer,
     theme: &UiTheme,
     item: &UnitChoice,
     area: Rect,
     selected: bool,
+    hovered: bool,
 ) {
-    let style = match item.enabled {
-        true => Style::new(),
-        false => Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+    let style = match (item.enabled, hovered) {
+        (true, true) => Style::new().add_modifier(Modifier::UNDERLINED),
+        (true, false) => Style::new(),
+        (false, _) => Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
     };
     draw_row(
         buffer,

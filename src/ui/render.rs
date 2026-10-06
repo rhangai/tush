@@ -73,6 +73,10 @@ pub struct UiRender {
     /// The same, less the right hand side: that wall is the log pane's left
     /// one, and one line is drawn once.
     units_border: Block<'static>,
+    /// Where the pointer was last seen, `None` until it has moved over the
+    /// screen. A terminal does not always say when it leaves the window, so
+    /// this can outlast it until the next movement.
+    pointer: Option<Position>,
     /// Every fixed character and colour the panes draw with.
     ///
     /// Owned rather than borrowed, so that a screen is one thing to hold and
@@ -96,6 +100,7 @@ impl UiRender {
             units_border: Block::new()
                 .borders(Borders::TOP | Borders::BOTTOM | Borders::LEFT)
                 .border_set(theme.symbols.border),
+            pointer: None,
             theme,
         }
     }
@@ -107,6 +112,14 @@ impl UiRender {
     /// and what it takes from outside is the client — only to read.
     pub fn draw<C: ViewClient>(&mut self, frame: &mut Frame, client: &C) {
         let [footer, units_area, log_area] = self.areas(frame.area());
+        // What a click would hit, asked of the layout the last frame drew,
+        // as a click is. The menu sits over the list, so with it open the
+        // list has nothing under the pointer.
+        let (hovered_unit, hovered_row) = match (self.pointer, self.menu.is_open()) {
+            (Some(at), true) => (None, self.menu.row_at(at.x, at.y)),
+            (Some(at), false) => (self.units.unit_at(at.x, at.y), None),
+            (None, _) => (None, None),
+        };
 
         frame.render_widget(UiRenderHints(&self.theme), footer);
         frame.render_stateful_widget(
@@ -120,7 +133,12 @@ impl UiRender {
             &mut self.log,
         );
         frame.render_stateful_widget(
-            UiRenderUnits::new(client.units(), &self.units_border, &self.theme),
+            UiRenderUnits::new(
+                client.units(),
+                hovered_unit,
+                &self.units_border,
+                &self.theme,
+            ),
             units_area,
             &mut self.units,
         );
@@ -131,7 +149,7 @@ impl UiRender {
         if self.menu.is_open() {
             let (width, height) = self.menu.size(&self.theme);
             frame.render_stateful_widget(
-                UiRenderMenu::new(&self.border, &self.theme),
+                UiRenderMenu::new(hovered_row, &self.border, &self.theme),
                 centered(frame.area(), width, height),
                 &mut self.menu,
             );
@@ -171,6 +189,20 @@ impl UiRender {
     pub fn focus_other(&mut self, units: &[ViewUnit]) {
         self.units.focus_other(minor_start(units), units.len());
         self.log.follow();
+    }
+
+    /// Remember where the pointer is, for the next frame to underline what is
+    /// under it.
+    pub fn hover(&mut self, x: u16, y: u16) {
+        self.pointer = Some(Position::new(x, y));
+    }
+
+    /// Put the cursor on the unit clicked, if any; the log follows when the
+    /// unit changed, as it does for j and k.
+    pub fn click_unit(&mut self, x: u16, y: u16) {
+        if self.units.click(x, y) {
+            self.log.follow();
+        }
     }
 
     /// Scroll the log pane back by `lines`, or forward by a negative number.
@@ -248,6 +280,12 @@ impl UiRender {
     pub fn open_menu(&mut self, key: AppUnitKey, title: SmallStr, items: UnitChoices) {
         self.log.clear_selection();
         self.menu.open(key, title, items);
+    }
+
+    /// A press while the menu is up — see
+    /// [`click`](UiRenderMenuState::click).
+    pub fn click_menu(&mut self, x: u16, y: u16) {
+        self.menu.click(x, y);
     }
 
     /// Give the keys back to the list.

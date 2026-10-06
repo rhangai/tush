@@ -143,9 +143,10 @@ below the rule the ones you only look at when they break (`panel: minor`).
 
 | Key | Does |
 | --- | --- |
-| <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>j</kbd> <kbd>k</kbd> | Move through the list |
+| <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>j</kbd> <kbd>k</kbd>, click | Move through the list |
 | <kbd>Tab</kbd> | Switch lists, each keeping its place |
 | <kbd>Enter</kbd> | Open the action menu |
+| Click in the menu | Move to that entry (<kbd>Enter</kbd> runs it); a click outside closes the menu |
 | <kbd>r</kbd> | Start it, or restart it in the mode it is already in |
 | <kbd>Backspace</kbd> / <kbd>Delete</kbd> | Stop it |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd>, wheel | Scroll the log |

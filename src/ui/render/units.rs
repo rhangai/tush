@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
@@ -71,6 +73,11 @@ pub struct UiRenderUnitsState {
     /// Where each list's window starts.
     main_offset: usize,
     minor_offset: usize,
+    /// What the last frame drew of each list, for a click to be measured
+    /// against: its area, the height of one row, and the units shown as
+    /// indices into the whole slice. `None` for a list that was not drawn.
+    main_drawn: Option<(Rect, u16, Range<usize>)>,
+    minor_drawn: Option<(Rect, u16, Range<usize>)>,
 }
 
 impl UiRenderUnitsState {
@@ -97,6 +104,43 @@ impl UiRenderUnitsState {
             Move::Previous if cursor == 0 => last,
             Move::Previous => cursor - 1,
         };
+    }
+
+    /// Put the cursor on the unit drawn under (`x`, `y`).
+    ///
+    /// False when no unit is there or the cursor was already on it, so the
+    /// caller moves the log only when the unit changed.
+    pub fn click(&mut self, x: u16, y: u16) -> bool {
+        let Some(index) = self.unit_at(x, y) else {
+            return false;
+        };
+        if index == self.cursor {
+            return false;
+        }
+        self.cursor = index;
+        true
+    }
+
+    /// The unit the last frame drew under (`x`, `y`), as an index into the
+    /// whole slice — `None` over the gap under a comfortable row, the rule,
+    /// or the space below the last row.
+    pub fn unit_at(&self, x: u16, y: u16) -> Option<usize> {
+        for drawn in [&self.main_drawn, &self.minor_drawn] {
+            let Some((area, height, units)) = drawn else {
+                continue;
+            };
+            if !area.contains(Position::new(x, y)) {
+                continue;
+            }
+            let line = y - area.y;
+            // The last line of a comfortable row is the gap after it.
+            if *height == COMFORTABLE_HEIGHT && line % height == height - 1 {
+                return None;
+            }
+            let index = units.start + (line / height) as usize;
+            return (index < units.end).then_some(index);
+        }
+        None
     }
 
     /// Jump to the top of the other list.
@@ -151,6 +195,9 @@ pub fn minor_start(units: &[ViewUnit]) -> usize {
 /// whatever the cache did.
 pub struct UiRenderUnits<'a> {
     units: &'a [ViewUnit],
+    /// The unit under the pointer, as an index into `units`, whose name is
+    /// underlined: what a click would select.
+    hovered: Option<usize>,
     border: &'a Block<'a>,
     theme: &'a UiTheme,
 }
@@ -158,9 +205,15 @@ pub struct UiRenderUnits<'a> {
 impl<'a> UiRenderUnits<'a> {
     /// The pane for `units`, drawn inside `border` — lent rather than built
     /// here, a `Block` not being free to make.
-    pub fn new(units: &'a [ViewUnit], border: &'a Block<'a>, theme: &'a UiTheme) -> Self {
+    pub fn new(
+        units: &'a [ViewUnit],
+        hovered: Option<usize>,
+        border: &'a Block<'a>,
+        theme: &'a UiTheme,
+    ) -> Self {
         Self {
             units,
+            hovered,
             border,
             theme,
         }
@@ -232,6 +285,8 @@ impl StatefulWidget for UiRenderUnits<'_> {
         // has the keys — there is no second mark to tell apart from it.
         let main_cursor = (state.cursor < split).then_some(state.cursor);
         let minor_cursor = (state.cursor >= split).then(|| state.cursor - split);
+        let main_hovered = self.hovered.filter(|&index| index < split);
+        let minor_hovered = self.hovered.and_then(|index| index.checked_sub(split));
 
         // A rule divides two lists, so one of them being empty leaves nothing
         // to divide — an all-`minor` config is one list, drawn quietly.
@@ -243,17 +298,41 @@ impl StatefulWidget for UiRenderUnits<'_> {
             // One list, either because that is all there is or because the
             // pane cannot afford the rule. Which one falls out of where the
             // units are — a blank pane is what broken looks like.
-            let (rows, offset, cursor, quiet) = match main.is_empty() {
-                true => (minor, &mut state.minor_offset, minor_cursor, true),
-                false => (main, &mut state.main_offset, main_cursor, false),
+            let (rows, offset, cursor, hovered, quiet, base) = match main.is_empty() {
+                true => (
+                    minor,
+                    &mut state.minor_offset,
+                    minor_cursor,
+                    minor_hovered,
+                    true,
+                    split,
+                ),
+                false => (
+                    main,
+                    &mut state.main_offset,
+                    main_cursor,
+                    main_hovered,
+                    false,
+                    0,
+                ),
             };
-            draw_list(
-                buffer, self.theme, rows, inner, layout, offset, cursor, quiet,
+            let drawn = draw_list(
+                buffer, self.theme, rows, inner, layout, offset, cursor, hovered, quiet,
             );
+            // The list's own indices, as indices into the whole slice.
+            let drawn = Some((
+                inner,
+                row_height(layout),
+                drawn.start + base..drawn.end + base,
+            ));
+            (state.main_drawn, state.minor_drawn) = match main.is_empty() {
+                true => (None, drawn),
+                false => (drawn, None),
+            };
             return;
         };
 
-        draw_list(
+        let drawn = draw_list(
             buffer,
             self.theme,
             main,
@@ -261,13 +340,15 @@ impl StatefulWidget for UiRenderUnits<'_> {
             layout,
             &mut state.main_offset,
             main_cursor,
+            main_hovered,
             false,
         );
+        state.main_drawn = Some((main_area, row_height(layout), drawn));
         draw_rule(buffer, self.theme, inner, rule_y);
         // Compact whatever the theme says: this is the list you are not
         // reading, and a row of it spent on a second line is a row the list
         // above does not get.
-        draw_list(
+        let drawn = draw_list(
             buffer,
             self.theme,
             minor,
@@ -275,15 +356,22 @@ impl StatefulWidget for UiRenderUnits<'_> {
             UiThemeMenuLayout::Compact,
             &mut state.minor_offset,
             minor_cursor,
+            minor_hovered,
             true,
         );
+        state.minor_drawn = Some((
+            minor_area,
+            COMPACT_HEIGHT,
+            drawn.start + split..drawn.end + split,
+        ));
     }
 }
 
 /// One list into its own area, at its own scroll.
 ///
 /// `cursor` is `None` for the list the keys are not in, which is what makes
-/// the mark appear exactly once on the screen.
+/// the mark appear exactly once on the screen. Returns which of `units` it
+/// drew.
 #[allow(clippy::too_many_arguments)]
 fn draw_list(
     buffer: &mut Buffer,
@@ -293,8 +381,9 @@ fn draw_list(
     layout: UiThemeMenuLayout,
     offset: &mut usize,
     cursor: Option<usize>,
+    hovered: Option<usize>,
     quiet: bool,
-) {
+) -> Range<usize> {
     let height = row_height(layout);
     let per_page = (area.height / height).max(1) as usize;
     scroll_into_view(offset, cursor, per_page, units.len());
@@ -305,15 +394,17 @@ fn draw_list(
         let row_area = Rect::new(area.x, y, area.width, height);
         let unit = &units[index];
         let selected = cursor == Some(index);
+        let hovered = hovered == Some(index);
         match layout {
             UiThemeMenuLayout::Compact => {
-                draw_compact(buffer, theme, unit, row_area, selected, quiet)
+                draw_compact(buffer, theme, unit, row_area, selected, hovered, quiet)
             }
             UiThemeMenuLayout::Comfortable => {
-                draw_comfortable(buffer, theme, unit, row_area, selected, quiet)
+                draw_comfortable(buffer, theme, unit, row_area, selected, hovered, quiet)
             }
         }
     }
+    *offset..last
 }
 
 /// The line between the two lists.
@@ -375,14 +466,17 @@ fn draw_gutter(
 /// block rather than being lost in it.
 ///
 /// Bold as well as marked, because a cursor two columns wide is a thin thing
-/// to find a row by.
-fn name_style(live: bool, quiet: bool) -> Style {
-    if live {
-        return Style::new().add_modifier(Modifier::BOLD);
-    }
-    match quiet {
-        true => Style::new().add_modifier(Modifier::DIM),
-        false => Style::new(),
+/// to find a row by. Under the pointer the name is underlined as well — not
+/// bold, which is the cursor's, and not a bar, which is the menu's.
+fn name_style(live: bool, hovered: bool, quiet: bool) -> Style {
+    let style = match (live, quiet) {
+        (true, _) => Style::new().add_modifier(Modifier::BOLD),
+        (false, true) => Style::new().add_modifier(Modifier::DIM),
+        (false, false) => Style::new(),
+    };
+    match hovered {
+        true => style.add_modifier(Modifier::UNDERLINED),
+        false => style,
     }
 }
 
@@ -430,6 +524,7 @@ fn draw_compact(
     unit: &ViewUnit,
     area: Rect,
     selected: bool,
+    hovered: bool,
     quiet: bool,
 ) {
     let left = draw_gutter(buffer, theme, unit, area, selected);
@@ -444,7 +539,7 @@ fn draw_compact(
     let name_right = set_right(buffer, area.y, left, right, label, number, style);
 
     let name = unit.name_short.as_ref().unwrap_or(&unit.name);
-    let style = name_style(selected, quiet);
+    let style = name_style(selected, hovered, quiet);
     set_clipped(
         buffer,
         theme,
@@ -474,6 +569,7 @@ fn draw_comfortable(
     unit: &ViewUnit,
     area: Rect,
     selected: bool,
+    hovered: bool,
     quiet: bool,
 ) {
     let left = draw_gutter(buffer, theme, unit, area, selected);
@@ -485,7 +581,7 @@ fn draw_comfortable(
         area.y,
         &unit.name,
         room(left, right),
-        name_style(selected, quiet),
+        name_style(selected, hovered, quiet),
     );
 
     // The gutter stays empty on the second line, so the two read as one row.
