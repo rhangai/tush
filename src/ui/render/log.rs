@@ -41,6 +41,10 @@ const LOG_COLUMNS_MAX: usize = 4096;
 /// How long the bottom border says a copy went out.
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
+/// How soon a press on the same cell counts as the next click of a double
+/// or triple one. crossterm reports presses only, so the pane counts them.
+const MULTI_CLICK_WITHIN: Duration = Duration::from_millis(400);
+
 /// Blank columns at each edge, so the output is not written onto the border.
 const PAD_X: u16 = 1;
 
@@ -70,17 +74,30 @@ pub struct UiRenderLogState {
     /// When the last copy went out and how many lines it held, for the
     /// border to say so for [`COPIED_FOR`].
     copied: Option<(Instant, usize)>,
+    /// When the last press was, on which cell, and which click it counted
+    /// as. Outlives the selection, which every press clears.
+    last_press: Option<(Instant, (usize, usize), u8)>,
 }
 
 /// Two cells of the text, as (row, column) from its top left: where the
 /// button went down, and where the pointer is now. Either can be the earlier.
+///
+/// On a double or triple click (`clicks` above one) they are instead the
+/// first and last cell of the word or line, and the pointer moves neither.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct UiRenderLogSelection {
     anchor: (usize, usize),
     head: (usize, usize),
+    clicks: u8,
 }
 
 impl UiRenderLogSelection {
+    /// Whether there is anything to show yet. A press that has not moved is
+    /// still possibly a click, and highlighting its cell would flash it.
+    fn is_shown(&self) -> bool {
+        self.clicks > 1 || self.anchor != self.head
+    }
+
     /// The two cells in reading order.
     fn ordered(&self) -> ((usize, usize), (usize, usize)) {
         if self.head < self.anchor {
@@ -100,6 +117,7 @@ impl UiRenderLogState {
     /// Either way the frozen rows are no longer what the pane is about.
     pub fn follow(&mut self) {
         self.scroll = 0;
+        self.last_press = None;
         self.clear_selection();
     }
 
@@ -163,7 +181,8 @@ impl UiRenderLogState {
     ///
     /// Drops any selection already up first, so a click anywhere clears one.
     /// A press outside the text, or over a pane with nothing in it, starts
-    /// nothing.
+    /// nothing. The second press on a cell selects the word under it and the
+    /// third its whole line; a blank cell has no word, so selects nothing.
     pub fn select_from(&mut self, x: u16, y: u16, log: Option<ViewLog>) {
         self.clear_selection();
         let (rows, columns) = self.size;
@@ -182,13 +201,48 @@ impl UiRenderLogState {
         if lines.is_empty() {
             return;
         }
+        let clicks = self.count_click((row, column));
         self.frozen.clear();
         self.frozen.extend_from_slice(lines);
         let cell = (row.min(self.frozen.len() - 1), column);
+        let (anchor, head) = match clicks {
+            1 => (cell, cell),
+            _ => {
+                let Some(line) = self.frozen.get(row) else {
+                    return;
+                };
+                let bounds = match clicks {
+                    2 => word(&line.text, column),
+                    _ => (!line.text.is_empty()).then_some((0, usize::MAX)),
+                };
+                let Some((first, last)) = bounds else {
+                    return;
+                };
+                ((row, first), (row, last))
+            }
+        };
         self.selection = Some(UiRenderLogSelection {
-            anchor: cell,
-            head: cell,
+            anchor,
+            head,
+            clicks,
         });
+    }
+
+    /// Record a press on `cell` and say which click it is: the next one of a
+    /// run when on the same cell within [`MULTI_CLICK_WITHIN`], up to three,
+    /// and the first of a new run otherwise.
+    fn count_click(&mut self, cell: (usize, usize)) -> u8 {
+        let now = Instant::now();
+        let clicks = match self.last_press {
+            Some((at, last, clicks))
+                if last == cell && clicks < 3 && now - at < MULTI_CLICK_WITHIN =>
+            {
+                clicks + 1
+            }
+            _ => 1,
+        };
+        self.last_press = Some((now, cell, clicks));
+        clicks
     }
 
     /// Move the selection's free end to the cell under (`x`, `y`), clamped to
@@ -197,6 +251,9 @@ impl UiRenderLogState {
         let Some(selection) = &mut self.selection else {
             return;
         };
+        if selection.clicks > 1 {
+            return;
+        }
         let (left, top) = self.origin;
         let last_row = self.frozen.len().saturating_sub(1);
         let last_column = self.size.1.saturating_sub(1);
@@ -210,12 +267,14 @@ impl UiRenderLogState {
     /// `out`, rows joined by newlines, and the return says there is a copy.
     ///
     /// A release on the pane's right edge takes the rest of its line, which
-    /// is what dragging off the side of a line that does not fit means.
+    /// is what dragging off the side of a line that does not fit means. A
+    /// word or a line already ends where it ends, wherever that falls.
     pub fn select_end(&mut self, out: &mut String) -> bool {
         let Some(selection) = self.selection else {
             return false;
         };
-        if selection.anchor == selection.head {
+        let dragged = selection.clicks == 1;
+        if dragged && selection.anchor == selection.head {
             self.clear_selection();
             return false;
         }
@@ -227,7 +286,7 @@ impl UiRenderLogState {
                 break;
             };
             let from = if row == first_row { first_column } else { 0 };
-            let to = if row == last_row && last_column < edge {
+            let to = if row == last_row && (last_column < edge || !dragged) {
                 last_column
             } else {
                 usize::MAX
@@ -375,7 +434,10 @@ impl StatefulWidget for UiRenderLog<'_> {
                 &texts.copied_lines
             };
             draw_border_note(buffer, area, &[&texts.copied, number, unit]);
-        } else if state.selection.is_some() {
+        } else if state
+            .selection
+            .is_some_and(|selection| selection.is_shown())
+        {
             draw_border_note(buffer, area, &[&texts.selecting]);
         } else {
             draw_behind(buffer, self.theme, area, state.scroll);
@@ -406,7 +468,7 @@ impl StatefulWidget for UiRenderLog<'_> {
                 buffer.set_stringn(text.x, y, &line.text, text.width as usize, base);
             }
         }
-        if let Some(selection) = state.selection {
+        if let Some(selection) = state.selection.filter(UiRenderLogSelection::is_shown) {
             draw_selection(buffer, lines, text, selection);
         }
     }
@@ -476,6 +538,30 @@ fn overlap(text: &str, from: usize, to: usize) -> Option<(Range<usize>, Range<us
         column = next;
     }
     found
+}
+
+/// The first and last column of the run of non-blank characters covering
+/// `column` of `text`, or `None` when that cell is blank or past the end.
+///
+/// Columns by the same width rule as [`overlap`], so the word found is the
+/// word highlighted and copied.
+fn word(text: &str, column: usize) -> Option<(usize, usize)> {
+    let mut start = 0;
+    let mut at = 0;
+    let mut found = false;
+    for character in text.chars() {
+        let next = at + character.width().unwrap_or(0);
+        if character.is_whitespace() {
+            if found {
+                break;
+            }
+            start = next;
+        } else if next > column {
+            found = true;
+        }
+        at = next;
+    }
+    (found && start <= column).then(|| (start, at - 1))
 }
 
 /// Write `pieces` into the bottom border, a space either side, ending one
